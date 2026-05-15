@@ -1,0 +1,2413 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+
+  /* Theme fallbacks. React overrides these on .app via inline styles
+     based on the active palette so the whole UI re-themes when a
+     palette is picked in Settings. */
+  --accent: #1ED760;
+  --accent-bright: #2ce568;
+  --accent-bg: rgba(29, 185, 84, 0.18);
+  --accent-border: rgba(29, 185, 84, 0.5);
+  --accent-soft-bg: rgba(29, 185, 84, 0.15);
+  --accent-glow: rgba(29, 215, 96, 0.4);
+}
+
+.viz-banner {
+  flex: 0 0 110px;
+  height: 110px;
+  position: relative;
+  background: #050507;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.viz-banner canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.audio-stats {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  /* Right padding leaves room for the absolutely-positioned toggle, so
+   * the sparkline (which spans the content area) stops before the × and
+   * doesn't visually overlap it. */
+  padding: 6px 32px 4px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  pointer-events: auto;
+  font-variant-numeric: tabular-nums;
+  z-index: 2;
+  transition: padding 160ms ease, background 160ms ease;
+}
+
+.audio-stats-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+}
+
+.audio-stats.is-collapsed {
+  gap: 0;
+  padding: 2px 24px 2px 6px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.audio-stats.is-collapsed .audio-stats-toggle {
+  top: 2px;
+  right: 4px;
+}
+
+.audio-stats-toggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 2px 6px;
+  cursor: pointer;
+  outline: none;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.audio-stats-toggle:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.audio-stats.is-collapsed .audio-stats-toggle {
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.audio-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+}
+
+.audio-stat-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.audio-stat-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px 10px 70px; /* clear the macOS traffic lights with a small gap */
+  background: rgba(0, 0, 0, 0.4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  -webkit-app-region: drag; /* drag the window by grabbing the topbar's blank space */
+}
+
+.topbar button,
+.topbar input,
+.topbar select,
+.topbar .tab-bar,
+.topbar .topbar-right {
+  -webkit-app-region: no-drag;
+}
+
+.topbar .title {
+  flex-shrink: 0;
+}
+
+.brand {
+  left: -40px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.brand-logo {
+  color: var(--accent);
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+  display: block;
+  transition: color 200ms ease;
+}
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  transition: background 250ms ease;
+}
+
+.hint {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.hint-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.error {
+  color: #ff6b6b;
+  font-size: 13px;
+  padding: 12px 18px;
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  border-radius: 8px;
+  max-width: 70%;
+  text-align: center;
+}
+
+/* ============================================================
+   Gear / icon button
+   ============================================================ */
+
+.icon-button {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  outline: none;
+  transition: background 120ms ease, color 120ms ease, transform 200ms ease;
+}
+
+.icon-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f3f4f6;
+}
+
+.gear-button[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  transform: rotate(45deg);
+}
+
+/* ============================================================
+   Settings panel — slide-in from the right
+   ============================================================ */
+
+.settings-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  background: rgba(15, 15, 18, 0.92);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 10;
+  -webkit-app-region: no-drag;
+}
+
+.settings-panel.is-open {
+  transform: translateX(0);
+  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.4);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.panel-header h2 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.panel-header .icon-button {
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px 18px;
+}
+
+.panel-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.panel-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+.panel-section {
+  margin-bottom: 22px;
+}
+
+.panel-section h3 {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 10px;
+}
+
+/* ============================================================
+   Palette grid
+   ============================================================ */
+
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.palette-swatch {
+  position: relative;
+  height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  overflow: hidden;
+  outline: none;
+  padding: 0;
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 200ms ease;
+}
+
+.palette-swatch::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 35%, rgba(0, 0, 0, 0.55) 100%);
+  pointer-events: none;
+}
+
+.palette-swatch:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.palette-swatch.is-active {
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5) inset, 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.palette-label {
+  position: absolute;
+  left: 8px;
+  bottom: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #ffffff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  z-index: 1;
+  letter-spacing: 0.02em;
+}
+
+/* ============================================================
+   Slider
+   ============================================================ */
+
+.slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.slider-value {
+  color: rgba(255, 255, 255, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.slider-row input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.slider-row input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f5f5f7;
+  border: 2px solid rgba(0, 0, 0, 0.25);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  transition: transform 100ms ease;
+}
+
+.slider-row input[type='range']::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+.slider-row input[type='range']::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.15);
+}
+
+/* ============================================================
+   Segmented control
+   ============================================================ */
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  gap: 4px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.segmented-button {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  border: none;
+  padding: 7px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  outline: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.segmented-button:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.segmented-button.is-active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f3f4f6;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* ============================================================
+   Reset button
+   ============================================================ */
+
+.reset-button {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.65);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.reset-button:hover {
+  background: rgba(255, 107, 107, 0.15);
+  border-color: rgba(255, 107, 107, 0.4);
+  color: #ffcfcf;
+}
+
+/* ============================================================
+   Main area (the chunk between topbar and player bar)
+   ============================================================ */
+
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ============================================================
+   Spotify — onboarding card
+   ============================================================ */
+
+.sp-onboarding {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.sp-onboarding-card {
+  width: 100%;
+  max-width: 480px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 28px 32px;
+  backdrop-filter: blur(20px);
+}
+
+.sp-onboarding-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #f3f4f6;
+  margin-bottom: 16px;
+}
+
+.sp-onboarding-sub {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.55;
+  margin-bottom: 18px;
+}
+
+.sp-onboarding-steps {
+  margin: 0 0 18px 20px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.7;
+}
+
+.sp-onboarding-steps li {
+  margin-bottom: 4px;
+}
+
+.sp-onboarding-status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+}
+
+.sp-code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SF Mono, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+.sp-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e8e8e8;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: ui-monospace, SF Mono, Menlo, monospace;
+  outline: none;
+  transition: border-color 120ms ease;
+  margin-bottom: 12px;
+}
+
+.sp-input:focus {
+  border-color: var(--accent);
+}
+
+.sp-button {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8e8e8;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: background 120ms ease, transform 120ms ease, opacity 120ms ease;
+}
+
+.sp-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.sp-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.sp-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sp-button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08080b;
+  font-weight: 600;
+  width: 100%;
+}
+
+.sp-button-primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.sp-button-ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 11.5px;
+  padding: 6px 12px;
+  margin-top: 16px;
+  float: right;
+}
+
+.sp-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  border-radius: 8px;
+  color: #ff9b9b;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* ============================================================
+   Spotify — playlist sidebar
+   ============================================================ */
+
+.sp-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.25);
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sp-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  padding: 12px 16px;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  text-align: left;
+  width: 100%;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.sp-sidebar-header:hover {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sp-sidebar-header-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.sp-sidebar.is-collapsed .sp-sidebar-header-label {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.sp-sidebar-caret {
+  font-size: 10px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.sp-sidebar-empty {
+  padding: 16px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.sp-sidebar-empty-text {
+  line-height: 1.4;
+}
+
+.sp-sidebar-reconnect {
+  background: var(--accent-soft-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: background 120ms ease, transform 120ms ease, opacity 120ms ease;
+  width: 100%;
+}
+
+.sp-sidebar-reconnect:hover:not(:disabled) {
+  background: var(--accent-bg);
+  transform: translateY(-1px);
+}
+
+.sp-sidebar-reconnect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sp-playlist-list {
+  flex: 1;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 12px;
+}
+
+.sp-playlist-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sp-playlist-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+.sp-playlist-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 2px;
+  outline: none;
+  transition: background 100ms ease;
+}
+
+.sp-playlist-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sp-playlist-item:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sp-playlist-item[data-selected='true'] {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sp-playlist-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sp-playlist-thumb-fallback {
+  background: linear-gradient(135deg, var(--accent-soft-bg), var(--accent-soft-bg));
+}
+
+.sp-playlist-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sp-playlist-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e8e8e8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-playlist-meta {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-playlist-item[data-selected='true'] .sp-playlist-name {
+  color: var(--accent);
+}
+
+/* ============================================================
+   Spotify — track view
+   ============================================================ */
+
+.sp-track-view {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.sp-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+}
+
+.sp-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 6px;
+}
+
+.sp-empty-sub {
+  font-size: 12px;
+}
+
+.sp-track-header {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 24px 28px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.sp-track-header-cover {
+  width: 128px;
+  height: 128px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sp-track-header-cover-fallback {
+  background: linear-gradient(135deg, var(--accent-soft-bg), var(--accent-soft-bg));
+}
+
+.sp-track-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sp-track-header-eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 6px;
+}
+
+.sp-track-header-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.1;
+  margin: 0 0 8px;
+  letter-spacing: -0.01em;
+}
+
+.sp-track-header-desc {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.5;
+  margin-bottom: 8px;
+  max-width: 60ch;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sp-track-header-meta {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.sp-track-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow-y: auto;
+  flex: 1;
+  display: block;
+  min-height: 0;
+}
+
+.sp-track-table thead,
+.sp-track-table tbody {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.sp-track-table thead {
+  position: sticky;
+  top: 0;
+  background: rgba(10, 10, 10, 0.95);
+  backdrop-filter: blur(10px);
+  z-index: 1;
+}
+
+.sp-track-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sp-track-table th:first-child {
+  padding-left: 28px;
+  width: 56px;
+  text-align: right;
+}
+
+.sp-track-table th:last-child {
+  padding-right: 28px;
+  text-align: right;
+  width: 80px;
+}
+
+.sp-track-table th:nth-child(3) {
+  width: 28%;
+}
+
+.sp-track-row {
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.sp-track-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sp-track-row[data-playing='true'] {
+  background: var(--accent-soft-bg);
+}
+
+.sp-track-row td {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.65);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  vertical-align: middle;
+}
+
+.sp-track-index {
+  padding-left: 28px !important;
+  width: 56px;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-track-row[data-playing='true'] .sp-track-index {
+  color: var(--accent);
+}
+
+.sp-track-playing-icon {
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.sp-track-title-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sp-track-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sp-track-thumb-fallback {
+  background: linear-gradient(135deg, var(--accent-soft-bg), var(--accent-soft-bg));
+}
+
+.sp-track-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sp-track-name {
+  font-size: 13.5px;
+  color: #e8e8e8;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-track-row[data-playing='true'] .sp-track-name {
+  color: var(--accent);
+}
+
+.sp-track-artists {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-track-explicit {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(0, 0, 0, 0.7);
+  font-size: 8.5px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.sp-track-album {
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-track-duration {
+  text-align: right;
+  padding-right: 28px !important;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.4);
+  width: 80px;
+}
+
+/* ============================================================
+   Spotify — persistent player bar
+   ============================================================ */
+
+.sp-player-bar {
+  flex: 0 0 88px;
+  height: 88px;
+  display: grid;
+  grid-template-columns: 1fr 1.5fr 1fr;
+  align-items: center;
+  background: rgba(8, 8, 10, 0.78);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0 20px;
+  z-index: 5;
+  -webkit-app-region: no-drag;
+  overflow: hidden;
+}
+
+/* (player-bar visualizer background removed — viz now lives in .viz-banner) */
+
+.sp-player-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sp-player-art,
+.sp-player-art-fallback {
+  width: 48px;
+  height: 48px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sp-player-art-fallback {
+  background: linear-gradient(135deg, var(--accent-soft-bg), var(--accent-soft-bg));
+}
+
+.sp-player-track {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e8e8e8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-player-artist {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-player-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sp-player-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sp-icon-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.65);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 50%;
+  outline: none;
+  font-size: 14px;
+  transition: color 100ms ease, background 100ms ease, transform 120ms ease;
+}
+
+.sp-icon-btn:hover {
+  color: #ffffff;
+}
+
+.sp-icon-btn:active {
+  transform: scale(0.94);
+}
+
+.sp-icon-btn-primary {
+  background: #ffffff;
+  color: #0a0a0a;
+  width: 34px;
+  height: 34px;
+  font-size: 15px;
+}
+
+.sp-icon-btn-primary:hover {
+  background: #ffffff;
+  color: #0a0a0a;
+  transform: scale(1.05);
+}
+
+.sp-icon-btn-small {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+
+.sp-player-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 520px;
+}
+
+.sp-time {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+  text-align: center;
+}
+
+.sp-progress-input,
+.sp-volume-input {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.sp-progress-input::-webkit-slider-thumb,
+.sp-volume-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.sp-progress-input:hover::-webkit-slider-thumb,
+.sp-volume-input:hover::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+.sp-player-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sp-volume-input {
+  max-width: 120px;
+}
+
+/* ============================================================
+   Workspace — 2-column layout
+     ┌────────────────────────────┬──────────────────┐
+     │  Visualizer (dominant)     │  Playlists       │
+     │                            ├──────────────────┤
+     │                            │  Tracks          │
+     ├────────────────────────────┤                  │
+     │  EQ (horizontal strip)     │                  │
+     └────────────────────────────┴──────────────────┘
+   ============================================================ */
+
+.workspace {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  height: 100%;
+  min-height: 0;
+}
+
+.workspace > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace > .eq-panel {
+  height: 100%;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.workspace-right {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-right .sp-sidebar {
+  flex: 0 0 200px;
+  border-right: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: flex-basis 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.workspace-right .sp-sidebar.is-collapsed {
+  flex: 0 0 38px;
+}
+
+.workspace-right .sp-track-view {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ============================================================
+   EQ panel (leftmost column)
+   ============================================================ */
+
+.eq-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 14px 22px 14px;
+  min-height: 0;
+  position: relative;
+  transition: opacity 200ms ease;
+}
+
+.eq-curve {
+  flex: 0 0 auto;
+  height: 32%;
+  min-height: 110px;
+  position: relative;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.eq-controls {
+  display: grid;
+  grid-template-columns: 88px 1fr 130px;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.eq-side-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+.eq-preamp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.eq-preamp-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.eq-preamp-label-text {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.eq-preamp-value {
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.eq-preamp-track-wrap {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  min-height: 0;
+  max-height: 240px;
+  width: 100%;
+}
+
+.eq-preamp-fader {
+  width: 16px;
+  min-height: 0;
+  height: 100%;
+  max-height: 240px;
+}
+
+.eq-preamp-fader::-webkit-slider-thumb {
+  width: 16px;
+  height: 34px;
+}
+
+.eq-preamp-fader::-webkit-slider-runnable-track {
+  width: 7px;
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.10) 0%,
+    rgba(255, 255, 255, 0.18) 49%,
+    rgba(255, 255, 255, 0.7) 49.4%,
+    rgba(255, 255, 255, 0.7) 50.6%,
+    rgba(255, 255, 255, 0.18) 51%,
+    rgba(255, 255, 255, 0.10) 100%);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
+    inset 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+/* Knob component: themed via currentColor so SVG strokes follow --accent. */
+.knob {
+  color: var(--accent);
+}
+
+.eq-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.eq-band-switcher {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.eq-band-tab {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  border: none;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 6px;
+  outline: none;
+  font-variant-numeric: tabular-nums;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.eq-band-tab:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.eq-band-tab.is-active {
+  background: var(--accent-soft-bg);
+  color: var(--accent);
+}
+
+.eq-curve-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.eq-curve-canvas:active {
+  cursor: grabbing;
+}
+
+.eq-panel[data-bypass='true'] .eq-preamp,
+.eq-panel[data-bypass='true'] .eq-bands {
+  opacity: 0.4;
+}
+
+.eq-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.eq-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.eq-live {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 120ms ease;
+}
+
+.eq-live:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.eq-live:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.eq-live.is-on {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.eq-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
+
+.eq-live.is-on .eq-live-dot {
+  box-shadow: 0 0 6px currentColor;
+}
+
+.eq-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0;
+}
+
+.eq-bypass {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 120ms ease;
+}
+
+.eq-bypass.is-on {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.eq-bypass.is-bypassed {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* ─── Bands grid ─── */
+
+.eq-bands {
+  display: grid;
+  gap: 3px;
+  min-height: 0;
+  padding: 0 0 4px;
+  margin: 0;
+  overflow: visible;
+  width: 100%;
+  align-self: stretch;
+  position: relative;
+}
+
+.eq-band-activity {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 16px;
+  bottom: 16px;
+  pointer-events: none;
+  z-index: 0;
+  display: grid;
+  /* grid-template-columns is set inline from the band count */
+  align-items: end;
+  gap: inherit;
+}
+
+.eq-band-activity-cell {
+  position: relative;
+  width: 92%;
+  height: 100%;
+  justify-self: center;
+  align-self: end;
+  display: flex;
+  flex-direction: row;
+  align-items: end;
+  justify-content: center;
+  gap: 2px;
+}
+
+.eq-band-activity-current,
+.eq-band-activity-before {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 6px;
+  border-radius: 2px;
+  transition: height 70ms linear;
+}
+
+.eq-band-activity-current {
+  height: var(--current-h, 0%);
+  background: linear-gradient(
+    to top,
+    var(--activity-fill-dim, rgba(29, 215, 96, 0.08)) 0%,
+    var(--activity-fill, rgba(29, 215, 96, 0.55)) 100%
+  );
+}
+
+.eq-band-activity-before {
+  height: var(--before-h, 0%);
+  background: linear-gradient(
+    to top,
+    var(--activity-before-dim, rgba(255, 255, 255, 0.04)) 0%,
+    var(--activity-before, rgba(255, 255, 255, 0.35)) 100%
+  );
+}
+
+.eq-band {
+  position: relative;
+  z-index: 1;
+}
+
+.eq-bands[data-count='10'] { grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 6px; }
+.eq-bands[data-count='15'] { grid-template-columns: repeat(15, minmax(0, 1fr)); gap: 4px; }
+.eq-bands[data-count='31'] { grid-template-columns: repeat(31, minmax(0, 1fr)); gap: 2px; }
+
+.eq-bands[data-count='10'] .eq-band-slider {
+  width: 14px;
+}
+.eq-bands[data-count='10'] .eq-band-slider::-webkit-slider-thumb {
+  width: 14px;
+  height: 30px;
+}
+
+.eq-bands[data-count='15'] .eq-band-slider {
+  width: 12px;
+}
+.eq-bands[data-count='15'] .eq-band-slider::-webkit-slider-thumb {
+  width: 12px;
+  height: 26px;
+}
+.eq-bands[data-count='15'] .eq-band-value,
+.eq-bands[data-count='15'] .eq-band-label {
+  font-size: 8.5px;
+}
+
+.eq-bands[data-count='31'] .eq-band-slider {
+  width: 8px;
+}
+.eq-bands[data-count='31'] .eq-band-slider::-webkit-slider-thumb {
+  width: 8px;
+  height: 20px;
+}
+.eq-bands[data-count='31'] .eq-band-value {
+  font-size: 7.5px;
+  height: 10px;
+}
+.eq-bands[data-count='31'] .eq-band-label {
+  font-size: 7.5px;
+  height: 10px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.eq-bands[data-count='31'] .eq-band-slider::-webkit-slider-runnable-track {
+  width: 3px;
+}
+
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  text-align: center;
+  border-radius: 4px;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.eq-band[data-selected='true'] {
+  background: var(--accent-soft-bg);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
+.eq-band-value {
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, 0.45);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  height: 12px;
+  width: 100%;
+  text-align: center;
+}
+
+.eq-band-track-wrap {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  min-height: 0;
+  max-height: 240px;
+  width: 100%;
+  position: relative;
+}
+
+/*
+ * IMPORTANT: keep `-webkit-appearance: none` here. Chromium ignores
+ * ::-webkit-slider-thumb and ::-webkit-slider-runnable-track CSS when the
+ * legacy `appearance: slider-vertical` value is used — the result is the
+ * default macOS-blue native slider showing through. The modern path is
+ * `appearance: none` + `writing-mode: vertical-lr` + `direction: rtl`.
+ */
+.eq-band-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 14px;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+  text-align: center;
+}
+
+/* Physical (writing-mode-agnostic) auto margins on left/right center the
+ * track horizontally inside the slider box, which Chromium uses as the
+ * anchor for the thumb. Without this, the thumb floats to one edge. */
+.eq-band-slider::-webkit-slider-runnable-track {
+  margin: 0 auto !important;
+}
+
+.eq-band-slider::-webkit-slider-runnable-track {
+  width: 6px;
+  /* Sharp bright stripe at 49.4%–50.6% marks the 0 dB (flat) position on
+   * the track so users can see the neutral reference for each band's
+   * gain at a glance. */
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.16) 49%,
+    rgba(255, 255, 255, 0.6) 49.4%,
+    rgba(255, 255, 255, 0.6) 50.6%,
+    rgba(255, 255, 255, 0.16) 51%,
+    rgba(255, 255, 255, 0.08) 100%);
+  border-radius: 3px;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
+    inset 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.eq-band-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  /* Width matches the slider element's width per band-count so there is
+   * zero cross-axis ambiguity for Chromium to center on. The "notch"
+   * shape is created by making the slider/thumb narrow and tall. */
+  width: 14px;
+  height: 28px;
+  border-radius: 3px;
+  right: 50%;
+  position: relative;
+  background:
+    /* horizontal grip stripe through the middle */
+    linear-gradient(180deg, transparent 46%, rgba(0, 0, 0, 0.55) 46%, rgba(0, 0, 0, 0.55) 54%, transparent 54%),
+    /* top highlight, bottom shadow */
+    linear-gradient(180deg, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0) 30%, rgba(0, 0, 0, 0) 70%, rgba(0, 0, 0, 0.3) 100%),
+    /* accent body */
+    linear-gradient(180deg, var(--accent-bright) 0%, var(--accent) 60%, color-mix(in srgb, var(--accent) 50%, #000) 100%);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, #000);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.3) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.35) inset,
+    0 2px 5px rgba(0, 0, 0, 0.55),
+    0 0 10px var(--accent-glow);
+  cursor: grab;
+  transition: box-shadow 100ms ease, transform 100ms ease;
+}
+
+.eq-band-slider:active::-webkit-slider-thumb {
+  cursor: grabbing;
+  transform: scaleY(1.05);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.25) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.35) inset,
+    0 3px 7px rgba(0, 0, 0, 0.65),
+    0 0 18px var(--accent-glow);
+}
+
+.eq-band[data-zero='true'] .eq-band-slider::-webkit-slider-thumb {
+  background:
+    linear-gradient(180deg, transparent 46%, rgba(0, 0, 0, 0.5) 46%, rgba(0, 0, 0, 0.5) 54%, transparent 54%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 38%, rgba(0, 0, 0, 0) 62%, rgba(0, 0, 0, 0.25) 100%),
+    linear-gradient(180deg, #d4d4dc 0%, #9b9ba2 60%, #5a5a60 100%);
+  border-color: #3a3a40;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.3) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.35) inset,
+    0 3px 6px rgba(0, 0, 0, 0.55);
+}
+
+.eq-band-label {
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0;
+  height: 14px;
+  width: 100%;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 2px 0;
+  border-radius: 3px;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.eq-band-label:hover {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.eq-band[data-selected='true'] .eq-band-label {
+  color: var(--accent);
+  background: var(--accent-soft-bg);
+}
+
+/* ─── Presets ─── */
+
+.eq-presets {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.eq-presets-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eq-preset-chip {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  letter-spacing: 0.02em;
+  transition: all 120ms ease;
+  width: 100%;
+  text-align: center;
+}
+
+.eq-preset-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f3f4f6;
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.eq-preset-chip.is-active {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.eq-reset {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  border: none;
+  font-size: 11px;
+  font-family: inherit;
+  padding: 6px 0;
+  margin-top: 2px;
+  cursor: pointer;
+  outline: none;
+  width: 100%;
+  text-align: center;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.eq-reset:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* ============================================================
+   Sidebar tweaks for narrower workspace column
+   ============================================================ */
+
+/* Tighter track view inside the narrower right column */
+.workspace-right .sp-track-header {
+  padding: 16px 18px 12px;
+  gap: 14px;
+}
+
+.workspace-right .sp-track-header-cover {
+  width: 72px;
+  height: 72px;
+}
+
+.workspace-right .sp-track-header-title {
+  font-size: 17px;
+}
+
+.workspace-right .sp-track-header-desc {
+  display: none;
+}
+
+/* Hide the album column when space is tight (right column is 340px) */
+.workspace-right .sp-track-table th:nth-child(3),
+.workspace-right .sp-track-album {
+  display: none;
+}
+
+.workspace-right .sp-track-index,
+.workspace-right .sp-track-duration {
+  padding-left: 18px !important;
+  padding-right: 18px !important;
+}
+
+/* ============================================================
+   Enhancer panel — full-width row at the bottom of the EQ panel
+   ============================================================ */
+
+.enhancer-panel {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 12px 20px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 24px;
+  flex: 0 0 auto;
+}
+
+.enhancer-panel[data-bypass='true'] .knob-stack {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.enhancer-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.enhancer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.knob-stack {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-around;
+  gap: 36px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 0;
+}
+
+.knob-stack-divider {
+  width: 1px;
+  height: 56px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 8px;
+  flex: 0 0 auto;
+}
+
+.enhancer-reset {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  border: none;
+  padding: 2px 0;
+  font-size: 10.5px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  letter-spacing: 0.02em;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.15);
+  text-underline-offset: 3px;
+  transition: color 120ms ease;
+}
+
+.enhancer-reset:hover {
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration-color: rgba(255, 255, 255, 0.5);
+}
+
+.enhancer-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0;
+  white-space: nowrap;
+}
+
+/* ─── Knob component (used inside Enhancer panel) ─── */
+
+.knob-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.knob {
+  cursor: ns-resize;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  display: block;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+  transition: filter 100ms ease;
+}
+
+.knob:hover {
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.6)) brightness(1.08);
+}
+
+.knob.is-dragging {
+  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.7)) brightness(1.15);
+}
+
+.knob:focus-visible {
+  outline: 1px solid var(--accent-glow);
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+
+.knob-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.knob-value {
+  font-size: 11.5px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: center;
+  min-height: 14px;
+}
+
+/* ============================================================
+   Preamp slider — match the EQ band slider aesthetic horizontally
+   ============================================================ */
+
+.eq-preamp-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.12) var(--fill, 50%),
+    rgba(255, 255, 255, 0.18) var(--fill, 50%),
+    rgba(255, 255, 255, 0.18) 100%
+  );
+}
+
+.eq-preamp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #f5f5f7 0%, #c8c8cf 100%);
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+}
+
+/* ============================================================
+   Player bar — fill-style progress + volume (white over gray)
+   ============================================================ */
+
+.sp-progress-input,
+.sp-volume-input {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  height: 4px !important;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    #ffffff 0%,
+    #ffffff var(--fill, 0%),
+    rgba(255, 255, 255, 0.18) var(--fill, 0%),
+    rgba(255, 255, 255, 0.18) 100%
+  ) !important;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 100ms ease;
+}
+
+.sp-progress-input:hover,
+.sp-volume-input:hover {
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--fill, 0%),
+    rgba(255, 255, 255, 0.22) var(--fill, 0%),
+    rgba(255, 255, 255, 0.22) 100%
+  ) !important;
+}
+
+.sp-progress-input::-webkit-slider-thumb,
+.sp-volume-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.sp-progress-input:hover::-webkit-slider-thumb,
+.sp-volume-input:hover::-webkit-slider-thumb,
+.sp-progress-input:active::-webkit-slider-thumb,
+.sp-volume-input:active::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+/* ============================================================
+   Track list — scrollable container with visible scrollbar
+   ============================================================ */
+
+.sp-track-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  position: relative;
+}
+
+.sp-track-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.sp-track-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sp-track-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  min-height: 40px;
+}
+
+.sp-track-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.28);
+}
+
+/* Override prior block-display table-scroll trick — table is now inside .sp-track-scroll */
+.sp-track-table {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  overflow: visible;
+}
+
+.sp-track-table thead {
+  display: table-header-group;
+  position: relative;
+}
+
+.sp-track-table tbody {
+  display: table-row-group;
+}
+
+.sp-track-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(10, 10, 10, 0.96);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 1;
+}
+
+.sp-track-loading-more {
+  padding: 12px 16px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.sp-track-end {
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 10.5px;
+}
+
+/* ============================================================
+   Audio source selector (System Audio button + Device dropdown)
+   ============================================================ */
+
+.audio-source-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
+.source-btn {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 120ms ease;
+}
+
+.source-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f3f4f6;
+}
+
+.source-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.source-btn.primary.is-active {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.source-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.source-btn .caret {
+  font-size: 9px;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+
+.source-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 260px;
+  max-width: 360px;
+  background: rgba(15, 15, 18, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.source-row {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  border: none;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 5px;
+  outline: none;
+  transition: background 100ms ease;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f3f4f6;
+}
+
+.source-row.is-active {
+  background: var(--accent-soft-bg);
+  color: var(--accent);
+}
+
+.source-row-empty {
+  color: rgba(255, 255, 255, 0.4);
+  cursor: default;
+}
+
+.source-row-disconnect {
+  color: rgba(255, 107, 107, 0.7);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  margin-top: 2px;
+  padding-top: 8px;
+  border-radius: 0 0 5px 5px;
+}
+
+.source-row-disconnect:hover {
+  background: rgba(255, 107, 107, 0.1);
+  color: #ff9b9b;
+}
+
+.source-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  max-width: 360px;
+  padding: 8px 12px;
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  border-radius: 6px;
+  color: #ff9b9b;
+  font-size: 11px;
+  line-height: 1.4;
+  z-index: 21;
+}
+
+/* ============================================================
+   Onboarding centered in main area when not authed
+   ============================================================ */
+
+.main-area > .sp-onboarding {
+  margin: auto;
+}

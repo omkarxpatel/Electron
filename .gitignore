@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+dist-electron/
+release/
+build/
+
+# editor / OS
+.DS_Store
+.vite/
+.vscode/
+.idea/
+*.swp
+*~
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env files
+.env
+.env.local
+.env.development.local
+.env.production.local
+
+# local-only dev notes (not for the public repo)
+HANDOFF.md
+.claude/
