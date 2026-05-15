@@ -92,8 +92,8 @@ You'll paste this Client ID into the app on first launch. You do **not** need th
 ### 3. Clone + run
 
 ```bash
-git clone https://github.com/<your-username>/audio-visualizer.git
-cd audio-visualizer
+git clone https://github.com/omkarxpatel/Spotify-Visualizer-Modifier.git
+cd Spotify-Visualizer-Modifier
 npm install
 npm run dev
 ```
