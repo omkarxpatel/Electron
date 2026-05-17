@@ -14,6 +14,8 @@ export const SCOPES = [
   'playlist-read-private',
   'playlist-read-collaborative',
   'user-library-read',
+  // Required to save / unsave the current track (PUT/DELETE /me/tracks).
+  'user-library-modify',
 ].join(' ');
 
 const TOKEN_URL = 'https://accounts.spotify.com/api/token';
@@ -74,6 +76,12 @@ export async function authorize(): Promise<string> {
       code_challenge_method: 'S256',
       code_challenge: challenge,
       state,
+      // Force the consent screen on every authorize. Without this, Spotify
+      // silently re-uses a previous approval — which means newly-added
+      // scopes (e.g. user-library-modify) are not granted unless the user
+      // explicitly re-consents. The one-tap consent prompt is a small UX
+      // cost in exchange for reliable scope upgrades.
+      show_dialog: 'true',
     }).toString();
 
   // Start the local server first so the callback can be received the

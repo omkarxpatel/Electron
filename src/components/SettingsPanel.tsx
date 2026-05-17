@@ -7,9 +7,21 @@ interface Props {
   settings: Settings;
   update: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   reset: () => void;
+  spotifyAuthed: boolean;
+  onReconnectSpotify: () => void;
+  onSignOutSpotify: () => void;
 }
 
-export function SettingsPanel({ open, onClose, settings, update, reset }: Props) {
+export function SettingsPanel({
+  open,
+  onClose,
+  settings,
+  update,
+  reset,
+  spotifyAuthed,
+  onReconnectSpotify,
+  onSignOutSpotify,
+}: Props) {
   return (
     <aside className={`settings-panel ${open ? 'is-open' : ''}`} aria-hidden={!open}>
       <header className="panel-header">
@@ -58,22 +70,45 @@ export function SettingsPanel({ open, onClose, settings, update, reset }: Props)
             onChange={(v) => update('trail', v)}
           />
           <Slider
-            label="Sensitivity"
+            label={settings.autoGain ? 'Sensitivity (trim)' : 'Sensitivity'}
             value={settings.sensitivity}
             min={0.5}
             max={10}
             step={0.05}
             onChange={(v) => update('sensitivity', v)}
             format={(v) => `${v.toFixed(2)}×`}
+            trailing={
+              <button
+                type="button"
+                className={`segmented-button ${settings.autoGain ? 'is-active' : ''}`}
+                onClick={() => update('autoGain', !settings.autoGain)}
+                title="Auto level: normalizes loudness across songs so quiet tracks don't disappear and loud ones don't clip"
+              >
+                Auto
+              </button>
+            }
           />
           <Slider
             label="Smoothing"
             value={settings.smoothing}
             min={0}
-            max={0.95}
+            max={.95}
             step={0.01}
             onChange={(v) => update('smoothing', v)}
           />
+          <label className="slider-row">
+            <div className="slider-labels">
+              <span>Spatial spectrum</span>
+              <button
+                type="button"
+                className={`segmented-button ${settings.spectralPosition ? 'is-active' : ''}`}
+                onClick={() => update('spectralPosition', !settings.spectralPosition)}
+                title="Low frequencies drive the left side, highs drive the right — each part of the visual reacts to the audio at its position."
+              >
+                {settings.spectralPosition ? 'On' : 'Off'}
+              </button>
+            </div>
+          </label>
         </Section>
 
         <Section title="Bars">
@@ -109,6 +144,8 @@ export function SettingsPanel({ open, onClose, settings, update, reset }: Props)
               { id: 'bars', label: 'Bars' },
               { id: 'line', label: 'Line' },
               { id: 'filled', label: 'Filled' },
+              { id: 'particles', label: 'Particles' },
+              { id: 'silk', label: 'Silk' },
             ]}
             onChange={(v) => update('waveformStyle', v as Settings['waveformStyle'])}
           />
@@ -124,6 +161,29 @@ export function SettingsPanel({ open, onClose, settings, update, reset }: Props)
             ]}
             onChange={(v) => update('background', v as Settings['background'])}
           />
+        </Section>
+
+        <Section title="Spotify">
+          <div className="settings-spotify-row">
+            <button
+              type="button"
+              className="settings-spotify-btn"
+              onClick={onReconnectSpotify}
+              title="Re-trigger Spotify OAuth — use if playlists fail to load or the token went stale."
+            >
+              {spotifyAuthed ? 'Reconnect' : 'Connect'}
+            </button>
+            {spotifyAuthed && (
+              <button
+                type="button"
+                className="settings-spotify-btn settings-spotify-btn-danger"
+                onClick={onSignOutSpotify}
+                title="Sign out — clears the stored refresh token and disconnects this Spotify account."
+              >
+                Sign out
+              </button>
+            )}
+          </div>
         </Section>
 
         <button className="reset-button" onClick={reset}>
@@ -151,15 +211,19 @@ interface SliderProps {
   step: number;
   onChange: (v: number) => void;
   format?: (v: number) => string;
+  trailing?: React.ReactNode;
 }
 
-function Slider({ label, value, min, max, step, onChange, format }: SliderProps) {
+function Slider({ label, value, min, max, step, onChange, format, trailing }: SliderProps) {
   const display = format ? format(value) : value.toFixed(2);
   return (
     <label className="slider-row">
       <div className="slider-labels">
         <span>{label}</span>
-        <span className="slider-value">{display}</span>
+        <span className="slider-value">
+          {trailing}
+          {display}
+        </span>
       </div>
       <input
         type="range"

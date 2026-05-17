@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
+import { useRenderCount } from '../perf';
 
 interface Props {
   analyser: AnalyserNode | null;
@@ -9,6 +10,8 @@ interface Props {
   bands: number[];
   /** Hex accent color from the active palette. */
   accent: string;
+  /** When false, the RAF loop is paused (window hidden). */
+  active?: boolean;
 }
 
 /**
@@ -25,7 +28,10 @@ interface Props {
  * boosting). A negative cut makes "before" TALLER than "current" (you're
  * removing energy). At 0 dB they match.
  */
-export function EqBandActivity({ analyser, bandFreqs, bands, accent }: Props) {
+export const EqBandActivity = memo(EqBandActivityImpl);
+
+function EqBandActivityImpl({ analyser, bandFreqs, bands, accent, active = true }: Props) {
+  useRenderCount('EqBandActivity');
   const containerRef = useRef<HTMLDivElement>(null);
   /* Latest band gains via ref so the RAF loop reads current values
    * without needing the effect to re-run when a slider moves. */
@@ -34,6 +40,7 @@ export function EqBandActivity({ analyser, bandFreqs, bands, accent }: Props) {
 
   useEffect(() => {
     if (!analyser) return;
+    if (!active) return;
     const container = containerRef.current;
     if (!container) return;
 
@@ -108,7 +115,7 @@ export function EqBandActivity({ analyser, bandFreqs, bands, accent }: Props) {
     };
     draw();
     return () => cancelAnimationFrame(rafId);
-  }, [analyser, bandFreqs]);
+  }, [analyser, bandFreqs, active]);
 
   const fill = hexToRgba(accent, 0.55);
   const fillDim = hexToRgba(accent, 0.08);

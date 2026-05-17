@@ -143,24 +143,73 @@ export const PALETTES: Record<PaletteId, Palette> = {
   },
 };
 
+/* ─── Gradient cache ─────────────────────────────────────────────────────
+ * Every per-frame draw style was allocating fresh CanvasGradient objects by
+ * calling ctx.createLinearGradient(). At 60 FPS across 7+ draw paths, that's
+ * ~20-30µs per frame just on GC/allocation pressure, plus a GPU sync cost.
+ *
+ * The cache keys gradients by (palette id, x0|y0, x1|y1, orientation, ctx).
+ * Since palettes and visualizer container size both change rarely, the
+ * cached gradient is reused frame-after-frame. The cache is scoped per ctx
+ * so multiple canvases (e.g. response curve + waveform) don't conflict.
+ *
+ * Hard cap of CACHE_CEILING entries per ctx, with naive eviction (drop
+ * oldest by insertion) — prevents unbounded growth from a misbehaving
+ * caller that varies the bounds every frame.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/** Either flavor of 2D canvas context — main thread or OffscreenCanvas worker. */
+export type AnyCanvasCtx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+const CACHE_CEILING = 24;
+const gradientCaches = new WeakMap<AnyCanvasCtx, Map<string, CanvasGradient>>();
+
+function getOrCreateGradient(
+  ctx: AnyCanvasCtx,
+  palette: Palette,
+  key: string,
+  build: () => CanvasGradient,
+): CanvasGradient {
+  let cache = gradientCaches.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    gradientCaches.set(ctx, cache);
+  }
+  const existing = cache.get(key);
+  if (existing) return existing;
+  if (cache.size >= CACHE_CEILING) {
+    // Drop the oldest entry (Map iteration order = insertion order).
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  const g = build();
+  for (const stop of palette.stops) g.addColorStop(stop.pos, stop.color);
+  cache.set(key, g);
+  return g;
+}
+
 export function verticalGradient(
-  ctx: CanvasRenderingContext2D,
+  ctx: AnyCanvasCtx,
   palette: Palette,
   y0: number,
   y1: number,
 ): CanvasGradient {
-  const g = ctx.createLinearGradient(0, y0, 0, y1);
-  for (const stop of palette.stops) g.addColorStop(stop.pos, stop.color);
-  return g;
+  const key = `v|${palette.id}|${y0 | 0}|${y1 | 0}`;
+  return getOrCreateGradient(ctx, palette, key, () => ctx.createLinearGradient(0, y0, 0, y1));
 }
 
 export function horizontalGradient(
-  ctx: CanvasRenderingContext2D,
+  ctx: AnyCanvasCtx,
   palette: Palette,
   x0: number,
   x1: number,
 ): CanvasGradient {
-  const g = ctx.createLinearGradient(x0, 0, x1, 0);
-  for (const stop of palette.stops) g.addColorStop(stop.pos, stop.color);
-  return g;
+  const key = `h|${palette.id}|${x0 | 0}|${x1 | 0}`;
+  return getOrCreateGradient(ctx, palette, key, () => ctx.createLinearGradient(x0, 0, x1, 0));
+}
+
+/** Clear the cache for a specific canvas context — call when the canvas
+ *  is resized (the gradient coordinates would no longer match the new size). */
+export function clearGradientCache(ctx: AnyCanvasCtx): void {
+  gradientCaches.delete(ctx);
 }

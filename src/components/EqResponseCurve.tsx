@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
+import { useRenderCount } from '../perf';
 import { combinedResponseDb, logSpacedFrequencies } from '../audio/biquadResponse';
 
 interface Props {
@@ -16,6 +17,8 @@ interface Props {
   /** Used to drive the time-averaged tonal-balance halo drawn behind the
    *  main response curve. Null when no audio source is connected. */
   analyser: AnalyserNode | null;
+  /** When false, the halo update loop is paused (window hidden). */
+  active?: boolean;
 }
 
 const SAMPLE_COUNT = 320;
@@ -33,7 +36,9 @@ const PAN_LIMIT = Math.log(2);
  *  can be inspected even though it normally sits right at the edge. */
 const PAN_DB_LIMIT = 18;
 
-export function EqResponseCurve({
+export const EqResponseCurve = memo(EqResponseCurveImpl);
+
+function EqResponseCurveImpl({
   bands,
   bandFreqs,
   Q,
@@ -43,7 +48,9 @@ export function EqResponseCurve({
   trebleEnhance = 0,
   accent,
   analyser,
+  active = true,
 }: Props) {
+  useRenderCount('EqResponseCurve');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   /** Pan offset in natural-log frequency units. Mutated by pointer events
    *  and read by draw() — using a ref avoids re-running the draw effect on
@@ -240,6 +247,9 @@ export function EqResponseCurve({
       drawRef.current();
       return;
     }
+    // When window is hidden, don't spin up the halo RAF — skips the FFT
+    // read + EMA work entirely until the user comes back.
+    if (!active) return;
     tonalRef.current = new Float32Array(analyser.frequencyBinCount);
     nyquistRef.current = analyser.context.sampleRate / 2;
     const freq = new Uint8Array(analyser.frequencyBinCount);
@@ -262,7 +272,7 @@ export function EqResponseCurve({
     };
     rafId = requestAnimationFrame(update);
     return () => cancelAnimationFrame(rafId);
-  }, [analyser]);
+  }, [analyser, active]);
 
   // Pointer handlers for click-and-drag pan + double-click reset.
   useEffect(() => {

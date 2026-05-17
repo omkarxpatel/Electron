@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   EQ_PRESETS,
   frequenciesFor,
@@ -8,6 +8,7 @@ import {
   type EQPresetId,
   type EQState,
 } from '../state/eq';
+import { useRenderCount } from '../perf';
 import { EqBandActivity } from './EqBandActivity';
 import { EqResponseCurve } from './EqResponseCurve';
 import { EnhancerPanel } from './EnhancerPanel';
@@ -20,6 +21,16 @@ interface Props {
   setBandCount: (count: BandCount) => void;
   applyPreset: (id: Exclude<EQPresetId, 'custom'>) => void;
   toggleBypass: () => void;
+  toggleBandLock: (index: number) => void;
+  toggleAiEnhance: () => void;
+  /** Per-band flags driven by the AI enhancer engine — true for ~500ms after
+   *  the engine just nudged that band. Used to flash the slider in the UI. */
+  bandAutoActive?: boolean[];
+  /** Per-band AI delta in dB (signed). Slider visually shows baseline + delta
+   *  so the thumb actually moves when the AI is adjusting. */
+  aiDelta?: number[];
+  /** When false, the response-curve halo + band-activity RAF loops are paused. */
+  active?: boolean;
   reset: () => void;
   playthrough: boolean;
   togglePlaythrough: () => void;
@@ -38,13 +49,20 @@ interface Props {
 
 const BAND_COUNTS: ReadonlyArray<BandCount> = [10, 15, 31];
 
-export function EqPanel({
+export const EqPanel = memo(EqPanelImpl);
+
+function EqPanelImpl({
   state,
   setBand,
   setPreamp,
   setBandCount,
   applyPreset,
   toggleBypass,
+  toggleBandLock,
+  toggleAiEnhance,
+  bandAutoActive,
+  aiDelta,
+  active = true,
   reset,
   playthrough,
   togglePlaythrough,
@@ -61,8 +79,21 @@ export function EqPanel({
   analyser,
 }: Props) {
   const freqs = frequenciesFor(state.bandCount);
+  useRenderCount('EqPanel');
   const Q = qFor(state.bandCount);
   const preampPercent = ((state.preamp + 12) / 24) * 100;
+
+  // Effective band values = user baseline + AI delta (clamped). The response
+  // curve and band activity bars both render from this so they reflect what
+  // the audio engine is actually applying, not just the user's baseline.
+  const effectiveBands = useMemo(() => {
+    if (!aiDelta || aiDelta.length === 0) return state.bands;
+    return state.bands.map((v, i) => {
+      const d = aiDelta[i] ?? 0;
+      const sum = v + d;
+      return sum > 12 ? 12 : sum < -12 ? -12 : sum;
+    });
+  }, [state.bands, aiDelta]);
 
   /* Multi-band drag-select.
    *
@@ -212,7 +243,7 @@ export function EqPanel({
 
       <div className="eq-curve">
         <EqResponseCurve
-          bands={state.bands}
+          bands={effectiveBands}
           bandFreqs={freqs}
           Q={Q}
           preamp={state.preamp}
@@ -221,6 +252,7 @@ export function EqPanel({
           trebleEnhance={enhancerState.bypass ? 0 : enhancerState.treble}
           accent={accent}
           analyser={analyser}
+          active={active}
         />
       </div>
 
@@ -248,17 +280,23 @@ export function EqPanel({
           <EqBandActivity
             analyser={analyser}
             bandFreqs={freqs}
-            bands={state.bands}
+            bands={effectiveBands}
             accent={accent}
+            active={active}
           />
           {state.bands.map((value, i) => (
             <BandSlider
               key={i}
               value={value}
+              delta={aiDelta?.[i] ?? 0}
               freqLabel={labelFor(freqs[i])}
               onChange={(v) => handleBandChange(i, v)}
               compact={state.bandCount === 31}
               isSelected={selectedBands.has(i)}
+              isLocked={state.locked[i] ?? false}
+              aiEnabled={state.aiEnhance}
+              isAutoActive={bandAutoActive?.[i] ?? false}
+              onToggleLock={() => toggleBandLock(i)}
               onLabelPointerDown={(e) => handleLabelPointerDown(i, e)}
               onLabelPointerEnter={(e) => handleLabelPointerEnter(i, e)}
             />
@@ -277,6 +315,14 @@ export function EqPanel({
                   {EQ_PRESETS[id].label}
                 </button>
               ))}
+              <button
+                type="button"
+                className={`eq-preset-chip eq-preset-chip-ai ${state.aiEnhance ? 'is-active' : ''}`}
+                onClick={toggleAiEnhance}
+                title="AI Enhance — adapts the EQ in real time to whatever music is playing. Lock a band (lock icon next to its label) to keep its value fixed."
+              >
+                AI Enhance
+              </button>
             </div>
             <button className="eq-reset" onClick={reset}>
               Reset
@@ -301,36 +347,55 @@ export function EqPanel({
 
 interface BandSliderProps {
   value: number;
+  /** AI per-band delta in dB (signed). Slider visually shows `value + delta`
+   *  so the thumb actually moves when the engine is adjusting. */
+  delta: number;
   freqLabel: string;
   onChange: (v: number) => void;
   compact: boolean;
   isSelected: boolean;
+  isLocked: boolean;
+  aiEnabled: boolean;
+  isAutoActive: boolean;
+  onToggleLock: () => void;
   onLabelPointerDown: (e: React.PointerEvent<HTMLSpanElement>) => void;
   onLabelPointerEnter: (e: React.PointerEvent<HTMLSpanElement>) => void;
 }
 
-function BandSlider({
+const BandSlider = memo(BandSliderImpl);
+
+function BandSliderImpl({
   value,
+  delta,
   freqLabel,
   onChange,
   compact,
   isSelected,
+  isLocked,
+  aiEnabled,
+  isAutoActive,
+  onToggleLock,
   onLabelPointerDown,
   onLabelPointerEnter,
 }: BandSliderProps) {
-  // Express position 0..1 with 0 at the center (0 dB). The CSS uses this to
-  // tint the track from the midline outward.
-  const fillFromCenter = (value / 12); // -1..+1
-  const percent = ((value + 12) / 24) * 100;
+  // Effective slider position = user baseline + AI delta, clamped to [-12, 12].
+  // When user drags, the displayed value is the new effective value; we
+  // subtract the current delta to compute the new baseline so the effective
+  // stays where they dropped it (and AI delta is paused on that band).
+  const effective = Math.max(-12, Math.min(12, value + delta));
+  const fillFromCenter = effective / 12; // -1..+1
+  const percent = ((effective + 12) / 24) * 100;
 
   return (
     <div
       className="eq-band"
-      data-positive={value > 0 ? 'true' : 'false'}
-      data-zero={value === 0 ? 'true' : 'false'}
+      data-positive={effective > 0 ? 'true' : 'false'}
+      data-zero={effective === 0 ? 'true' : 'false'}
       data-selected={isSelected ? 'true' : 'false'}
+      data-locked={isLocked ? 'true' : 'false'}
+      data-auto-active={isAutoActive ? 'true' : 'false'}
     >
-      <span className="eq-band-value">{formatDbCompact(value)}</span>
+      <span className="eq-band-value">{formatDbCompact(effective)}</span>
       <div className="eq-band-track-wrap">
         <input
           type="range"
@@ -338,8 +403,14 @@ function BandSlider({
           min={-12}
           max={12}
           step={0.5}
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
+          value={effective}
+          onChange={(e) => {
+            // Convert effective slider value back to a baseline change.
+            // (delta is held by the engine; pausing happens via the parent's
+            // setBand wrapper which calls aiHandle.noteUserTouch.)
+            const newEffective = Number(e.target.value);
+            onChange(newEffective - delta);
+          }}
           aria-label={`${freqLabel} Hz band`}
           style={{
             ['--fill' as string]: `${percent}%`,
@@ -347,6 +418,18 @@ function BandSlider({
           }}
         />
       </div>
+      {aiEnabled && (
+        <button
+          type="button"
+          className="eq-band-lock"
+          onClick={onToggleLock}
+          aria-label={isLocked ? `Unlock ${freqLabel} Hz band` : `Lock ${freqLabel} Hz band`}
+          aria-pressed={isLocked}
+          title={isLocked ? 'Locked — AI Enhancer skips this band' : 'Click to lock this band so AI Enhancer leaves it alone'}
+        >
+          <LockIcon locked={isLocked} />
+        </button>
+      )}
       <span
         className={`eq-band-label ${compact ? 'is-compact' : ''}`}
         onPointerDown={onLabelPointerDown}
@@ -367,4 +450,20 @@ function formatDb(v: number): string {
 function formatDbCompact(v: number): string {
   if (Math.abs(v) < 0.05) return '0';
   return `${v > 0 ? '+' : ''}${v.toFixed(0)}`;
+}
+
+/** Padlock icon for the per-band lock button. Closed shackle vs open
+ *  shackle distinguishes the two states; inherits currentColor so palette
+ *  theming applies. */
+function LockIcon({ locked }: { locked: boolean }) {
+  return (
+    <svg width="11" height="11" viewBox="0 0 14 14" aria-hidden fill="none">
+      <rect x="3" y="7" width="8" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
+      {locked ? (
+        <path d="M5 7V5a2 2 0 0 1 4 0v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      ) : (
+        <path d="M5 7V5a2 2 0 0 1 4 0" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      )}
+    </svg>
+  );
 }

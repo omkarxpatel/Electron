@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useRenderCount } from '../perf';
 import type { SpotifyImage, SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
 
 interface Props {
@@ -23,7 +24,9 @@ function formatDuration(ms: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function SpotifyTrackList({
+export const SpotifyTrackList = memo(SpotifyTrackListImpl);
+
+function SpotifyTrackListImpl({
   playlist,
   tracks,
   loading,
@@ -32,17 +35,34 @@ export function SpotifyTrackList({
   onLoadMore,
   hasMore,
 }: Props) {
+  useRenderCount('SpotifyTrackList');
   const scrollRef = useRef<HTMLDivElement>(null);
+  // RAF-throttle the scroll handler. Without this, fast scrolls fire onScroll
+  // dozens of times per frame, each forcing a layout read (scrollHeight,
+  // scrollTop, clientHeight) — a measurable per-event cost on long lists.
+  const scrollRafRef = useRef<number | null>(null);
 
-  // Auto-load more tracks when the user scrolls near the bottom.
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el || loading || !hasMore) return;
-    const threshold = 300; // px from bottom
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
-      onLoadMore();
-    }
+  const scheduleScrollCheck = useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = scrollRef.current;
+      if (!el || loading || !hasMore) return;
+      const threshold = 300;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
+        onLoadMore();
+      }
+    });
   }, [loading, hasMore, onLoadMore]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
 
   // Also re-check after the track list changes — sometimes the container
   // is too tall to need scrolling so the user can't trigger more loads.
@@ -53,6 +73,27 @@ export function SpotifyTrackList({
       onLoadMore();
     }
   }, [tracks.length, loading, hasMore, onLoadMore]);
+
+  // Stable per-row click handler. We need each TrackRow to receive a *stable*
+  // callback (otherwise React.memo wouldn't help — a fresh closure on every
+  // parent render would invalidate the memo). The row passes its own track
+  // back to us so we don't need to capture index in the closure.
+  const contextUri = playlist?.uri;
+  const handleRowClick = useCallback(
+    (track: SpotifyTrack) => {
+      if (!contextUri) return;
+      onPlay(track, contextUri);
+    },
+    [onPlay, contextUri],
+  );
+
+  // Stable factory of "isPlaying" — derives only from the prop, and only the
+  // matching row will see a true value, so non-matching rows skip re-renders.
+  const playingTrackId = currentlyPlayingId;
+
+  // Precompute artist-name strings once per track so the row component can
+  // skip re-doing the same map+join on every render.
+  const artistStrings = useMemo(() => tracks.map((t) => t.artists.map((a) => a.name).join(', ')), [tracks]);
 
   if (playlist === null) {
     return (
@@ -103,74 +144,85 @@ export function SpotifyTrackList({
           <div className="sp-empty-sub">No tracks in this playlist.</div>
         </div>
       ) : (
-        <div className="sp-track-scroll" ref={scrollRef} onScroll={handleScroll}>
-        <table className="sp-track-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Title</th>
-              <th>Album</th>
-              <th className="sp-track-duration">Duration</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tracks.map((track, index) => {
-              const isPlaying = track.id === currentlyPlayingId;
-              const thumbUrl = smallestImage(track.album.images);
-              const artistNames = track.artists.map((a) => a.name).join(', ');
-              return (
-                <tr
+        <div className="sp-track-scroll" ref={scrollRef} onScroll={scheduleScrollCheck}>
+          <table className="sp-track-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Title</th>
+                <th>Album</th>
+                <th className="sp-track-duration">Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tracks.map((track, index) => (
+                <TrackRow
                   key={`${track.id}-${index}`}
-                  className="sp-track-row"
-                  data-playing={isPlaying ? 'true' : 'false'}
-                  onClick={() => onPlay(track, playlist.uri)}
-                >
-                  <td className="sp-track-index">
-                    {isPlaying ? (
-                      <span className="sp-track-playing-icon">♫</span>
-                    ) : (
-                      index + 1
-                    )}
-                  </td>
-                  <td className="sp-track-title-cell">
-                    {thumbUrl ? (
-                      <img
-                        className="sp-track-thumb"
-                        src={thumbUrl}
-                        alt=""
-                        loading="lazy"
-                        draggable={false}
-                      />
-                    ) : (
-                      <div className="sp-track-thumb sp-track-thumb-fallback" />
-                    )}
-                    <div className="sp-track-text">
-                      <div className="sp-track-name">{track.name}</div>
-                      <div className="sp-track-artists">
-                        {track.explicit ? (
-                          <span className="sp-track-explicit">E</span>
-                        ) : null}
-                        {artistNames}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="sp-track-album">{track.album.name}</td>
-                  <td className="sp-track-duration">
-                    {formatDuration(track.duration_ms)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {loading && tracks.length > 0 && (
-          <div className="sp-track-loading-more">Loading more tracks…</div>
-        )}
-        {!hasMore && tracks.length > 0 && (
-          <div className="sp-track-loading-more sp-track-end">— end of playlist —</div>
-        )}
+                  track={track}
+                  index={index}
+                  artistNames={artistStrings[index]}
+                  isPlaying={track.id === playingTrackId}
+                  onClick={handleRowClick}
+                />
+              ))}
+            </tbody>
+          </table>
+          {loading && tracks.length > 0 && (
+            <div className="sp-track-loading-more">Loading more tracks…</div>
+          )}
+          {!hasMore && tracks.length > 0 && (
+            <div className="sp-track-loading-more sp-track-end">— end of playlist —</div>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+interface TrackRowProps {
+  track: SpotifyTrack;
+  index: number;
+  artistNames: string;
+  isPlaying: boolean;
+  onClick: (track: SpotifyTrack) => void;
+}
+
+const TrackRow = memo(TrackRowImpl);
+
+function TrackRowImpl({ track, index, artistNames, isPlaying, onClick }: TrackRowProps) {
+  const thumbUrl = smallestImage(track.album.images);
+  const albumName = track.album.name;
+  return (
+    <tr
+      className="sp-track-row"
+      data-playing={isPlaying ? 'true' : 'false'}
+      onClick={() => onClick(track)}
+    >
+      <td className="sp-track-index">
+        {isPlaying ? <span className="sp-track-playing-icon">♫</span> : index + 1}
+      </td>
+      <td className="sp-track-title-cell">
+        {thumbUrl ? (
+          <img
+            className="sp-track-thumb"
+            src={thumbUrl}
+            alt=""
+            loading="lazy"
+            draggable={false}
+          />
+        ) : (
+          <div className="sp-track-thumb sp-track-thumb-fallback" />
+        )}
+        <div className="sp-track-text">
+          <div className="sp-track-name">{track.name}</div>
+          <div className="sp-track-artists">
+            {track.explicit ? <span className="sp-track-explicit">E</span> : null}
+            {artistNames}
+          </div>
+        </div>
+      </td>
+      <td className="sp-track-album">{albumName}</td>
+      <td className="sp-track-duration">{formatDuration(track.duration_ms)}</td>
+    </tr>
   );
 }

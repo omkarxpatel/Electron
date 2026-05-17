@@ -12,14 +12,16 @@ export type PaletteId =
   | 'cyberpunk'
   | 'pastel'
   | 'magenta';
-export type WaveformStyle = 'ribbon' | 'radial' | 'dots' | 'mirror' | 'bars' | 'line' | 'filled' | 'spectrum';
+export type WaveformStyle = 'ribbon' | 'radial' | 'dots' | 'mirror' | 'bars' | 'line' | 'filled' | 'spectrum' | 'particles' | 'silk';
 export type SpectrumStyle = 'bars' | 'mirror' | 'curve';
 export type BackgroundStyle = 'solid' | 'glow' | 'vignette';
 
 export interface Settings {
   palette: PaletteId;
   glow: number;          // 0..1 — shadow blur strength
-  sensitivity: number;   // 0.5..3 — amplitude gain
+  sensitivity: number;   // 0.5..10 — amplitude gain (acts as trim when autoGain on)
+  autoGain: boolean;     // when true, normalize loudness song-to-song; sensitivity acts as a trim
+  spectralPosition: boolean; // map low freqs to left, highs to right; each visual reacts to the audio at its position
   trail: number;         // 0..0.6 — motion blur (alpha decay per frame)
   smoothing: number;     // 0..0.95 — temporal smoothing of bar values (higher = calmer)
   waveformStyle: WaveformStyle;
@@ -33,6 +35,8 @@ export const DEFAULT_SETTINGS: Settings = {
   palette: 'spotify',
   glow: 0.45,
   sensitivity: 1.1,
+  autoGain: true,
+  spectralPosition: true,
   trail: 0.32,
   smoothing: 0.85,
   waveformStyle: 'ribbon',

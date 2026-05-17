@@ -95,12 +95,19 @@ export interface EQState {
   preamp: number;
   /** Bands for the *currently active* count. Length === bandCount. */
   bands: number[];
+  /** Per-band lock state. Length === bandCount. When locked, the AI Enhancer
+   *  skips this band so the user's manual value is preserved. */
+  locked: boolean[];
+  /** Whether the AI Enhancer is actively adjusting bands in real time. */
+  aiEnhance: boolean;
   activePreset: EQPresetId;
 }
 
 interface PersistedState extends EQState {
   /** Cached bands for the inactive counts so switching is non-destructive. */
   cache: Partial<Record<BandCount, number[]>>;
+  /** Cached locks for inactive counts (parallel to cache). */
+  lockedCache: Partial<Record<BandCount, boolean[]>>;
 }
 
 const STORAGE_KEY = 'av.eq.v2';
@@ -109,13 +116,20 @@ function defaultBands(count: BandCount): number[] {
   return new Array(count).fill(0);
 }
 
+function defaultLocks(count: BandCount): boolean[] {
+  return new Array(count).fill(false);
+}
+
 const DEFAULT_STATE: PersistedState = {
   bandCount: 10,
   bypass: false,
   preamp: 0,
   bands: defaultBands(10),
+  locked: defaultLocks(10),
+  aiEnhance: false,
   activePreset: 'flat',
   cache: {},
+  lockedCache: {},
 };
 
 function load(): PersistedState {
@@ -132,7 +146,13 @@ function load(): PersistedState {
         Array.isArray(parsed.bands) && parsed.bands.length === bandCount
           ? parsed.bands
           : defaultBands(bandCount),
+      locked:
+        Array.isArray(parsed.locked) && parsed.locked.length === bandCount
+          ? parsed.locked
+          : defaultLocks(bandCount),
+      aiEnhance: parsed.aiEnhance ?? false,
       cache: parsed.cache ?? {},
+      lockedCache: parsed.lockedCache ?? {},
     };
   } catch {
     return DEFAULT_STATE;
@@ -158,6 +178,18 @@ export function useEQ() {
     });
   }, []);
 
+  const toggleBandLock = useCallback((index: number) => {
+    setState((s) => {
+      const next = s.locked.slice();
+      next[index] = !next[index];
+      return { ...s, locked: next };
+    });
+  }, []);
+
+  const toggleAiEnhance = useCallback(() => {
+    setState((s) => ({ ...s, aiEnhance: !s.aiEnhance }));
+  }, []);
+
   const setPreamp = useCallback((value: number) => {
     setState((s) => ({ ...s, preamp: clamp(value, -12, 12) }));
   }, []);
@@ -179,15 +211,19 @@ export function useEQ() {
   const setBandCount = useCallback((count: BandCount) => {
     setState((s) => {
       if (s.bandCount === count) return s;
-      // Stash current bands in the cache; load the requested count from cache or defaults.
       const newCache = { ...s.cache, [s.bandCount]: s.bands };
+      const newLockCache = { ...s.lockedCache, [s.bandCount]: s.locked };
       const cached = newCache[count];
+      const cachedLocks = newLockCache[count];
       const nextBands = cached && cached.length === count ? cached : defaultBands(count);
+      const nextLocks = cachedLocks && cachedLocks.length === count ? cachedLocks : defaultLocks(count);
       return {
         ...s,
         bandCount: count,
         bands: nextBands,
+        locked: nextLocks,
         cache: newCache,
+        lockedCache: newLockCache,
         activePreset: 'custom',
       };
     });
@@ -202,11 +238,24 @@ export function useEQ() {
       ...DEFAULT_STATE,
       bandCount: s.bandCount,
       bands: defaultBands(s.bandCount),
+      locked: defaultLocks(s.bandCount),
+      aiEnhance: false,
       cache: {},
+      lockedCache: {},
     }));
   }, []);
 
-  return { state, setBand, setPreamp, applyPreset, setBandCount, toggleBypass, reset };
+  return {
+    state,
+    setBand,
+    setPreamp,
+    applyPreset,
+    setBandCount,
+    toggleBypass,
+    toggleBandLock,
+    toggleAiEnhance,
+    reset,
+  };
 }
 
 export type UseEQReturn = ReturnType<typeof useEQ>;

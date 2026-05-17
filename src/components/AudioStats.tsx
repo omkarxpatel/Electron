@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
+import { useRenderCount } from '../perf';
 
 interface Props {
   analyser: AnalyserNode | null;
@@ -6,6 +7,8 @@ interface Props {
   analyserL?: AnalyserNode | null;
   /** Right-channel analyser for stereo correlation. */
   analyserR?: AnalyserNode | null;
+  /** When false, the RAF analysis loop is paused (window not visible). */
+  active?: boolean;
 }
 
 interface Stats {
@@ -31,7 +34,10 @@ const INITIAL: Stats = {
 const LEVEL_WINDOW = 12;
 const COLLAPSE_KEY = 'av.audioStats.collapsed';
 
-export function AudioStats({ analyser, analyserL, analyserR }: Props) {
+export const AudioStats = memo(AudioStatsImpl);
+
+function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props) {
+  useRenderCount('AudioStats');
   const [stats, setStats] = useState<Stats>(INITIAL);
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem(COLLAPSE_KEY) === 'true',
@@ -55,6 +61,7 @@ export function AudioStats({ analyser, analyserL, analyserR }: Props) {
       return;
     }
     if (collapsed) return;
+    if (!active) return;
 
     const time = new Uint8Array(analyser.fftSize);
     const freq = new Uint8Array(analyser.frequencyBinCount);
@@ -141,7 +148,7 @@ export function AudioStats({ analyser, analyserL, analyserR }: Props) {
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [analyser, analyserL, analyserR, collapsed]);
+  }, [analyser, analyserL, analyserR, collapsed, active]);
 
   return (
     <div className={`audio-stats ${collapsed ? 'is-collapsed' : ''}`}>

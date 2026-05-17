@@ -1,11 +1,12 @@
 import type { Settings } from '../state/settings';
+import type { AnyCanvasCtx } from './palettes';
 
 /**
  * Decay the canvas alpha to create motion trails. The canvas stays transparent,
  * so any CSS background on the stage shines through faded old frames.
  */
 export function applyTrails(
-  ctx: CanvasRenderingContext2D,
+  ctx: AnyCanvasCtx,
   width: number,
   height: number,
   trail: number,
@@ -31,7 +32,7 @@ export function glowBlur(settings: Settings): number {
 }
 
 export function roundRectPath(
-  ctx: CanvasRenderingContext2D,
+  ctx: AnyCanvasCtx,
   x: number,
   y: number,
   w: number,
@@ -49,11 +50,49 @@ export function roundRectPath(
   ctx.closePath();
 }
 
-export function setupHiDPI(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): number {
+/**
+ * Configure the canvas backing-store to match the element's CSS box at the
+ * current device pixel ratio. Re-applies the dpr transform.
+ *
+ * Returns `true` if the canvas's intrinsic dimensions actually changed —
+ * callers should use this to invalidate any caches (gradients, etc.) keyed
+ * on canvas size. Re-running setupHiDPI when nothing changed is wasted
+ * work AND a GC sync point (setting canvas.width/height clears the buffer
+ * even if assigning the same value).
+ */
+/**
+ * Worker-side counterpart to setupHiDPI. The worker can't read DPR or layout
+ * dimensions (no DOM in a worker), so the main thread passes them in and
+ * this helper applies them to the OffscreenCanvas + transform. Returns true
+ * iff dimensions actually changed (caller uses this to invalidate caches).
+ */
+export function setupOffscreenCanvas(
+  canvas: OffscreenCanvas,
+  ctx: OffscreenCanvasRenderingContext2D,
+  cssWidth: number,
+  cssHeight: number,
+  dpr: number,
+): boolean {
+  const targetW = Math.max(1, Math.round(cssWidth * dpr));
+  const targetH = Math.max(1, Math.round(cssHeight * dpr));
+  if (canvas.width === targetW && canvas.height === targetH) return false;
+  canvas.width = targetW;
+  canvas.height = targetH;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return true;
+}
+
+export function setupHiDPI(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): boolean {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  canvas.width = Math.max(1, rect.width * dpr);
-  canvas.height = Math.max(1, rect.height * dpr);
+  const targetW = Math.max(1, Math.round(rect.width * dpr));
+  const targetH = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width === targetW && canvas.height === targetH) {
+    // Nothing actually changed — skip the (expensive) buffer reallocation.
+    return false;
+  }
+  canvas.width = targetW;
+  canvas.height = targetH;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return dpr;
+  return true;
 }

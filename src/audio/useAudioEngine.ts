@@ -7,6 +7,10 @@ interface AudioEngineState {
   analyser: AnalyserNode | null;
   analyserL: AnalyserNode | null;
   analyserR: AnalyserNode | null;
+  /** Stereo analysers tapped BEFORE the EQ filters. Used by the AI enhancer
+   *  so its analysis isn't a closed feedback loop with its own corrections. */
+  preEqAnalyserL: AnalyserNode | null;
+  preEqAnalyserR: AnalyserNode | null;
   error: string | null;
   status: 'Idle' | 'Connecting' | 'Listening' | 'Error';
 }
@@ -53,15 +57,27 @@ export function useAudioEngine(
   enhancerState: EnhancerState,
   playthrough: boolean,
   outputDeviceId: string | null,
+  /** Optional AI Enhancer per-band delta (length === eqState.bandCount).
+   *  Added on top of the user's baseline band values when applying gains. */
+  aiDeltaRef: { current: number[] } | null = null,
+  aiEnabled = false,
+  aiSetTargetTau: number = PARAM_RAMP,
+  /** Input compensation gain in dB, applied right after the MediaStreamSource
+   *  (before the preamp / EQ / analysers). Used to lift quiet virtual inputs
+   *  like BlackHole back to parity with direct system audio. Default 0 dB. */
+  inputCompensationDb = 0,
 ): AudioEngineState {
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [analyserL, setAnalyserL] = useState<AnalyserNode | null>(null);
   const [analyserR, setAnalyserR] = useState<AnalyserNode | null>(null);
+  const [preEqAnalyserL, setPreEqAnalyserL] = useState<AnalyserNode | null>(null);
+  const [preEqAnalyserR, setPreEqAnalyserR] = useState<AnalyserNode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<AudioEngineState['status']>('Idle');
 
   const ctxRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const inputGainRef = useRef<GainNode | null>(null);
   const preampRef = useRef<GainNode | null>(null);
   const filtersRef = useRef<BiquadFilterNode[]>([]);
   const bassShelfRef = useRef<BiquadFilterNode | null>(null);
@@ -69,10 +85,25 @@ export function useAudioEngine(
   const trebleShelfRef = useRef<BiquadFilterNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
+  /** Brick-wall limiter sitting between masterGain and the output. Prevents
+   *  clipping no matter how the user stacks compensation + EQ + bass enhance
+   *  + volume. Without this the OS hard-clips and the result is distorted /
+   *  quieter (driver applies its own protection). */
+  const limiterRef = useRef<DynamicsCompressorNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const splitterRef = useRef<ChannelSplitterNode | null>(null);
   const analyserLRef = useRef<AnalyserNode | null>(null);
   const analyserRRef = useRef<AnalyserNode | null>(null);
+  const preEqSplitterRef = useRef<ChannelSplitterNode | null>(null);
+  const preEqAnalyserLRef = useRef<AnalyserNode | null>(null);
+  const preEqAnalyserRRef = useRef<AnalyserNode | null>(null);
+  /** Whether the pre-EQ analyser branch is currently fed by the preamp.
+   *  Detached when AI is off so the analyser nodes idle (no FFT overhead). */
+  const preEqAttachedRef = useRef(false);
+  /** Live mirror of aiEnabled so the graph-build effect can read it without
+   *  taking it as a dep (which would force a rebuild every toggle). */
+  const aiEnabledRef = useRef(aiEnabled);
+  aiEnabledRef.current = aiEnabled;
   const destinationConnectedRef = useRef(false);
 
   // Keep refs to the latest state so the graph-build effect can apply current
@@ -90,6 +121,10 @@ export function useAudioEngine(
   useEffect(() => {
     if (!stream) {
       setAnalyser(null);
+      setAnalyserL(null);
+      setAnalyserR(null);
+      setPreEqAnalyserL(null);
+      setPreEqAnalyserR(null);
       setStatus('Idle');
       return;
     }
@@ -104,6 +139,12 @@ export function useAudioEngine(
 
         const ctx = new AudioContext({ latencyHint: 'interactive' });
         const source = ctx.createMediaStreamSource(stream);
+        // Input compensation lifts quiet virtual inputs (e.g., BlackHole) up
+        // to direct-system-audio parity BEFORE anything downstream sees them.
+        // Initialized to current compensation value; updated via the effect
+        // below as the user switches between input devices.
+        const inputGain = ctx.createGain();
+        inputGain.gain.value = Math.pow(10, inputCompensationDb / 20);
         const preamp = ctx.createGain();
         preamp.gain.value = 1;
 
@@ -147,6 +188,18 @@ export function useAudioEngine(
         const masterGain = ctx.createGain();
         masterGain.gain.value = 1;
 
+        // Brick-wall limiter — protects against clipping no matter how the
+        // user stacks input compensation + EQ + enhancer + master volume.
+        // Threshold at -1 dBFS leaves max headroom for loudness while still
+        // catching peaks before OS hard-clip. High ratio + fast attack =
+        // transparent peak limit; moderate release prevents pumping.
+        const limiter = ctx.createDynamicsCompressor();
+        limiter.threshold.value = -1;
+        limiter.knee.value = 4;
+        limiter.ratio.value = 16;
+        limiter.attack.value = 0.003;
+        limiter.release.value = 0.18;
+
         const analyserNode = ctx.createAnalyser();
         analyserNode.fftSize = 2048;
         analyserNode.smoothingTimeConstant = 0.8;
@@ -161,8 +214,33 @@ export function useAudioEngine(
         analyserLNode.smoothingTimeConstant = 0.5;
         analyserRNode.smoothingTimeConstant = 0.5;
 
-        // Wire the chain: source → preamp → eq filters → bass → mid → treble → panner → volume → analyser.
-        source.connect(preamp);
+        // Pre-EQ stereo analysers — tapped between preamp and EQ filters so
+        // the AI Enhancer analyses the source music, NOT its own corrections.
+        // Without this, a band boost from the engine would increase that
+        // band's measured energy → engine cuts it back → closed feedback loop.
+        const preEqSplitter = ctx.createChannelSplitter(2);
+        const preEqAnalyserLNode = ctx.createAnalyser();
+        const preEqAnalyserRNode = ctx.createAnalyser();
+        preEqAnalyserLNode.fftSize = 2048;
+        preEqAnalyserRNode.fftSize = 2048;
+        preEqAnalyserLNode.smoothingTimeConstant = 0.5;
+        preEqAnalyserRNode.smoothingTimeConstant = 0.5;
+
+        // Wire the chain: source → inputGain → preamp → eq filters → bass → mid → treble → panner → volume → analyser.
+        source.connect(inputGain);
+        inputGain.connect(preamp);
+        // Pre-EQ analyser splitter is wired but its FEED FROM PREAMP is
+        // attached/detached dynamically based on `aiEnabled` — see the effect
+        // below. When AI is off, these analyser nodes receive no audio and
+        // their internal sliding buffers fall idle (no FFT work, no overhead).
+        preEqSplitter.connect(preEqAnalyserLNode, 0, 0);
+        preEqSplitter.connect(preEqAnalyserRNode, 1, 0);
+        if (aiEnabledRef.current) {
+          preamp.connect(preEqSplitter);
+          preEqAttachedRef.current = true;
+        } else {
+          preEqAttachedRef.current = false;
+        }
         let prev: AudioNode = preamp;
         for (const f of filters) {
           prev.connect(f);
@@ -173,15 +251,19 @@ export function useAudioEngine(
         midPeak.connect(trebleShelf);
         trebleShelf.connect(panner);
         panner.connect(masterGain);
-        masterGain.connect(analyserNode);
-        // Tap stereo channels in parallel (doesn't affect the main chain).
-        masterGain.connect(splitter);
+        // Post-master limiter — last stage before analysis/output. Visualizer
+        // + stereo splitter both read from the LIMITED signal so what you see
+        // matches what you hear.
+        masterGain.connect(limiter);
+        limiter.connect(analyserNode);
+        limiter.connect(splitter);
         splitter.connect(analyserLNode, 0, 0);
         splitter.connect(analyserRNode, 1, 0);
 
         // Stash refs
         ctxRef.current = ctx;
         sourceRef.current = source;
+        inputGainRef.current = inputGain;
         preampRef.current = preamp;
         filtersRef.current = filters;
         bassShelfRef.current = bassShelf;
@@ -189,10 +271,14 @@ export function useAudioEngine(
         trebleShelfRef.current = trebleShelf;
         pannerRef.current = panner;
         masterGainRef.current = masterGain;
+        limiterRef.current = limiter;
         analyserRef.current = analyserNode;
         splitterRef.current = splitter;
         analyserLRef.current = analyserLNode;
         analyserRRef.current = analyserRNode;
+        preEqSplitterRef.current = preEqSplitter;
+        preEqAnalyserLRef.current = preEqAnalyserLNode;
+        preEqAnalyserRRef.current = preEqAnalyserRNode;
         destinationConnectedRef.current = false;
 
         // Apply current state to fresh nodes.
@@ -210,6 +296,8 @@ export function useAudioEngine(
         setAnalyser(analyserNode);
         setAnalyserL(analyserLNode);
         setAnalyserR(analyserRNode);
+        setPreEqAnalyserL(preEqAnalyserLNode);
+        setPreEqAnalyserR(preEqAnalyserRNode);
         setStatus('Listening');
       } catch (err) {
         if (cancelled) return;
@@ -272,6 +360,64 @@ export function useAudioEngine(
     applyEqState(ctx, preamp, filters, eqState);
   }, [eqState]);
 
+  /* Input compensation — smoothly ramp the input-gain node when the
+   * compensation value changes (e.g. user switched from BlackHole to mic). */
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    const inputGain = inputGainRef.current;
+    if (!ctx || !inputGain) return;
+    const linear = Math.pow(10, inputCompensationDb / 20);
+    inputGain.gain.setTargetAtTime(linear, ctx.currentTime, PARAM_RAMP);
+  }, [inputCompensationDb]);
+
+  /* Pre-EQ analyser attach/detach — only feed the AI analyser splitter when
+   * the enhancer is enabled. When disabled, the splitter receives no audio
+   * and the downstream AnalyserNodes don't maintain any sliding buffer or
+   * burn CPU, fully offloading AI overhead. */
+  useEffect(() => {
+    const preamp = preampRef.current;
+    const splitter = preEqSplitterRef.current;
+    if (!preamp || !splitter) return;
+    if (aiEnabled && !preEqAttachedRef.current) {
+      try {
+        preamp.connect(splitter);
+        preEqAttachedRef.current = true;
+      } catch {
+        // Already connected — ignore.
+      }
+    } else if (!aiEnabled && preEqAttachedRef.current) {
+      try {
+        preamp.disconnect(splitter);
+      } catch {
+        // Not connected — ignore.
+      }
+      preEqAttachedRef.current = false;
+    }
+  }, [aiEnabled, analyser]);
+
+  /* AI Enhancer tick — when on, re-apply baseline + delta every 100 ms so
+   * the continuously-changing AI delta drives the filter gains. When off,
+   * deltaRef contents are zero and the regular eqState effect above handles
+   * everything. */
+  useEffect(() => {
+    if (!aiEnabled || !aiDeltaRef) return;
+    const id = window.setInterval(() => {
+      const ctx = ctxRef.current;
+      const filters = filtersRef.current;
+      if (!ctx || filters.length === 0) return;
+      const s = eqStateRef.current;
+      if (s.bypass) return;
+      const delta = aiDeltaRef.current;
+      const now = ctx.currentTime;
+      for (let i = 0; i < filters.length; i++) {
+        const base = s.bands[i] ?? 0;
+        const d = delta[i] ?? 0;
+        filters[i].gain.setTargetAtTime(base + d, now, aiSetTargetTau);
+      }
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [aiEnabled, aiDeltaRef, aiSetTargetTau]);
+
   useEffect(() => {
     const ctx = ctxRef.current;
     const bassShelf = bassShelfRef.current;
@@ -323,7 +469,7 @@ export function useAudioEngine(
     }
   }, [playthrough, analyser]);
 
-  return { analyser, analyserL, analyserR, error, status };
+  return { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, error, status };
 }
 
 function applyEqState(

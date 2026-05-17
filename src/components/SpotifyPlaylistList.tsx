@@ -1,6 +1,13 @@
 import { useState, type KeyboardEvent } from 'react';
 import type { SpotifyImage, SpotifyPlaylist } from '../spotify/types';
 
+interface OverlayTriggerProps {
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+  onClick: () => void;
+  'aria-expanded': boolean;
+}
+
 interface Props {
   playlists: SpotifyPlaylist[];
   selectedId: string | null;
@@ -8,6 +15,11 @@ interface Props {
   onSelect: (playlist: SpotifyPlaylist) => void;
   onReconnect: () => void;
   authing: boolean;
+  /** Hover/click handlers wired up by App.tsx — the music-icon button in
+   *  this header is the entry point for the right-side overlay (search,
+   *  future queue/library/etc.). */
+  overlayTriggerProps: OverlayTriggerProps;
+  overlayOpen: boolean;
 }
 
 const COLLAPSE_KEY = 'av.spotify.sidebarCollapsed';
@@ -25,6 +37,8 @@ export function SpotifyPlaylistList({
   onSelect,
   onReconnect,
   authing,
+  overlayTriggerProps,
+  overlayOpen,
 }: Props) {
   const showLoading = loading && playlists.length === 0;
   const showEmpty = !loading && playlists.length === 0;
@@ -45,20 +59,37 @@ export function SpotifyPlaylistList({
 
   return (
     <aside className={`sp-sidebar ${collapsed ? 'is-collapsed' : ''}`}>
-      <button
-        type="button"
-        className="sp-sidebar-header"
-        onClick={toggle}
-        aria-expanded={!collapsed}
-        title={collapsed ? 'Expand library' : 'Collapse library'}
-      >
-        <span className="sp-sidebar-header-label">
-          {collapsed && selectedName ? selectedName : 'Your Library'}
-        </span>
-        <span className="sp-sidebar-caret" aria-hidden>
-          {collapsed ? '▾' : '▴'}
-        </span>
-      </button>
+      <div className="sp-sidebar-header">
+        <button
+          type="button"
+          className="sp-sidebar-trigger"
+          data-active={overlayOpen ? 'true' : 'false'}
+          aria-label="Open Spotify search"
+          title="Hover to open Spotify search"
+          {...overlayTriggerProps}
+        >
+          <IconMusic />
+        </button>
+        {collapsed && selectedName ? (
+          <span className="sp-sidebar-selected-name" title={selectedName}>
+            {selectedName}
+          </span>
+        ) : (
+          <span className="sp-sidebar-spacer" aria-hidden />
+        )}
+        <button
+          type="button"
+          className="sp-sidebar-collapse"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? 'Expand playlists' : 'Collapse playlists'}
+          title={collapsed ? 'Expand playlists' : 'Collapse playlists'}
+        >
+          <span className="sp-sidebar-caret" aria-hidden>
+            {collapsed ? '▾' : '▴'}
+          </span>
+        </button>
+      </div>
       {collapsed ? null : showLoading ? (
         <div className="sp-sidebar-empty">Loading playlists…</div>
       ) : showEmpty ? (
@@ -122,5 +153,25 @@ export function SpotifyPlaylistList({
         </ul>
       )}
     </aside>
+  );
+}
+
+function IconMusic() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
   );
 }
