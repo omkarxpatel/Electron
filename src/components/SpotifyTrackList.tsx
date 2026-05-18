@@ -1,8 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRenderCount } from '../perf';
 import type { SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
 import { formatDuration } from '../shared/format';
 import { smallestImage } from '../shared/image';
+import { ContextMenu, type ContextMenuItem } from './ContextMenu';
+import { addToQueue } from '../spotify/api';
 
 interface Props {
   playlist: SpotifyPlaylist | null;
@@ -12,6 +14,12 @@ interface Props {
   onPlay: (track: SpotifyTrack, contextUri: string) => void;
   onLoadMore: () => void;
   hasMore: boolean;
+}
+
+interface MenuState {
+  x: number;
+  y: number;
+  track: SpotifyTrack;
 }
 
 export const SpotifyTrackList = memo(SpotifyTrackListImpl);
@@ -76,6 +84,31 @@ function SpotifyTrackListImpl({
     },
     [onPlay, contextUri],
   );
+
+  // Right-click → context menu state lives here so closing the menu doesn't
+  // re-render every row. Stable handler factory pattern same as handleRowClick.
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const handleRowContextMenu = useCallback(
+    (track: SpotifyTrack, e: React.MouseEvent) => {
+      e.preventDefault();
+      setMenu({ x: e.clientX, y: e.clientY, track });
+    },
+    [],
+  );
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!menu) return [];
+    return [
+      {
+        label: 'Add to queue',
+        onClick: () => {
+          void addToQueue(menu.track.uri).catch((err) => {
+            console.error('addToQueue failed:', err);
+          });
+        },
+      },
+    ];
+  }, [menu]);
 
   // Stable factory of "isPlaying" — derives only from the prop, and only the
   // matching row will see a true value, so non-matching rows skip re-renders.
@@ -153,6 +186,7 @@ function SpotifyTrackListImpl({
                   artistNames={artistStrings[index]}
                   isPlaying={track.id === playingTrackId}
                   onClick={handleRowClick}
+                  onContextMenu={handleRowContextMenu}
                 />
               ))}
             </tbody>
@@ -165,6 +199,10 @@ function SpotifyTrackListImpl({
           )}
         </div>
       )}
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />
+      )}
     </div>
   );
 }
@@ -175,11 +213,12 @@ interface TrackRowProps {
   artistNames: string;
   isPlaying: boolean;
   onClick: (track: SpotifyTrack) => void;
+  onContextMenu: (track: SpotifyTrack, e: React.MouseEvent) => void;
 }
 
 const TrackRow = memo(TrackRowImpl);
 
-function TrackRowImpl({ track, index, artistNames, isPlaying, onClick }: TrackRowProps) {
+function TrackRowImpl({ track, index, artistNames, isPlaying, onClick, onContextMenu }: TrackRowProps) {
   const thumbUrl = smallestImage(track.album.images);
   const albumName = track.album.name;
   return (
@@ -187,6 +226,7 @@ function TrackRowImpl({ track, index, artistNames, isPlaying, onClick }: TrackRo
       className="sp-track-row"
       data-playing={isPlaying ? 'true' : 'false'}
       onClick={() => onClick(track)}
+      onContextMenu={(e) => onContextMenu(track, e)}
     >
       <td className="sp-track-index">
         {isPlaying ? <span className="sp-track-playing-icon">♫</span> : index + 1}

@@ -188,19 +188,23 @@ export function useAudioEngine(
         const masterGain = ctx.createGain();
         masterGain.gain.value = 1;
 
-        // Limiter — interim brick-wall behavior via DynamicsCompressor.
-        // True brick-wall limiting requires an AudioWorklet (Phase 4); these
-        // params trade a small loss in transparency for headroom against the
-        // worst-case stack: +6 dB BlackHole + +12 dB preamp + +12 dB band +
-        // +12 dB enhancer + 150 % volume. Threshold -3 keeps output clear of
-        // 0 dBFS even when peaks overshoot the ratio response curve; release
-        // 0.25 reduces audible pumping on bass-heavy material.
+        // Limiter — interim peak catcher via DynamicsCompressor. True
+        // brick-wall limiting requires an AudioWorklet (Phase 4).
         const limiter = ctx.createDynamicsCompressor();
-        limiter.threshold.value = -3;
+        // Tuned as a peak catcher, not a loudness compressor:
+        //   threshold -1 dBFS = digital headroom ceiling, only true peaks engage
+        //   knee 2          = soft transition over ±1 dB around threshold
+        //   ratio 20        = effectively brick-wall for typical music transients
+        //   attack 0.002s   = grabs fast enough to catch the first sample peak
+        //   release 0.05s   = recovers in ~50ms so steady-state material isn't held down
+        // Previous release of 0.25s held GR for a quarter second after each peak,
+        // costing ~3 dB of average loudness on mastered music. Phase 4 will
+        // replace this with a real lookahead brick-wall AudioWorklet.
+        limiter.threshold.value = -1;
         limiter.knee.value = 2;
         limiter.ratio.value = 20;
         limiter.attack.value = 0.002;
-        limiter.release.value = 0.25;
+        limiter.release.value = 0.05;
 
         const analyserNode = ctx.createAnalyser();
         analyserNode.fftSize = 2048;
@@ -232,7 +236,24 @@ export function useAudioEngine(
         preEqAnalyserLNode.smoothingTimeConstant = 0.5;
         preEqAnalyserRNode.smoothingTimeConstant = 0.5;
 
-        // Wire the chain: source → inputGain → preamp → eq filters → bass → mid → treble → panner → volume → analyser.
+        // Wire the chain:
+        //   source → inputGain → preamp → eq filters → bass → mid → treble
+        //         → panner → limiter → analyser → splitter (taps)
+        //                                    └─→ masterGain → destination
+        //
+        // The limiter sits BEFORE masterGain so it only protects against
+        // stage-overflow (preamp + EQ + enhancer can stack +30+ dB cumulative)
+        // without compressing the user's volume knob. masterGain is the LAST
+        // stage before the destination, so the volume control is a literal
+        // multiplier: 250 % = 2.5×, even if that drives the digital output
+        // above 0 dBFS and clips. The user asked for it explicitly — they get
+        // it. The OS / hardware soft-clips loud transients, the user backs
+        // off the knob if they don't like it.
+        //
+        // The analyser + stereo splitter tap from the LIMITED signal so the
+        // visualizer reflects the audio content, not the user's chosen output
+        // amplitude. (If we tapped after masterGain, the visualizer would die
+        // at volume = 0 even though the audio is fine.)
         source.connect(inputGain);
         inputGain.connect(preamp);
         // Pre-EQ analyser splitter is wired but its FEED FROM PREAMP is
@@ -256,13 +277,10 @@ export function useAudioEngine(
         bassShelf.connect(midPeak);
         midPeak.connect(trebleShelf);
         trebleShelf.connect(panner);
-        panner.connect(masterGain);
-        // Post-master limiter — last stage before analysis/output. Visualizer
-        // + stereo splitter both read from the LIMITED signal so what you see
-        // matches what you hear.
-        masterGain.connect(limiter);
+        panner.connect(limiter);
         limiter.connect(analyserNode);
         limiter.connect(splitter);
+        analyserNode.connect(masterGain);
         splitter.connect(analyserLNode, 0, 0);
         splitter.connect(analyserRNode, 1, 0);
 
@@ -485,15 +503,15 @@ export function useAudioEngine(
 
   useEffect(() => {
     const ctx = ctxRef.current;
-    const analyserNode = analyserRef.current;
-    if (!ctx || !analyserNode) return;
+    const masterGain = masterGainRef.current;
+    if (!ctx || !masterGain) return;
 
     if (playthrough && !destinationConnectedRef.current) {
-      analyserNode.connect(ctx.destination);
+      masterGain.connect(ctx.destination);
       destinationConnectedRef.current = true;
     } else if (!playthrough && destinationConnectedRef.current) {
       try {
-        analyserNode.disconnect(ctx.destination);
+        masterGain.disconnect(ctx.destination);
       } catch {
         // ignore
       }

@@ -81,9 +81,21 @@ export function useAudioSource() {
 
       // `video: true` is required for ScreenCaptureKit to deliver audio on macOS.
       // We drop the video track immediately afterward.
+      //
+      // The explicit `audio` constraints are LOAD-BEARING. With `audio: true`
+      // (defaults), Chromium applies AGC + EC + NS to the captured stream AND
+      // collapses it to mono — measured ~7.5 dB RMS loss against an explicit
+      // all-off request. AGC is meant for microphone capture; on a system-
+      // loopback stream it's pure attenuation. With AGC off the stream comes
+      // back as stereo naturally, so we don't need to specify channelCount.
+      // The device-input path (getUserMedia below) already disables all three.
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
-        audio: true,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
       });
 
       const audioTracks = stream.getAudioTracks();

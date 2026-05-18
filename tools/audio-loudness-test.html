@@ -1,0 +1,367 @@
+<!doctype html>
+<!--
+  Standalone loudness diagnostic. Does NOT touch the app.
+  Open this file directly in Chrome / Edge / any Chromium:
+      open "tools/audio-loudness-test.html"
+  Or drag it onto a browser window.
+
+  TWO independent tests:
+    [A] Synthetic limiter A/B — instant, deterministic, no audio capture needed.
+        Compares the app's current DynamicsCompressor settings against a relaxed
+        candidate. Pure math: feeds a 1 kHz sine at known dBFS levels through
+        each config (via OfflineAudioContext) and reports the output peak + RMS.
+    [B] AGC capture test — interactive. Captures audio twice via
+        getDisplayMedia: once with default constraints (likely AGC on), once
+        with AGC/EC/NS explicitly off. Reports the captured peak + RMS for each.
+        Play a Spotify track at a steady level during BOTH captures.
+
+  Both tests print numbers to the page. Send the numbers back; that's the
+  diagnosis.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Audio Visualizer — loudness diagnostic</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      background: #0a0a0a; color: #eee; margin: 0; padding: 32px 40px;
+      max-width: 860px;
+    }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    h2 { font-size: 14px; margin: 28px 0 8px; color: #aaa; text-transform: uppercase; letter-spacing: 0.08em; }
+    p, li { font-size: 13px; line-height: 1.55; color: #ccc; }
+    code { background: #1a1a1a; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+    button {
+      background: #1dd760; color: #000; border: 0; padding: 10px 18px;
+      border-radius: 999px; font-weight: 600; font-size: 13px; cursor: pointer;
+      margin: 6px 8px 6px 0;
+    }
+    button:hover { background: #1ed661; }
+    button:disabled { background: #333; color: #777; cursor: not-allowed; }
+    button.secondary { background: #2a2a2a; color: #eee; }
+    button.secondary:hover { background: #333; }
+    pre.out {
+      background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 6px;
+      padding: 14px 18px; font-size: 12px; color: #d0ffd0;
+      white-space: pre-wrap; min-height: 60px; overflow-x: auto;
+    }
+    .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .stat { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <h1>Audio Visualizer — loudness diagnostic</h1>
+  <p>Self-contained. Doesn't touch the app. Two tests below. Run both, paste the output back.</p>
+
+  <h2>[A] Synthetic limiter A/B (instant)</h2>
+  <p>
+    Feeds a 1 kHz sine at four levels (0, −3, −6, −12 dBFS) through the app's
+    current limiter and a relaxed candidate. Pure math via OfflineAudioContext.
+    No audio capture, no permissions. Tells us how much loudness the current
+    limiter is costing.
+  </p>
+  <div class="row">
+    <button id="runSynth">Run synthetic limiter test</button>
+  </div>
+  <pre class="out" id="outSynth">(not run yet)</pre>
+
+  <h2>[B] AGC capture test (interactive)</h2>
+  <p>
+    Captures audio twice via <code>getDisplayMedia</code>. First call uses
+    default constraints (likely AGC on); second uses explicit
+    <code>{autoGainControl:false, echoCancellation:false, noiseSuppression:false}</code>.
+    Each capture runs for <strong>6 seconds</strong>. Reports captured peak + RMS.
+  </p>
+  <ol>
+    <li>Open Spotify (web or app) and start playing a track at a steady level.
+        <strong>Don't change anything between the two captures.</strong></li>
+    <li>Click <em>Capture #1 (defaults)</em>. When the browser prompts to share,
+        pick <em>This Tab</em> with <strong>"Also share tab audio"</strong> on,
+        or pick <em>Entire Screen</em> with <strong>"Share system audio"</strong> on
+        (the wording varies by Chromium version).</li>
+    <li>Wait for the 6-second measurement to finish.</li>
+    <li>Click <em>Capture #2 (AGC off)</em> and repeat with the same source.</li>
+    <li>Compare the two rows.</li>
+  </ol>
+  <div class="row">
+    <button id="runCap1">Capture #1 (defaults)</button>
+    <button id="runCap2" class="secondary">Capture #2 (AGC off)</button>
+  </div>
+  <pre class="out" id="outCap">(not run yet)</pre>
+
+  <h2>How to send the results back</h2>
+  <p>
+    Copy the contents of both <code>&lt;pre&gt;</code> blocks above and paste
+    them into the chat. The numbers are all that's needed.
+  </p>
+
+<script type="module">
+  // ── small helpers ─────────────────────────────────────────────────────────
+  const log10 = Math.log10 || ((x) => Math.log(x) / Math.LN10);
+  const dbfs = (lin) => (lin <= 0 ? -Infinity : 20 * log10(lin));
+  const fmt = (n) => (Number.isFinite(n) ? n.toFixed(2) : 'silence');
+
+  function measure(buf) {
+    // Channel 0 only; mono signal so no need to combine channels.
+    const data = buf.getChannelData(0);
+    let peak = 0;
+    let sumSq = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = Math.abs(data[i]);
+      if (v > peak) peak = v;
+      sumSq += data[i] * data[i];
+    }
+    const rms = Math.sqrt(sumSq / data.length);
+    return { peakDb: dbfs(peak), rmsDb: dbfs(rms) };
+  }
+
+  // ── synthetic limiter test ────────────────────────────────────────────────
+  // Render 2 s of 1 kHz sine at `levelDb` through a DynamicsCompressor with
+  // the given config, return measured peak + RMS in dBFS.
+  async function renderThroughLimiter(levelDb, cfg) {
+    const sr = 48000;
+    const seconds = 2;
+    const ctx = new OfflineAudioContext({
+      numberOfChannels: 1,
+      length: sr * seconds,
+      sampleRate: sr,
+    });
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 1000;
+    const gain = ctx.createGain();
+    gain.gain.value = Math.pow(10, levelDb / 20);
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = cfg.threshold;
+    limiter.knee.value = cfg.knee;
+    limiter.ratio.value = cfg.ratio;
+    limiter.attack.value = cfg.attack;
+    limiter.release.value = cfg.release;
+    osc.connect(gain).connect(limiter).connect(ctx.destination);
+    osc.start();
+    const buf = await ctx.startRendering();
+    // Skip the first 200 ms — limiter is still settling.
+    const skip = Math.floor(0.2 * sr);
+    const settled = ctx.createBuffer(1, buf.length - skip, sr);
+    settled.copyToChannel(buf.getChannelData(0).subarray(skip), 0);
+    return measure(settled);
+  }
+
+  // Also: a pink-noise-ish test, closer to music. We approximate pink noise
+  // by summing octaves of white noise; not perfect, but spectrally weighted.
+  async function renderNoiseThroughLimiter(levelDb, cfg) {
+    const sr = 48000;
+    const seconds = 2;
+    const ctx = new OfflineAudioContext({
+      numberOfChannels: 1,
+      length: sr * seconds,
+      sampleRate: sr,
+    });
+    // Pre-baked pink-ish noise buffer.
+    const noiseBuf = ctx.createBuffer(1, sr * seconds, sr);
+    const ch = noiseBuf.getChannelData(0);
+    // Voss-McCartney-style approximation, simplified.
+    let b0 = 0, b1 = 0, b2 = 0;
+    for (let i = 0; i < ch.length; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99765 * b0 + white * 0.0990460;
+      b1 = 0.96300 * b1 + white * 0.2965164;
+      b2 = 0.57000 * b2 + white * 1.0526913;
+      ch[i] = (b0 + b1 + b2 + white * 0.1848) * 0.11;
+    }
+    // Normalize peak to 0 dBFS, then scale to target level.
+    let peak = 0;
+    for (let i = 0; i < ch.length; i++) if (Math.abs(ch[i]) > peak) peak = Math.abs(ch[i]);
+    const norm = (1 / peak) * Math.pow(10, levelDb / 20);
+    for (let i = 0; i < ch.length; i++) ch[i] *= norm;
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = cfg.threshold;
+    limiter.knee.value = cfg.knee;
+    limiter.ratio.value = cfg.ratio;
+    limiter.attack.value = cfg.attack;
+    limiter.release.value = cfg.release;
+    src.connect(limiter).connect(ctx.destination);
+    src.start();
+    const buf = await ctx.startRendering();
+    const skip = Math.floor(0.2 * sr);
+    const settled = ctx.createBuffer(1, buf.length - skip, sr);
+    settled.copyToChannel(buf.getChannelData(0).subarray(skip), 0);
+    return measure(settled);
+  }
+
+  const CURRENT = { threshold: -3, knee: 2, ratio: 20, attack: 0.002, release: 0.25 };
+  const PROPOSED = { threshold: -1, knee: 2, ratio: 20, attack: 0.002, release: 0.05 };
+
+  document.getElementById('runSynth').addEventListener('click', async () => {
+    const out = document.getElementById('outSynth');
+    out.textContent = 'Running…';
+    const levels = [0, -3, -6, -12];
+    const lines = [];
+    lines.push(`Current  : threshold ${CURRENT.threshold} dBFS, ratio ${CURRENT.ratio}, knee ${CURRENT.knee}, attack ${CURRENT.attack*1000}ms, release ${CURRENT.release*1000}ms`);
+    lines.push(`Proposed : threshold ${PROPOSED.threshold} dBFS, ratio ${PROPOSED.ratio}, knee ${PROPOSED.knee}, attack ${PROPOSED.attack*1000}ms, release ${PROPOSED.release*1000}ms`);
+    lines.push('');
+    lines.push('=== 1 kHz sine ===');
+    lines.push('input  |  current peak / RMS  |  proposed peak / RMS  |  Δ peak  |  Δ RMS');
+    for (const level of levels) {
+      const cur = await renderThroughLimiter(level, CURRENT);
+      const pro = await renderThroughLimiter(level, PROPOSED);
+      const dPeak = pro.peakDb - cur.peakDb;
+      const dRms = pro.rmsDb - cur.rmsDb;
+      lines.push(
+        `${String(level).padStart(4)} dB | ` +
+        `${fmt(cur.peakDb).padStart(7)} / ${fmt(cur.rmsDb).padStart(7)} | ` +
+        `${fmt(pro.peakDb).padStart(7)} / ${fmt(pro.rmsDb).padStart(7)} | ` +
+        `${(dPeak >= 0 ? '+' : '') + fmt(dPeak).padStart(6)} | ` +
+        `${(dRms >= 0 ? '+' : '') + fmt(dRms).padStart(6)}`
+      );
+    }
+    lines.push('');
+    lines.push('=== Pink-ish noise (music-like spectrum) ===');
+    lines.push('input  |  current peak / RMS  |  proposed peak / RMS  |  Δ peak  |  Δ RMS');
+    for (const level of levels) {
+      const cur = await renderNoiseThroughLimiter(level, CURRENT);
+      const pro = await renderNoiseThroughLimiter(level, PROPOSED);
+      const dPeak = pro.peakDb - cur.peakDb;
+      const dRms = pro.rmsDb - cur.rmsDb;
+      lines.push(
+        `${String(level).padStart(4)} dB | ` +
+        `${fmt(cur.peakDb).padStart(7)} / ${fmt(cur.rmsDb).padStart(7)} | ` +
+        `${fmt(pro.peakDb).padStart(7)} / ${fmt(pro.rmsDb).padStart(7)} | ` +
+        `${(dPeak >= 0 ? '+' : '') + fmt(dPeak).padStart(6)} | ` +
+        `${(dRms >= 0 ? '+' : '') + fmt(dRms).padStart(6)}`
+      );
+    }
+    out.textContent = lines.join('\n');
+  });
+
+  // ── AGC capture test ──────────────────────────────────────────────────────
+  // Capture audio for `seconds` and return measured peak + RMS dBFS.
+  async function captureAndMeasure(audioConstraints, seconds = 6) {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: audioConstraints,
+    });
+    // Drop video.
+    for (const t of stream.getVideoTracks()) { t.stop(); stream.removeTrack(t); }
+    if (stream.getAudioTracks().length === 0) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error('No audio track returned. Make sure "Share tab audio" or "Share system audio" was enabled.');
+    }
+    const track = stream.getAudioTracks()[0];
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    src.connect(analyser);
+    // Sample peak + RMS over `seconds` of capture, every 20 ms.
+    const buf = new Float32Array(analyser.fftSize);
+    let peak = 0;
+    let sumSq = 0;
+    let n = 0;
+    const t0 = performance.now();
+    return new Promise((resolve, reject) => {
+      const tick = () => {
+        try {
+          analyser.getFloatTimeDomainData(buf);
+          for (let i = 0; i < buf.length; i++) {
+            const v = Math.abs(buf[i]);
+            if (v > peak) peak = v;
+            sumSq += buf[i] * buf[i];
+          }
+          n += buf.length;
+          if (performance.now() - t0 < seconds * 1000) {
+            requestAnimationFrame(tick);
+          } else {
+            stream.getTracks().forEach((t) => t.stop());
+            track.stop();
+            ctx.close();
+            const rms = Math.sqrt(sumSq / n);
+            // Note any track settings the browser exposed — useful diagnostic.
+            const settings = track.getSettings();
+            resolve({
+              peakDb: dbfs(peak),
+              rmsDb: dbfs(rms),
+              constraints: audioConstraints,
+              trackSettings: settings,
+            });
+          }
+        } catch (err) {
+          reject(err);
+        }
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
+  let cap1 = null;
+  let cap2 = null;
+
+  function renderCapResult() {
+    const out = document.getElementById('outCap');
+    const lines = [];
+    if (cap1) {
+      lines.push('Capture #1 (defaults — audio: true):');
+      lines.push(`  peak = ${fmt(cap1.peakDb)} dBFS    RMS = ${fmt(cap1.rmsDb)} dBFS`);
+      lines.push(`  trackSettings: ${JSON.stringify(cap1.trackSettings)}`);
+    }
+    if (cap2) {
+      lines.push('');
+      lines.push('Capture #2 (AGC/EC/NS off):');
+      lines.push(`  peak = ${fmt(cap2.peakDb)} dBFS    RMS = ${fmt(cap2.rmsDb)} dBFS`);
+      lines.push(`  trackSettings: ${JSON.stringify(cap2.trackSettings)}`);
+    }
+    if (cap1 && cap2) {
+      lines.push('');
+      lines.push(`Δ peak (cap2 - cap1) = ${fmt(cap2.peakDb - cap1.peakDb)} dB`);
+      lines.push(`Δ RMS  (cap2 - cap1) = ${fmt(cap2.rmsDb  - cap1.rmsDb )} dB`);
+      lines.push('');
+      lines.push('Interpretation:');
+      lines.push('  > +3 dB louder on cap2 → AGC is engaged on the defaults path. Fixing constraints will recover that gain.');
+      lines.push('  ~ 0  dB                → AGC isn\'t the culprit (Electron loopback may bypass it). Look elsewhere.');
+    }
+    if (!cap1 && !cap2) lines.push('(not run yet)');
+    out.textContent = lines.join('\n');
+  }
+
+  document.getElementById('runCap1').addEventListener('click', async () => {
+    const btn = document.getElementById('runCap1');
+    btn.disabled = true;
+    document.getElementById('outCap').textContent = 'Capture #1 in progress — pick the source and wait 6 s…';
+    try {
+      cap1 = await captureAndMeasure({}, 6);  // defaults
+    } catch (err) {
+      document.getElementById('outCap').textContent = 'Capture #1 failed: ' + (err.message || err);
+      btn.disabled = false;
+      return;
+    }
+    btn.disabled = false;
+    renderCapResult();
+  });
+
+  document.getElementById('runCap2').addEventListener('click', async () => {
+    const btn = document.getElementById('runCap2');
+    btn.disabled = true;
+    document.getElementById('outCap').textContent =
+      (cap1 ? document.getElementById('outCap').textContent + '\n\n' : '') +
+      'Capture #2 in progress — pick the source and wait 6 s…';
+    try {
+      cap2 = await captureAndMeasure({
+        autoGainControl: false,
+        echoCancellation: false,
+        noiseSuppression: false,
+      }, 6);
+    } catch (err) {
+      document.getElementById('outCap').textContent = 'Capture #2 failed: ' + (err.message || err);
+      btn.disabled = false;
+      return;
+    }
+    btn.disabled = false;
+    renderCapResult();
+  });
+</script>
+</body>
+</html>

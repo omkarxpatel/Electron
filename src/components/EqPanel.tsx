@@ -13,6 +13,7 @@ import { EqBandActivity } from './EqBandActivity';
 import { EqResponseCurve } from './EqResponseCurve';
 import { EnhancerPanel } from './EnhancerPanel';
 import type { EnhancerState } from '../state/enhancer';
+import type { PaletteId } from '../state/settings';
 
 interface Props {
   state: EQState;
@@ -44,6 +45,9 @@ interface Props {
   toggleEnhancerBypass: () => void;
   resetEnhancer: () => void;
   accent: string;
+  /** Active visualizer palette — threaded down so the EQ band activity bars
+   *  render with a per-band gradient matching the visualizer below. */
+  paletteId: PaletteId;
   analyser: AnalyserNode | null;
 }
 
@@ -76,6 +80,7 @@ function EqPanelImpl({
   toggleEnhancerBypass,
   resetEnhancer,
   accent,
+  paletteId,
   analyser,
 }: Props) {
   const freqs = frequenciesFor(state.bandCount);
@@ -288,7 +293,7 @@ function EqPanelImpl({
             analyser={analyser}
             bandFreqs={freqs}
             bands={effectiveBands}
-            accent={accent}
+            paletteId={paletteId}
             active={active}
           />
           {state.bands.map((value, i) => (

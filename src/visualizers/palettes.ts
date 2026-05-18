@@ -158,6 +158,46 @@ export const PALETTES: Record<PaletteId, Palette> = {
  * caller that varies the bounds every frame.
  * ─────────────────────────────────────────────────────────────────────── */
 
+/** Sample a palette at position `t ∈ [0, 1]` and return an `rgb(...)` string.
+ *  Linear interpolation between adjacent stops in RGB space — good enough for
+ *  UI accents and the per-band EQ activity coloring (where we need a non-
+ *  canvas color string). For canvas use, prefer the cached gradient helpers
+ *  below since they let the GPU do the interpolation. */
+export function sampleAt(palette: Palette, t: number): string {
+  const stops = palette.stops;
+  if (stops.length === 0) return '#1ed760';
+  if (stops.length === 1) return stops[0].color;
+  const clamped = Math.max(0, Math.min(1, t));
+  // Find the bracketing pair. Stops are stored in increasing pos order, so a
+  // linear scan is fast enough for the typical 2-4 stop palettes.
+  let lo = stops[0];
+  let hi = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (clamped >= stops[i].pos && clamped <= stops[i + 1].pos) {
+      lo = stops[i];
+      hi = stops[i + 1];
+      break;
+    }
+  }
+  const span = hi.pos - lo.pos;
+  const local = span <= 0 ? 0 : (clamped - lo.pos) / span;
+  const [lr, lg, lb] = hexToRgbTriplet(lo.color);
+  const [hr, hg, hb] = hexToRgbTriplet(hi.color);
+  const r = Math.round(lr + (hr - lr) * local);
+  const g = Math.round(lg + (hg - lg) * local);
+  const b = Math.round(lb + (hb - lb) * local);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+function hexToRgbTriplet(hex: string): [number, number, number] {
+  if (!hex.startsWith('#') || hex.length !== 7) return [29, 215, 96];
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
 /** Either flavor of 2D canvas context — main thread or OffscreenCanvas worker. */
 export type AnyCanvasCtx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 

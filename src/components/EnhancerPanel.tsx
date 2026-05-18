@@ -84,7 +84,7 @@ function EnhancerPanelImpl({
           label="Volume"
           value={state.volume}
           min={0}
-          max={150}
+          max={250}
           defaultValue={100}
           size={KNOB_SIZE}
           format={(v) => `${v.toFixed(0)}%`}

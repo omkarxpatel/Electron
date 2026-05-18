@@ -3,6 +3,7 @@ import { EqPanel } from './EqPanel';
 import { useAiEnhancer } from '../audio/useAiEnhancer';
 import { frequenciesFor, type UseEQReturn } from '../state/eq';
 import type { UseEnhancerReturn } from '../state/enhancer';
+import type { PaletteId } from '../state/settings';
 
 /**
  * Owns the AI-Enhancer plumbing (useAiEnhancer + the threshold-diff onTick
@@ -43,6 +44,7 @@ interface Props {
   togglePlaythrough: () => void;
   hasSource: boolean;
   accent: string;
+  paletteId: PaletteId;
 }
 
 const AI_DELTA_THRESHOLD_DB = 0.05;
@@ -60,6 +62,7 @@ export function EqSection({
   togglePlaythrough,
   hasSource,
   accent,
+  paletteId,
 }: Props) {
   // Per-band AI delta mirrored from the engine's ref into React state so
   // the slider thumbs visually follow the AI's adjustments. Updated 10×/sec
@@ -186,6 +189,7 @@ export function EqSection({
       toggleEnhancerBypass={enhancer.toggleBypass}
       resetEnhancer={enhancer.reset}
       accent={accent}
+      paletteId={paletteId}
       analyser={analyser}
     />
   );

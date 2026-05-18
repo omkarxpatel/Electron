@@ -211,6 +211,7 @@ function AppContent() {
               togglePlaythrough={handleTogglePlaythrough}
               hasSource={hasSource}
               accent={accent}
+              paletteId={settings.palette}
             />
 
             <SpotifySection active={isActive} />

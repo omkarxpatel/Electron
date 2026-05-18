@@ -2130,6 +2130,34 @@
   font-size: 11.5px;
 }
 
+/* Per-row origin badge — distinguishes manually-queued items from
+   context auto-continuation. Manually-queued tracks (via right-click
+   "Add to queue") get the accent color; auto-continuation gets a
+   muted neutral. Items the user queued in another Spotify client
+   render as "Auto" because we have no signal to identify them. */
+.sp-queue-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.sp-queue-badge-queued {
+  background: var(--accent-soft-bg);
+  color: var(--accent-bright);
+  border: 1px solid var(--accent-border);
+}
+
+.sp-queue-badge-auto {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 /* ─── Search bar (rendered inside the overlay) ─── */
 .sp-search-bar {
   flex: 0 0 38px;
@@ -3519,4 +3547,54 @@
 
 .main-area > .sp-onboarding {
   margin: auto;
+}
+
+/* ============================================================
+   ContextMenu — portal-rendered, viewport-positioned. Mounted at
+   document.body so it isn't clipped by overflow ancestors.
+   ============================================================ */
+
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 168px;
+  padding: 4px;
+  background: #181818;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  color: #eee;
+  user-select: none;
+  animation: context-menu-in 90ms ease-out;
+}
+
+@keyframes context-menu-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+.context-menu-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: var(--accent-soft-bg);
+  color: var(--accent-bright);
+}
+
+.context-menu-item:disabled {
+  color: #666;
+  cursor: not-allowed;
 }

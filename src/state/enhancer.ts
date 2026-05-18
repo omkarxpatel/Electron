@@ -8,8 +8,13 @@ import { useCallback, useEffect, useState } from 'react';
  *   bass    : low-shelf at 80 Hz, ±12 dB
  *   mid     : peaking at 1 kHz,   ±12 dB, Q ≈ 1
  *   treble  : high-shelf at 10 kHz, ±12 dB
- *   volume  : master output, 0..150 (% of unity)
+ *   volume  : master output, 0..250 (% of unity, i.e. -∞ dB to +8 dB)
  *   balance : stereo pan, -100 (full L) .. +100 (full R)
+ *
+ * The 250 % ceiling pairs with the limiter (threshold -1 dBFS): the limiter
+ * clamps peaks while the average level keeps rising roughly dB-for-dB with
+ * masterGain. Past ~250 % the average enters the limiter knee and you get
+ * compression instead of additional loudness — diminishing returns.
  */
 
 export interface EnhancerState {
@@ -17,7 +22,7 @@ export interface EnhancerState {
   bass: number;     // dB, -12..+12
   mid: number;      // dB, -12..+12
   treble: number;   // dB, -12..+12
-  volume: number;   // 0..150
+  volume: number;   // 0..250
   balance: number;  // -100..+100
 }
 
@@ -71,7 +76,7 @@ export function useEnhancer() {
   }, []);
 
   const setVolume = useCallback((v: number) => {
-    setState((s) => ({ ...s, volume: clamp(v, 0, 150) }));
+    setState((s) => ({ ...s, volume: clamp(v, 0, 250) }));
   }, []);
 
   const setBalance = useCallback((v: number) => {

@@ -209,6 +209,37 @@ export async function setRepeat(
   await request(`/me/player/repeat?state=${state}${query}`, { method: 'PUT' });
 }
 
+/**
+ * Session-scoped set of track URIs the user added to the queue VIA THIS APP.
+ * Spotify's API doesn't expose per-track origin in /me/player/queue (manually
+ * queued vs context-continuation are indistinguishable), so we have to track
+ * our own adds locally. Limitation: tracks queued from the Spotify desktop /
+ * mobile clients don't get badged here. Cleared on page reload.
+ */
+const userQueuedUris = new Set<string>();
+
+/** True if this URI was added to queue via addToQueue() in this session. */
+export function wasUserQueued(uri: string): boolean {
+  return userQueuedUris.has(uri);
+}
+
+/** Custom event fired on `window` after a successful addToQueue. SpotifyQueue
+ *  listens so an open queue panel refetches immediately instead of waiting
+ *  for the next track-change or panel-reopen. */
+export const QUEUE_CHANGED_EVENT = 'av:queue-changed';
+
+/** Append a track to the user's playback queue. The 3-second queue cache in
+ *  getQueue() is invalidated so the next read sees the updated queue, and a
+ *  window event fires so live queue views can refetch. */
+export async function addToQueue(trackUri: string, deviceId?: string): Promise<void> {
+  const params = new URLSearchParams({ uri: trackUri });
+  if (deviceId) params.set('device_id', deviceId);
+  await request(`/me/player/queue?${params.toString()}`, { method: 'POST' });
+  userQueuedUris.add(trackUri);
+  invalidateQueueCache();
+  window.dispatchEvent(new CustomEvent(QUEUE_CHANGED_EVENT));
+}
+
 /* ─── Library (saved tracks) ─── */
 
 export async function checkSavedTracks(ids: string[]): Promise<boolean[]> {

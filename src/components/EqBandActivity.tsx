@@ -1,6 +1,7 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useRenderCount } from '../perf';
-import { hexToRgba } from '../shared/color';
+import { PALETTES, sampleAt } from '../visualizers/palettes';
+import type { PaletteId } from '../state/settings';
 
 interface Props {
   analyser: AnalyserNode | null;
@@ -9,8 +10,11 @@ interface Props {
   /** Per-band gain in dB — used to back-compute the "before" (pre-EQ)
    *  level alongside the measured post-EQ "current" level. */
   bands: number[];
-  /** Hex accent color from the active palette. */
-  accent: string;
+  /** Active visualizer palette — each EQ band gets its own color sampled
+   *  from this palette by position (lowest freq → palette 0, highest →
+   *  palette 1), so the activity bars read as an ombre that matches the
+   *  visualizer below. */
+  paletteId: PaletteId;
   /** When false, the RAF loop is paused (window hidden). */
   active?: boolean;
 }
@@ -31,7 +35,7 @@ interface Props {
  */
 export const EqBandActivity = memo(EqBandActivityImpl);
 
-function EqBandActivityImpl({ analyser, bandFreqs, bands, accent, active = true }: Props) {
+function EqBandActivityImpl({ analyser, bandFreqs, bands, paletteId, active = true }: Props) {
   useRenderCount('EqBandActivity');
   const containerRef = useRef<HTMLDivElement>(null);
   /* Latest band gains via ref so the RAF loop reads current values
@@ -133,8 +137,23 @@ function EqBandActivityImpl({ analyser, bandFreqs, bands, accent, active = true 
     return () => cancelAnimationFrame(rafId);
   }, [analyser, bandFreqs, active]);
 
-  const fill = hexToRgba(accent, 0.55);
-  const fillDim = hexToRgba(accent, 0.08);
+  // Per-band fill colors sampled across the palette. Recomputes only when
+  // palette or band count changes, NOT on every slider drag or RAF tick.
+  const bandFills = useMemo(() => {
+    const palette = PALETTES[paletteId];
+    const n = bandFreqs.length;
+    return bandFreqs.map((_, i) => {
+      const t = n <= 1 ? 0.5 : i / (n - 1);
+      const rgb = sampleAt(palette, t);
+      // sampleAt returns "rgb(r, g, b)" — turn into rgba variants with alpha.
+      const inner = rgb.slice(4, -1);  // "r, g, b"
+      return {
+        fill: `rgba(${inner}, 0.55)`,
+        fillDim: `rgba(${inner}, 0.08)`,
+      };
+    });
+  }, [paletteId, bandFreqs]);
+
   const before = 'rgba(255, 255, 255, 0.35)';
   const beforeDim = 'rgba(255, 255, 255, 0.04)';
 
@@ -145,14 +164,19 @@ function EqBandActivityImpl({ analyser, bandFreqs, bands, accent, active = true 
       aria-hidden
       style={{
         gridTemplateColumns: `repeat(${bandFreqs.length}, minmax(0, 1fr))`,
-        ['--activity-fill' as string]: fill,
-        ['--activity-fill-dim' as string]: fillDim,
         ['--activity-before' as string]: before,
         ['--activity-before-dim' as string]: beforeDim,
       }}
     >
       {bandFreqs.map((_, i) => (
-        <div key={i} className="eq-band-activity-cell">
+        <div
+          key={i}
+          className="eq-band-activity-cell"
+          style={{
+            ['--activity-fill' as string]: bandFills[i].fill,
+            ['--activity-fill-dim' as string]: bandFills[i].fillDim,
+          }}
+        >
           <div className="eq-band-activity-current" />
           <div className="eq-band-activity-before" />
         </div>
