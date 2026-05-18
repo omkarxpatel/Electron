@@ -20,6 +20,13 @@ export interface ElectronApi {
   shell: {
     openExternal(url: string): Promise<void>;
   };
+  appEvents: {
+    /**
+     * Subscribe to the "open preferences" trigger (App menu → Settings… or
+     * Cmd+,). Returns an unsubscribe function for cleanup.
+     */
+    onPreferences(handler: () => void): () => void;
+  };
 }
 
 declare global {

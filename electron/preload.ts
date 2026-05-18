@@ -23,6 +23,21 @@ const api = {
   shell: {
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
   },
+
+  /**
+   * Subscribe to main-process app events:
+   *   - 'preferences' fires when the user picks App menu → Settings… or
+   *     hits Cmd+, on macOS. The renderer should open the Settings drawer.
+   *
+   * Returns an unsubscribe function — call it on unmount.
+   */
+  appEvents: {
+    onPreferences(handler: () => void): () => void {
+      const wrapped = (): void => handler();
+      ipcRenderer.on('app-event:preferences', wrapped);
+      return () => ipcRenderer.off('app-event:preferences', wrapped);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);
