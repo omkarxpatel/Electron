@@ -49,8 +49,13 @@ function clamp(v: number, min: number, max: number): number {
 export function useEnhancer() {
   const [state, setState] = useState<EnhancerState>(load);
 
+  // Debounce: knob drags fire setState ~60 Hz; collapse a drag burst into one
+  // write. See useEQ for the same rationale.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const t = window.setTimeout(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }, 250);
+    return () => window.clearTimeout(t);
   }, [state]);
 
   const setBass = useCallback((v: number) => {

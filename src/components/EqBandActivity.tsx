@@ -63,29 +63,43 @@ function EqBandActivityImpl({ analyser, bandFreqs, bands, accent, active = true 
     const VIS_MAX_DB = -3;
     const VIS_SPAN_DB = VIS_MAX_DB - VIS_MIN_DB;
 
+    // Precompute per-band FFT bin ranges + tilt — these depend only on the
+    // analyser's sample rate / bin count and the band centers, all stable
+    // for the engine lifetime. Doing this every frame inside the RAF was
+    // wasted log() work.
+    const ranges = new Int32Array(bandFreqs.length * 2);
+    const tiltDb = new Float32Array(bandFreqs.length);
+    for (let i = 0; i < bandFreqs.length; i++) {
+      const f = bandFreqs[i];
+      const i0 = Math.max(1, Math.floor((f * 0.85 / nyquist) * freq.length));
+      const i1 = Math.max(i0 + 1, Math.min(freq.length, Math.ceil((f * 1.18 / nyquist) * freq.length)));
+      ranges[i * 2] = i0;
+      ranges[i * 2 + 1] = i1;
+      tiltDb[i] = Math.log2(Math.max(20, f) / 200) * 3.5;
+    }
+
+    // 30 Hz throttle. Activity bars don't need 60 Hz precision — the eye
+    // can't distinguish between 33 ms and 16 ms updates on a level meter,
+    // and the FFT itself has more inertia than that via smoothing.
     let rafId = 0;
-    const draw = () => {
+    let last = 0;
+    const draw = (now: number) => {
       rafId = requestAnimationFrame(draw);
+      if (now - last < 33) return;
+      last = now;
       analyser.getByteFrequencyData(freq);
       const currentBands = bandsRef.current;
 
       for (let i = 0; i < bandFreqs.length; i++) {
-        const f = bandFreqs[i];
-        const f0 = f * 0.85;
-        const f1 = f * 1.18;
-        const i0 = Math.max(1, Math.floor((f0 / nyquist) * freq.length));
-        const i1 = Math.max(
-          i0 + 1,
-          Math.min(freq.length, Math.ceil((f1 / nyquist) * freq.length)),
-        );
+        const i0 = ranges[i * 2];
+        const i1 = ranges[i * 2 + 1];
         let peak = 0;
         for (let j = i0; j < i1; j++) {
           if (freq[j] > peak) peak = freq[j];
         }
 
         const peakDb = peak === 0 ? -Infinity : minDb + (peak / 255) * dbRange;
-        const tiltDb = Math.log2(Math.max(20, f) / 200) * 3.5;
-        const currentDb = peakDb + tiltDb;
+        const currentDb = peakDb + tiltDb[i];
         // Back-compute the un-EQ'd level by subtracting band gain in dB.
         const bandGain = currentBands[i] ?? 0;
         const beforeDb = currentDb - bandGain;
@@ -106,14 +120,15 @@ function EqBandActivityImpl({ analyser, bandFreqs, bands, accent, active = true 
             ? beforeTarget * 0.7 + smoothedBefore[i] * 0.3
             : smoothedBefore[i] * 0.92 + beforeTarget * 0.08;
 
-        const curPct = Math.max(0, Math.min(78, smoothedCurrent[i] * 75));
-        const befPct = Math.max(0, Math.min(78, smoothedBefore[i] * 75));
+        // 0..0.78 scaleY factor (CSS now consumes transform: scaleY(var)).
+        const cur = Math.max(0, Math.min(0.78, smoothedCurrent[i] * 0.75));
+        const bef = Math.max(0, Math.min(0.78, smoothedBefore[i] * 0.75));
 
-        cells[i].style.setProperty('--current-h', `${curPct}%`);
-        cells[i].style.setProperty('--before-h', `${befPct}%`);
+        cells[i].style.setProperty('--current-h', String(cur));
+        cells[i].style.setProperty('--before-h', String(bef));
       }
     };
-    draw();
+    rafId = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafId);
   }, [analyser, bandFreqs, active]);
 

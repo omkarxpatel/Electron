@@ -1,17 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AudioSourceSelector } from './components/AudioSourceSelector';
 import { AudioStats } from './components/AudioStats';
 import { OutputDeviceSelector } from './components/OutputDeviceSelector';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SpotifyOnboarding } from './components/SpotifyOnboarding';
-import { LyricsPane } from './components/LyricsPane';
 import { prefetchLyrics } from './lyrics/useLyrics';
 import { getQueue } from './spotify/api';
 import { HoverOverlayPanel } from './components/HoverOverlayPanel';
-import { SpotifyOverlay } from './components/SpotifyOverlay';
 import { SpotifyTrackList } from './components/SpotifyTrackList';
 import { SpotifyNowPlaying } from './components/SpotifyNowPlaying';
 import { EqPanel } from './components/EqPanel';
+
+// Lazy-loaded post-auth chunks. SpotifyOverlay (library + search + queue +
+// album-detail) and LyricsPane (lrclib + ovh + LRC parser) are only used
+// after the user authenticates Spotify. Splitting them out trims the cold-
+// start parse cost. Suspense fallback is `null` because both panels render
+// in container slots that already have their own empty states.
+const SpotifyOverlay = lazy(() =>
+  import('./components/SpotifyOverlay').then((m) => ({ default: m.SpotifyOverlay })),
+);
+const LyricsPane = lazy(() =>
+  import('./components/LyricsPane').then((m) => ({ default: m.LyricsPane })),
+);
 import { useAiEnhancer } from './audio/useAiEnhancer';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
@@ -407,7 +417,9 @@ export function App() {
                 hasMore={spotify.tracksNextOffset !== null}
               />
 
-              <LyricsPane playback={spotify.playback} active={isActive} />
+              <Suspense fallback={null}>
+                <LyricsPane playback={spotify.playback} active={isActive} />
+              </Suspense>
             </div>
           </div>
         )}
@@ -443,17 +455,19 @@ export function App() {
           onMouseLeave={requestOverlayClose}
           onClose={closeOverlay}
         >
-          <SpotifyOverlay
-            playlists={spotify.playlists}
-            playlistsLoading={spotify.playlistsLoading}
-            selectedPlaylistId={spotify.selectedPlaylist?.id ?? null}
-            onSelectPlaylist={spotify.selectPlaylist}
-            searchTracks={spotify.searchTracks}
-            playTrack={spotify.playTrack}
-            currentlyPlayingId={currentlyPlayingId}
-            open={overlayOpen}
-            onClose={closeOverlay}
-          />
+          <Suspense fallback={null}>
+            <SpotifyOverlay
+              playlists={spotify.playlists}
+              playlistsLoading={spotify.playlistsLoading}
+              selectedPlaylistId={spotify.selectedPlaylist?.id ?? null}
+              onSelectPlaylist={spotify.selectPlaylist}
+              searchTracks={spotify.searchTracks}
+              playTrack={spotify.playTrack}
+              currentlyPlayingId={currentlyPlayingId}
+              open={overlayOpen}
+              onClose={closeOverlay}
+            />
+          </Suspense>
         </HoverOverlayPanel>
       )}
 

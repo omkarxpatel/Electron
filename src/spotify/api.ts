@@ -92,8 +92,38 @@ interface QueueResponse {
   queue: NonNullable<SpotifyPlaybackState['item']>[];
 }
 
+/**
+ * Queue is read from two places on every track change:
+ *   - App.tsx's lyrics prefetch effect
+ *   - SpotifyQueue.tsx's display on panel open
+ * Without dedup these fire two separate /me/player/queue requests within
+ * milliseconds. Cache the in-flight promise for QUEUE_TTL_MS so both
+ * callers share one response, and refresh on the next call past the TTL.
+ */
+const QUEUE_TTL_MS = 3000;
+let queueCachedAt = 0;
+let queueCachedPromise: Promise<QueueResponse | null> | null = null;
+
 export async function getQueue(): Promise<QueueResponse | null> {
-  return request<QueueResponse>('/me/player/queue');
+  const now = Date.now();
+  if (queueCachedPromise && now - queueCachedAt < QUEUE_TTL_MS) {
+    return queueCachedPromise;
+  }
+  queueCachedAt = now;
+  queueCachedPromise = request<QueueResponse>('/me/player/queue').catch((err) => {
+    // Don't poison the cache on error — let the next caller retry immediately.
+    queueCachedPromise = null;
+    throw err;
+  });
+  return queueCachedPromise;
+}
+
+/** Invalidate the queue cache. Called after transport mutations (skip / play
+ *  new track) so the next read fetches fresh state instead of a stale 3s-old
+ *  snapshot. */
+export function invalidateQueueCache(): void {
+  queueCachedPromise = null;
+  queueCachedAt = 0;
 }
 
 export async function play(

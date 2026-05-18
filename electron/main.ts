@@ -38,6 +38,20 @@ function createWindow() {
 
   win.once('ready-to-show', () => win?.show());
 
+  // Block renderer-initiated new windows. The only legitimate "open externally"
+  // path is the allowlisted `shell:open-external` IPC handler.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  // Block in-renderer navigation to anywhere other than our app shell. If the
+  // renderer tries to navigate (e.g. via a stray <a href> or some malicious
+  // injection), route it through the allowlisted external-open path instead.
+  const allowedPrefix = process.env.VITE_DEV_SERVER_URL ?? 'file://';
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url.startsWith(allowedPrefix)) return;
+    e.preventDefault();
+    if (isAllowedExternalUrl(url)) void shell.openExternal(url);
+  });
+
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
     win.webContents.openDevTools({ mode: 'detach' });
@@ -139,7 +153,23 @@ ipcMain.handle('spotify-auth:cancel', () => {
   }
 });
 
+/**
+ * Allowlist for `openExternal`. Without this, a renderer XSS becomes an
+ * "open anything" primitive — including `file:`, custom schemes, and any
+ * https URL. The renderer only legitimately opens Spotify auth / dashboard
+ * URLs, so restrict to those hosts.
+ */
+function isAllowedExternalUrl(url: string): boolean {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol !== 'https:') return false;
+  return parsed.host === 'accounts.spotify.com' || parsed.host === 'developer.spotify.com';
+}
+
 ipcMain.handle('shell:open-external', async (_event, url: string) => {
+  if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {
+    throw new Error(`Refusing to open disallowed URL`);
+  }
   await shell.openExternal(url);
 });
 

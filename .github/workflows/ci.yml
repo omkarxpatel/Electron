@@ -1,0 +1,41 @@
+name: CI
+
+# Sanity check on every push / pull request. Doesn't build a DMG — that's
+# what the release workflow is for. This is just "did the typecheck stay
+# clean and does Vite still produce a bundle." Runs on Linux because it's
+# 7× cheaper than macOS runners and the renderer build is platform-agnostic
+# (the macOS-specific stuff is in electron-builder's packaging step, not
+# the bundle).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Vite build (renderer + main + preload)
+        run: npx vite build

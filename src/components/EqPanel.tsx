@@ -86,8 +86,15 @@ function EqPanelImpl({
   // Effective band values = user baseline + AI delta (clamped). The response
   // curve and band activity bars both render from this so they reflect what
   // the audio engine is actually applying, not just the user's baseline.
+  // Common case: AI is off (or all deltas are 0) — return state.bands by
+  // reference so memo'd children downstream short-circuit.
   const effectiveBands = useMemo(() => {
     if (!aiDelta || aiDelta.length === 0) return state.bands;
+    let anyNonZero = false;
+    for (let i = 0; i < aiDelta.length; i++) {
+      if (aiDelta[i] !== 0) { anyNonZero = true; break; }
+    }
+    if (!anyNonZero) return state.bands;
     return state.bands.map((v, i) => {
       const d = aiDelta[i] ?? 0;
       const sum = v + d;

@@ -2673,12 +2673,17 @@
   flex: 1 1 0;
   min-width: 0;
   max-width: 6px;
+  height: 100%;
   border-radius: 2px;
-  transition: height 70ms linear;
+  transform-origin: bottom;
+  /* Transition on transform — doesn't trigger layout per frame the way a
+   * height transition does. The JS RAF rewrites --current-h every 33 ms; the
+   * transition smooths between successive samples. */
+  transition: transform 70ms linear;
 }
 
 .eq-band-activity-current {
-  height: var(--current-h, 0%);
+  transform: scaleY(var(--current-h, 0));
   background: linear-gradient(
     to top,
     var(--activity-fill-dim, rgba(29, 215, 96, 0.08)) 0%,
@@ -2687,7 +2692,7 @@
 }
 
 .eq-band-activity-before {
-  height: var(--before-h, 0%);
+  transform: scaleY(var(--before-h, 0));
   background: linear-gradient(
     to top,
     var(--activity-before-dim, rgba(255, 255, 255, 0.04)) 0%,

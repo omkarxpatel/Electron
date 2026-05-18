@@ -51,10 +51,15 @@ export function useAudioSource() {
     };
   }, []);
 
-  /** Tear down the current stream and replace it with a new one. */
+  /** Tear down the current stream and replace it with a new one.
+   *  Track-stop happens in a microtask so the setState updater stays pure —
+   *  React 19 StrictMode dev double-invokes updaters and a side effect inside
+   *  would call stop() twice. (stop() is idempotent so the previous code
+   *  worked in practice, but the pattern is a landmine.) */
   const swap = useCallback((next: MediaStream | null) => {
     setState((s) => {
-      s.stream?.getTracks().forEach((t) => t.stop());
+      const old = s.stream;
+      if (old) queueMicrotask(() => old.getTracks().forEach((t) => t.stop()));
       return { ...s, stream: next };
     });
   }, []);
@@ -72,8 +77,7 @@ export function useAudioSource() {
     try {
       // Inform main process what kind of loopback we want before issuing the
       // request — the displayMediaRequestHandler reads this flag.
-      await (window as unknown as { api?: { systemAudio?: { setMute: (m: boolean) => Promise<void> } } })
-        .api?.systemAudio?.setMute(mute);
+      await window.api.systemAudio.setMute(mute);
 
       // `video: true` is required for ScreenCaptureKit to deliver audio on macOS.
       // We drop the video track immediately afterward.

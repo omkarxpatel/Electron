@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './api';
 import { authorize, isAuthenticated, disconnect } from './auth';
 import { getClientId, setClientId, clearClientId } from './storage';
+import { useVisibility } from '../hooks/useVisibility';
 import type {
   SpotifyPlaybackState,
   SpotifyPlaylist,
@@ -38,9 +39,16 @@ export interface SpotifyState {
   savedCurrent: boolean | null;
 }
 
-const POLL_INTERVAL = 1500; // ms — Spotify rate limits are generous, this is conservative
+const POLL_INTERVAL_ACTIVE = 1500;   // ms — window visible
+const POLL_INTERVAL_HIDDEN = 10000;  // ms — window hidden, ramp down to save battery + quota
+const POLL_BACKOFF_MAX = 30000;      // ms — 429/503 backoff cap
 
 export function useSpotify() {
+  // When the window is hidden, ramp the poll interval up so we stop burning
+  // API quota + battery on a tab the user isn't looking at. Audio keeps
+  // playing — only the polling slows down.
+  const isActive = useVisibility(2500);
+
   const [state, setState] = useState<SpotifyState>(() => ({
     clientId: getClientId(),
     authed: isAuthenticated(),
@@ -409,11 +417,26 @@ export function useSpotify() {
   useEffect(() => {
     if (!state.authed) return;
     let cancelled = false;
+    let timer: number | null = null;
+    let inflight = false;
+    let backoff = 0;
+
+    const schedule = () => {
+      if (cancelled) return;
+      const base = isActive ? POLL_INTERVAL_ACTIVE : POLL_INTERVAL_HIDDEN;
+      const delay = backoff > 0 ? Math.min(backoff, POLL_BACKOFF_MAX) : base;
+      timer = window.setTimeout(tick, delay);
+    };
 
     const tick = async () => {
+      // In-flight guard: a stalled previous request shouldn't queue more.
+      if (inflight) { schedule(); return; }
+      inflight = true;
       try {
         const playback = await api.getPlaybackState();
         if (cancelled) return;
+        // Successful response → reset backoff.
+        backoff = 0;
         if (playback) {
           const now = Date.now();
           if (now < shuffleLockUntilRef.current && shuffleOverrideRef.current !== null) {
@@ -428,16 +451,21 @@ export function useSpotify() {
           }
           // Diff the relevant fields against current state. The progress_ms
           // changes every poll, but downstream consumers (SpotifyNowPlaying,
-          // LyricsPane) now read progress via refs / RAF — so they don't need
-          // React state to update on every poll. We only dispatch when fields
-          // that actually matter for rendering change: track id, playing,
-          // shuffle/repeat, volume, device id, context. progress_ms still
-          // updates the object but doesn't by itself trigger a render-causing
-          // diff. This collapses ~1 setState every 1.5s into ~1 setState every
-          // few seconds (only on real state transitions).
+          // LyricsPane) read progress via refs / RAF — so a fresh playback
+          // object every poll still doesn't trigger render-causing work in
+          // those consumers (their useEffects depend on `progress_ms` and
+          // `is_playing` specifically, both primitive).
+          //
+          // We MUST commit a new object even on the progress-only delta: the
+          // previous implementation mutated `prev.progress_ms` in place, which
+          // worked today only because every consumer happens to read via refs.
+          // Any future consumer that depends on `playback.progress_ms` via a
+          // useEffect deps array or memo input would silently miss updates.
+          // The extra commit per 1.5 s is cheap; the hidden contract was not.
           setState((s) => {
             const prev = s.playback;
             if (!prev) return { ...s, playback };
+            const progressChanged = prev.progress_ms !== playback.progress_ms;
             const relevantChanged =
               prev.item?.id !== playback.item?.id ||
               prev.is_playing !== playback.is_playing ||
@@ -446,15 +474,12 @@ export function useSpotify() {
               prev.device?.volume_percent !== playback.device?.volume_percent ||
               prev.device?.id !== playback.device?.id ||
               prev.context?.uri !== playback.context?.uri;
+            if (!relevantChanged && !progressChanged) return s;
             if (!relevantChanged) {
-              // Keep prev object identity so memoized children skip re-rendering,
-              // but quietly update progress_ms on the SAME object (a ref-style
-              // update). Consumers that need progress (now playing slider,
-              // lyrics) read from authoritative refs that we keep in sync via
-              // their own effects against prev.progress_ms — so mutation here
-              // is a safe shortcut that avoids a cascade-render.
-              prev.progress_ms = playback.progress_ms;
-              return s;
+              // Progress-only update: keep most of the previous object so
+              // memo'd children comparing by reference for specific fields
+              // (track, device, context) still skip — only progress_ms is new.
+              return { ...s, playback: { ...prev, progress_ms: playback.progress_ms } };
             }
             return { ...s, playback };
           });
@@ -495,17 +520,28 @@ export function useSpotify() {
           }
         }
       } catch (err) {
-        if (!cancelled) console.error('playback poll failed:', err);
+        if (cancelled) return;
+        const msg = String(err);
+        // Rate-limit / service-unavailable: exponential backoff. Spotify
+        // includes Retry-After but our fetch wrapper doesn't surface it yet
+        // (Phase 3). Approximate with doubling, capped.
+        if (msg.includes('429') || msg.includes('503')) {
+          backoff = backoff === 0 ? 3000 : Math.min(backoff * 2, POLL_BACKOFF_MAX);
+        } else {
+          console.error('playback poll failed:', err);
+        }
+      } finally {
+        inflight = false;
+        schedule();
       }
     };
 
-    tick();
-    const interval = setInterval(tick, POLL_INTERVAL);
+    tick(); // immediate first tick
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (timer !== null) window.clearTimeout(timer);
     };
-  }, [state.authed]);
+  }, [state.authed, isActive]);
 
   /* ─── Saved-track status: re-check whenever the current track changes ─── */
 

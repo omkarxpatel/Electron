@@ -2,14 +2,23 @@
   "name": "audio-visualizer",
   "productName": "Audio Visualizer & Modifier",
   "private": true,
-  "version": "0.1.0",
-  "description": "Local macOS audio visualizer",
+  "version": "0.1.2",
+  "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
+  "homepage": "https://github.com/omkarxpatel/Spotify-Visualizer-Modifier",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omkarxpatel/Spotify-Visualizer-Modifier.git"
+  },
+  "license": "MIT",
+  "author": "Omkar Patel",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && electron-builder",
     "build:unpack": "tsc --noEmit && vite build && electron-builder --dir",
-    "typecheck": "tsc --noEmit"
+    "build:publish": "tsc --noEmit && vite build && electron-builder --publish=always",
+    "typecheck": "tsc --noEmit",
+    "icon:gen": "bash scripts/build-icon.sh"
   },
   "dependencies": {
     "react": "^19.0.0",
@@ -30,17 +39,45 @@
   "build": {
     "appId": "com.omkar.audiovisualizer",
     "productName": "Audio Visualizer",
+    "artifactName": "AudioVisualizer-${version}-${arch}.${ext}",
+    "copyright": "Copyright © 2026 Omkar Patel",
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
     ],
-    "mac": {
-      "category": "public.app-category.music",
-      "target": "dmg"
-    },
     "directories": {
       "buildResources": "build",
       "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "icon": "build/icon.icns",
+      "darkModeSupport": true,
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null,
+      "type": "distribution"
+    },
+    "dmg": {
+      "title": "Audio Visualizer ${version}",
+      "icon": "build/icon.icns",
+      "iconSize": 110,
+      "window": { "width": 540, "height": 380 },
+      "contents": [
+        { "x": 140, "y": 200, "type": "file" },
+        { "x": 400, "y": 200, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "omkarxpatel",
+      "repo": "Spotify-Visualizer-Modifier",
+      "releaseType": "release"
     }
   }
 }

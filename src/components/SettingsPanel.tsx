@@ -151,18 +151,6 @@ export function SettingsPanel({
           />
         </Section>
 
-        <Section title="Background">
-          <Segmented
-            value={settings.background}
-            options={[
-              { id: 'glow', label: 'Glow' },
-              { id: 'vignette', label: 'Vignette' },
-              { id: 'solid', label: 'Solid' },
-            ]}
-            onChange={(v) => update('background', v as Settings['background'])}
-          />
-        </Section>
-
         <Section title="Spotify">
           <div className="settings-spotify-row">
             <button

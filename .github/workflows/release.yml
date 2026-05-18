@@ -1,0 +1,63 @@
+name: Release
+
+# Tag-driven release pipeline. Push a tag like `v0.2.0` (or trigger manually)
+# and this job builds an unsigned DMG + zip for both Apple Silicon and Intel,
+# then uploads them to a GitHub Release matching the tag.
+#
+# Unsigned-build notes:
+#   - `identity: null` in package.json's build.mac config keeps electron-builder
+#     from trying to sign with a non-existent Developer ID.
+#   - CSC_IDENTITY_AUTO_DISCOVERY=false belt-and-braces: stops electron-builder
+#     from probing the keychain for signing certs that aren't there.
+#   - End users will see a Gatekeeper warning on first launch and need to
+#     right-click → Open. The README explains this.
+#
+# Requirements:
+#   - Runs on macOS (electron-builder for mac needs Darwin).
+#   - GITHUB_TOKEN is supplied automatically by Actions; electron-builder's
+#     `publish.provider: github` config uses it.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach the release to (e.g. v0.2.0). Required for manual runs.'
+        required: true
+        type: string
+
+permissions:
+  contents: write  # needed to create/update releases
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false  # don't cancel in-flight releases
+
+jobs:
+  build-mac:
+    name: Build & publish (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build + publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Don't probe keychain for code-signing certs we don't have.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:publish

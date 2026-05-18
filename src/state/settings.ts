@@ -13,8 +13,6 @@ export type PaletteId =
   | 'pastel'
   | 'magenta';
 export type WaveformStyle = 'ribbon' | 'radial' | 'dots' | 'mirror' | 'bars' | 'line' | 'filled' | 'spectrum' | 'particles' | 'silk';
-export type SpectrumStyle = 'bars' | 'mirror' | 'curve';
-export type BackgroundStyle = 'solid' | 'glow' | 'vignette';
 
 export interface Settings {
   palette: PaletteId;
@@ -25,8 +23,6 @@ export interface Settings {
   trail: number;         // 0..0.6 — motion blur (alpha decay per frame)
   smoothing: number;     // 0..0.95 — temporal smoothing of bar values (higher = calmer)
   waveformStyle: WaveformStyle;
-  spectrumStyle: SpectrumStyle;
-  background: BackgroundStyle;
   barWidth: number;      // 1..12
   barGap: number;        // 0..6
 }
@@ -40,8 +36,6 @@ export const DEFAULT_SETTINGS: Settings = {
   trail: 0.32,
   smoothing: 0.85,
   waveformStyle: 'ribbon',
-  spectrumStyle: 'curve',
-  background: 'glow',
   barWidth: 4,
   barGap: 2,
 };
@@ -63,8 +57,13 @@ function load(): Settings {
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(load);
 
+  // Debounce: settings sliders (glow, sensitivity, trail, smoothing) drag at
+  // ~60 Hz. See useEQ for the same rationale.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    const t = window.setTimeout(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    }, 250);
+    return () => window.clearTimeout(t);
   }, [settings]);
 
   const update = useCallback(<K extends keyof Settings>(key: K, value: Settings[K]) => {

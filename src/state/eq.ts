@@ -166,8 +166,15 @@ function clamp(v: number, min: number, max: number): number {
 export function useEQ() {
   const [state, setState] = useState<PersistedState>(load);
 
+  // Debounce persistence. Slider drags fire setState at ~60 Hz; without the
+  // debounce we'd run JSON.stringify (including the band-cache object) and
+  // a blocking localStorage write on every tick. 250 ms trailing collapses
+  // a drag burst to a single write.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const t = window.setTimeout(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }, 250);
+    return () => window.clearTimeout(t);
   }, [state]);
 
   const setBand = useCallback((index: number, value: number) => {

@@ -23,7 +23,36 @@ const INITIAL: LyricsState = {
   found: false,
 };
 
+/** LRU cap. The cache is module-scope and grows as the user plays new tracks.
+ *  Without a cap, a long session that scrobbles through hundreds of unique
+ *  tracks accumulates megabytes of lyric text. 50 keeps recent tracks fast
+ *  while bounding the worst case. Map preserves insertion order; we evict
+ *  the oldest entry when adding a new one past the cap. Re-inserting an
+ *  existing key moves it to the end (most-recent slot). */
+const LYRICS_CACHE_MAX = 50;
 const cache = new Map<string, LyricsState>();
+
+function cacheSet(key: string, value: LyricsState): void {
+  // Re-insertion: delete first so we move the key to the end of insertion order.
+  if (cache.has(key)) cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > LYRICS_CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+function cacheGet(key: string): LyricsState | undefined {
+  const hit = cache.get(key);
+  if (hit) {
+    // Touch on read — move to the end so heavily-replayed tracks survive.
+    cache.delete(key);
+    cache.set(key, hit);
+  }
+  return hit;
+}
+
 /** In-flight progressive loads, deduped per key. Subscribers all see the
  *  same series of updates via the `subscribers` set inside each entry. */
 const inFlight = new Map<string, InFlightEntry>();
@@ -64,7 +93,7 @@ export function useLyrics(
       return;
     }
     const key = makeKey(title, artist);
-    const cached = cache.get(key);
+    const cached = cacheGet(key);
     if (cached) {
       setState(cached);
       return;
@@ -159,12 +188,12 @@ function startProgressiveLoad(
           instrumental: res.instrumental,
           found: true,
         };
-        cache.set(key, final);
+        cacheSet(key, final);
         broadcast(final);
       } else if (plainGotten) {
         // Synced source failed but plain was found — finalize as plain-only.
         const final: LyricsState = { ...entry.current, loading: false };
-        cache.set(key, final);
+        cacheSet(key, final);
         broadcast(final);
       } else {
         // Both sources empty: report not-found WITHOUT caching, so a later
@@ -177,7 +206,7 @@ function startProgressiveLoad(
       syncedSettled = true;
       if (plainGotten) {
         const final: LyricsState = { ...entry.current, loading: false };
-        cache.set(key, final);
+        cacheSet(key, final);
         broadcast(final);
       } else {
         broadcast({ ...INITIAL, found: false });

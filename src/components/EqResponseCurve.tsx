@@ -1,6 +1,6 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useRenderCount } from '../perf';
-import { combinedResponseDb, logSpacedFrequencies } from '../audio/biquadResponse';
+import { buildBandCoefs, logSpacedFrequencies, responseCurveDb } from '../audio/biquadResponse';
 
 interface Props {
   bands: number[];
@@ -36,8 +36,28 @@ const PAN_LIMIT = Math.log(2);
  *  can be inspected even though it normally sits right at the edge. */
 const PAN_DB_LIMIT = 18;
 
+const PAD_LEFT = 22;
+const PAD_RIGHT = 6;
+const PAD_TOP = 8;
+const PAD_BOTTOM = 18;
+
 export const EqResponseCurve = memo(EqResponseCurveImpl);
 
+/**
+ * Rendering is split into THREE concerns:
+ *
+ *   1. Static-grid offscreen layer — dB lines + dB tick labels + octave-marker
+ *      labels along the bottom. Caches per (w, h, dpr, panLog, panDb). During
+ *      a slider drag (which doesn't change pan or dimensions) this entire
+ *      layer is reused without any new strokes / fills.
+ *
+ *   2. Tonal halo + filled response area + stroke + dots — dynamic per draw.
+ *      Cheap once the static layer is composited.
+ *
+ *   3. Mounting concerns (canvas size, observer, pointer handlers) — run once
+ *      per component lifetime, NOT on every prop change. The old code
+ *      reinstalled the ResizeObserver on every band drag.
+ */
 function EqResponseCurveImpl({
   bands,
   bandFreqs,
@@ -52,6 +72,23 @@ function EqResponseCurveImpl({
 }: Props) {
   useRenderCount('EqResponseCurve');
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Precompute coefficients once per parameter set. The previous code rebuilt
+  // 320 × bandCount coefficient sets per draw — at 31 bands and ~10 Hz halo
+  // draws that's ~100k peakingCoefs calls/sec. Now it's 31 per parameter
+  // change.
+  const coefs = useMemo(
+    () => buildBandCoefs(bands, bandFreqs, Q, preamp, bassEnhance, trebleEnhance),
+    [bands, bandFreqs, Q, preamp, bassEnhance, trebleEnhance],
+  );
+
+  // Refs that the long-lived draw closure reads from. Updated by the
+  // "props -> refs" effect below; the draw closure itself never changes
+  // identity, so the ResizeObserver and pointer handlers stay installed.
+  const coefsRef = useRef(coefs);
+  const bandFreqsRef = useRef(bandFreqs);
+  const bypassRef = useRef(bypass);
+  const accentRef = useRef(accent);
   /** Pan offset in natural-log frequency units. Mutated by pointer events
    *  and read by draw() — using a ref avoids re-running the draw effect on
    *  every mousemove. */
@@ -65,122 +102,113 @@ function EqResponseCurveImpl({
   const tonalRef = useRef<Float32Array | null>(null);
   /** Cached Nyquist frequency for halo y-mapping (sample-rate / 2). */
   const nyquistRef = useRef<number>(24000);
+  /** Reusable response buffer — was `new Array(SAMPLE_COUNT)` every draw. */
+  const responsesRef = useRef<Float32Array>(new Float32Array(SAMPLE_COUNT));
+  /** Offscreen canvas for the static grid layer + cache-key string. */
+  const gridCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const gridKeyRef = useRef<string>('');
+
+  /* ─────────────────────────────────────────────────────────────
+     INSTALL-ONCE effect. Owns the canvas size sync, the long-lived
+     draw closure, the ResizeObserver, and the pointer handlers.
+     Runs exactly once per component lifetime (deps: empty).
+     Reads all dynamic state from refs.
+     ───────────────────────────────────────────────────────────── */
 
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
+    // Build a hidden grid canvas once; reused across draws.
+    if (!gridCanvasRef.current) gridCanvasRef.current = document.createElement('canvas');
 
-    let r = 29, g = 215, b = 96;
-    if (/^#[0-9a-f]{6}$/i.test(accent)) {
-      r = parseInt(accent.slice(1, 3), 16);
-      g = parseInt(accent.slice(3, 5), 16);
-      b = parseInt(accent.slice(5, 7), 16);
-    }
-    const accentRgba = (a: number) => `rgba(${r}, ${g}, ${b}, ${a})`;
-
-    const draw = () => {
+    const draw = (): void => {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
-      canvas.width = Math.max(1, rect.width * dpr);
-      canvas.height = Math.max(1, rect.height * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const targetW = Math.max(1, Math.round(rect.width * dpr));
+      const targetH = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
 
       const w = rect.width;
       const h = rect.height;
-      const padLeft = 22;
-      const padRight = 6;
-      const padTop = 8;
-      const padBottom = 18;
-      const plotW = w - padLeft - padRight;
-      const plotH = h - padTop - padBottom;
+      const plotW = w - PAD_LEFT - PAD_RIGHT;
+      const plotH = h - PAD_TOP - PAD_BOTTOM;
+      const bypass = bypassRef.current;
+      const accent = accentRef.current;
+      const coefSet = coefsRef.current;
+      const bandFreqsNow = bandFreqsRef.current;
+      const panLog = panLogRef.current;
+      const panDb = panDbRef.current;
 
       ctx.clearRect(0, 0, w, h);
 
       // Vertical pan shifts the visible dB window. center=0 by default;
       // pan up means we shift the window so higher dB is visible at the top.
-      const visMaxDb = DB_RANGE + panDbRef.current;
-      const visMinDb = -DB_RANGE + panDbRef.current;
-      const dbToY = (db: number) => padTop + plotH * ((visMaxDb - db) / (2 * DB_RANGE));
-      const logMin = LOG_MIN_BASE + panLogRef.current;
-      const logMax = LOG_MAX_BASE + panLogRef.current;
-      const fToX = (f: number) =>
-        padLeft + plotW * ((Math.log(f) - logMin) / (logMax - logMin));
+      const visMaxDb = DB_RANGE + panDb;
+      const visMinDb = -DB_RANGE + panDb;
+      const dbToY = (db: number): number =>
+        PAD_TOP + plotH * ((visMaxDb - db) / (2 * DB_RANGE));
+      const logMin = LOG_MIN_BASE + panLog;
+      const logMax = LOG_MAX_BASE + panLog;
+      const fToX = (f: number): number =>
+        PAD_LEFT + plotW * ((Math.log(f) - logMin) / (logMax - logMin));
 
-      // ─── horizontal grid lines + dB tick labels on the left.
-      // Grid steps adapt to the visible window so labels stay relevant as
-      // the user pans vertically.
-      ctx.font = '9px -apple-system, system-ui';
-      ctx.textBaseline = 'middle';
-      const stepStart = Math.ceil(visMinDb / 6) * 6;
-      const stepEnd = Math.floor(visMaxDb / 6) * 6;
-      for (let db = stepStart; db <= stepEnd; db += 6) {
-        const y = dbToY(db);
-        ctx.strokeStyle = db === 0 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(padLeft, y);
-        ctx.lineTo(w - padRight, y);
-        ctx.stroke();
-
-        ctx.textAlign = 'right';
-        ctx.fillStyle = db === 0 ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)';
-        const label = db > 0 ? `+${db}` : `${db}`;
-        ctx.fillText(label, padLeft - 4, y);
+      // ─── static grid (composited from cached offscreen canvas) ───
+      const gridKey = `${targetW}|${targetH}|${dpr.toFixed(3)}|${panLog.toFixed(4)}|${panDb.toFixed(3)}`;
+      const gridCanvas = gridCanvasRef.current!;
+      if (gridKey !== gridKeyRef.current) {
+        renderStaticGridTo(gridCanvas, targetW, targetH, dpr, w, h, plotH, dbToY, fToX, visMinDb, visMaxDb);
+        gridKeyRef.current = gridKey;
       }
-      ctx.textBaseline = 'alphabetic';
+      // Composite the grid in CSS-pixel space (drawImage uses our transform).
+      ctx.drawImage(gridCanvas, 0, 0, w, h);
+
       const y0 = dbToY(0);
 
-      // ─── frequency labels along the bottom (only on octave markers to avoid clutter)
-      const octaveMarkers = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
-      ctx.fillStyle = 'rgba(255,255,255,0.32)';
-      ctx.font = '9.5px -apple-system, system-ui';
-      ctx.textAlign = 'center';
-      for (const f of octaveMarkers) {
-        const x = fToX(f);
-        if (x < padLeft - 8 || x > w - padRight + 8) continue;
-        const label = f >= 1000 ? `${f / 1000}k` : `${f}`;
-        ctx.fillText(label, x, h - 4);
-      }
-
-      // ─── response sampled across frequency
-      const responses: number[] = new Array(SAMPLE_COUNT);
+      // ─── response sampled across frequency ───
+      const responses = responsesRef.current;
       for (let i = 0; i < SAMPLE_COUNT; i++) {
-        responses[i] = bypass
-          ? 0
-          : combinedResponseDb(
-              FREQS[i],
-              bands,
-              bandFreqs,
-              Q,
-              preamp,
-              bassEnhance,
-              trebleEnhance,
-            );
+        responses[i] = bypass ? 0 : responseCurveDb(FREQS[i], coefSet);
       }
 
-      // ─── tonal-balance halo (averaged music spectrum behind the curve)
+      // ─── tonal-balance halo (averaged music spectrum behind the curve) ───
+      // Anchored at dbToY(-DB_RANGE) — the default visible window's bottom —
+      // so the halo tracks the y-axis when the user pans vertically. At
+      // pan=0 this is the literal plot bottom (same as the old behavior);
+      // at any non-zero pan the halo shifts with the rest of the dB axis.
+      // Clipped to the plot rect so the halo doesn't bleed past the labels
+      // when the user pans hard.
       const tonal = tonalRef.current;
       if (tonal && !bypass) {
         const nyq = nyquistRef.current;
-        // Bottom of plot = 0 energy; max halo height = 75% of plot
         const haloMaxH = plotH * 0.75;
+        const haloBaseY = dbToY(-DB_RANGE);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(PAD_LEFT, PAD_TOP, plotW, plotH);
+        ctx.clip();
         ctx.fillStyle = 'rgba(255, 255, 255, 0.13)';
         ctx.beginPath();
-        ctx.moveTo(fToX(FREQS[0]), padTop + plotH);
+        ctx.moveTo(fToX(FREQS[0]), haloBaseY);
         for (let i = 0; i < SAMPLE_COUNT; i++) {
           const f = FREQS[i];
           const binIdx = Math.min(tonal.length - 1, Math.floor((f / nyq) * tonal.length));
           const mag = tonal[binIdx];
-          const y = padTop + plotH - mag * haloMaxH;
+          const y = haloBaseY - mag * haloMaxH;
           ctx.lineTo(fToX(f), y);
         }
-        ctx.lineTo(fToX(FREQS[SAMPLE_COUNT - 1]), padTop + plotH);
+        ctx.lineTo(fToX(FREQS[SAMPLE_COUNT - 1]), haloBaseY);
         ctx.closePath();
         ctx.fill();
+        ctx.restore();
       }
 
-      // ─── filled area
-      const gradient = ctx.createLinearGradient(0, padTop, 0, padTop + plotH);
+      // ─── filled area ───
+      const accentRgba = parseAccent(accent);
+      const gradient = ctx.createLinearGradient(0, PAD_TOP, 0, PAD_TOP + plotH);
       gradient.addColorStop(0, accentRgba(0.42));
       gradient.addColorStop(0.5, accentRgba(0.12));
       gradient.addColorStop(1, accentRgba(0.42));
@@ -195,7 +223,7 @@ function EqResponseCurveImpl({
       ctx.closePath();
       ctx.fill();
 
-      // ─── stroke on top with glow
+      // ─── stroke on top with glow ───
       ctx.strokeStyle = bypass ? 'rgba(255,255,255,0.25)' : accent;
       ctx.lineWidth = 1.8;
       ctx.lineCap = 'round';
@@ -212,14 +240,14 @@ function EqResponseCurveImpl({
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      // ─── band-anchor dots at the user's slider centers
+      // ─── band-anchor dots at the user's slider centers ───
       if (!bypass) {
         ctx.fillStyle = '#ffffff';
         ctx.shadowBlur = 4;
         ctx.shadowColor = accent;
-        for (let i = 0; i < bandFreqs.length; i++) {
-          const f = bandFreqs[i];
-          const dbAtBand = combinedResponseDb(f, bands, bandFreqs, Q, preamp, bassEnhance, trebleEnhance);
+        for (let i = 0; i < bandFreqsNow.length; i++) {
+          const f = bandFreqsNow[i];
+          const dbAtBand = responseCurveDb(f, coefSet);
           const x = fToX(f);
           const y = dbToY(dbAtBand);
           ctx.beginPath();
@@ -232,10 +260,94 @@ function EqResponseCurveImpl({
 
     drawRef.current = draw;
     draw();
-    const ro = new ResizeObserver(draw);
+
+    // Invalidate the grid cache on resize so it re-renders at the new size.
+    const ro = new ResizeObserver(() => {
+      gridKeyRef.current = '';
+      draw();
+    });
     ro.observe(canvas);
-    return () => ro.disconnect();
-  }, [bands, bandFreqs, Q, preamp, bypass, bassEnhance, trebleEnhance, accent]);
+
+    // Pointer handlers — installed once. Pan deltas accumulate inside RAF.
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    let pendingDLog = 0;
+    let pendingDDb = 0;
+    let rafPending = false;
+    const flushPan = (): void => {
+      rafPending = false;
+      if (pendingDLog === 0 && pendingDDb === 0) return;
+      panLogRef.current = Math.max(-PAN_LIMIT, Math.min(PAN_LIMIT, panLogRef.current + pendingDLog));
+      panDbRef.current = Math.max(-PAN_DB_LIMIT, Math.min(PAN_DB_LIMIT, panDbRef.current + pendingDDb));
+      pendingDLog = 0;
+      pendingDDb = 0;
+      drawRef.current();
+    };
+    const onPointerDown = (e: PointerEvent): void => {
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      canvas.setPointerCapture(e.pointerId);
+    };
+    const onPointerMove = (e: PointerEvent): void => {
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      const rect = canvas.getBoundingClientRect();
+      const plotW = Math.max(1, rect.width - 28);
+      const plotH = Math.max(1, rect.height - 26);
+      pendingDLog += -(dx / plotW) * (LOG_MAX_BASE - LOG_MIN_BASE);
+      pendingDDb += (dy / plotH) * (2 * DB_RANGE);
+      if (!rafPending) {
+        rafPending = true;
+        requestAnimationFrame(flushPan);
+      }
+    };
+    const endDrag = (e: PointerEvent): void => {
+      if (!dragging) return;
+      dragging = false;
+      try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    };
+    const onDoubleClick = (): void => {
+      panLogRef.current = 0;
+      panDbRef.current = 0;
+      drawRef.current();
+    };
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('dblclick', onDoubleClick);
+
+    return () => {
+      ro.disconnect();
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', endDrag);
+      canvas.removeEventListener('pointercancel', endDrag);
+      canvas.removeEventListener('dblclick', onDoubleClick);
+    };
+    // Empty deps: this effect installs once. All dynamic data is read from
+    // refs that the prop-mirror effect below keeps fresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ─────────────────────────────────────────────────────────────
+     PROP-MIRROR effect. Updates refs the install effect's draw
+     closure reads from, then triggers a single redraw. Cheap;
+     does not reinstall anything.
+     ───────────────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    coefsRef.current = coefs;
+    bandFreqsRef.current = bandFreqs;
+    bypassRef.current = bypass;
+    accentRef.current = accent;
+    drawRef.current();
+  }, [coefs, bandFreqs, bypass, accent]);
 
   /* Tonal balance halo — slow-EMA over the analyser's frequency data,
    * read at ~10 Hz so the halo represents the recent musical balance
@@ -257,7 +369,7 @@ function EqResponseCurveImpl({
 
     let rafId = 0;
     let lastUpdate = 0;
-    const update = (now: number) => {
+    const update = (now: number): void => {
       rafId = requestAnimationFrame(update);
       if (now - lastUpdate < 100) return;
       lastUpdate = now;
@@ -274,61 +386,79 @@ function EqResponseCurveImpl({
     return () => cancelAnimationFrame(rafId);
   }, [analyser, active]);
 
-  // Pointer handlers for click-and-drag pan + double-click reset.
-  useEffect(() => {
-    const canvas = canvasRef.current!;
-    let dragging = false;
-    let lastX = 0;
-
-    const onPointerDown = (e: PointerEvent) => {
-      dragging = true;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      canvas.setPointerCapture(e.pointerId);
-    };
-    let lastY = 0;
-    const onPointerMove = (e: PointerEvent) => {
-      if (!dragging) return;
-      const dx = e.clientX - lastX;
-      const dy = e.clientY - lastY;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      const rect = canvas.getBoundingClientRect();
-      const plotW = Math.max(1, rect.width - 28);
-      const plotH = Math.max(1, rect.height - 26);
-      // Dragging right pans the view right (higher freqs slide in from the
-      // right); in log space that means decreasing logMin offset.
-      const dLog = -(dx / plotW) * (LOG_MAX_BASE - LOG_MIN_BASE);
-      // Dragging up moves the visible window up — top edge shows higher dB.
-      const dDb = (dy / plotH) * (2 * DB_RANGE);
-      panLogRef.current = Math.max(-PAN_LIMIT, Math.min(PAN_LIMIT, panLogRef.current + dLog));
-      panDbRef.current = Math.max(-PAN_DB_LIMIT, Math.min(PAN_DB_LIMIT, panDbRef.current + dDb));
-      drawRef.current();
-    };
-    const endDrag = (e: PointerEvent) => {
-      if (!dragging) return;
-      dragging = false;
-      try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    };
-    const onDoubleClick = () => {
-      panLogRef.current = 0;
-      panDbRef.current = 0;
-      drawRef.current();
-    };
-
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('pointerup', endDrag);
-    canvas.addEventListener('pointercancel', endDrag);
-    canvas.addEventListener('dblclick', onDoubleClick);
-    return () => {
-      canvas.removeEventListener('pointerdown', onPointerDown);
-      canvas.removeEventListener('pointermove', onPointerMove);
-      canvas.removeEventListener('pointerup', endDrag);
-      canvas.removeEventListener('pointercancel', endDrag);
-      canvas.removeEventListener('dblclick', onDoubleClick);
-    };
-  }, []);
-
   return <canvas ref={canvasRef} className="eq-curve-canvas" title="Drag to pan (horizontal + vertical) • Double-click to reset" />;
+}
+
+/** Parse "#rrggbb" once, return a fast rgba() formatter. Falls back to
+ *  the default Spotify-accent color on parse failure. */
+function parseAccent(accent: string): (alpha: number) => string {
+  let r = 29, g = 215, b = 96;
+  if (/^#[0-9a-f]{6}$/i.test(accent)) {
+    r = parseInt(accent.slice(1, 3), 16);
+    g = parseInt(accent.slice(3, 5), 16);
+    b = parseInt(accent.slice(5, 7), 16);
+  }
+  return (a) => `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+/** Render the static grid (dB lines + tick labels + frequency markers) to
+ *  the offscreen canvas. Called only when the cache key changes (size, DPR,
+ *  or pan offsets). The offscreen canvas is sized in DEVICE pixels and is
+ *  composited back into the main ctx in CSS pixels via drawImage. */
+function renderStaticGridTo(
+  off: HTMLCanvasElement,
+  targetW: number,
+  targetH: number,
+  dpr: number,
+  cssW: number,
+  cssH: number,
+  plotH: number,
+  dbToY: (db: number) => number,
+  fToX: (f: number) => number,
+  visMinDb: number,
+  visMaxDb: number,
+): void {
+  if (off.width !== targetW || off.height !== targetH) {
+    off.width = targetW;
+    off.height = targetH;
+  }
+  const ogctx = off.getContext('2d');
+  if (!ogctx) return;
+  ogctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ogctx.clearRect(0, 0, cssW, cssH);
+
+  // Horizontal dB grid + tick labels.
+  ogctx.font = '9px -apple-system, system-ui';
+  ogctx.textBaseline = 'middle';
+  const stepStart = Math.ceil(visMinDb / 6) * 6;
+  const stepEnd = Math.floor(visMaxDb / 6) * 6;
+  for (let db = stepStart; db <= stepEnd; db += 6) {
+    const y = dbToY(db);
+    ogctx.strokeStyle = db === 0 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)';
+    ogctx.lineWidth = 1;
+    ogctx.beginPath();
+    ogctx.moveTo(PAD_LEFT, y);
+    ogctx.lineTo(cssW - PAD_RIGHT, y);
+    ogctx.stroke();
+
+    ogctx.textAlign = 'right';
+    ogctx.fillStyle = db === 0 ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)';
+    const label = db > 0 ? `+${db}` : `${db}`;
+    ogctx.fillText(label, PAD_LEFT - 4, y);
+  }
+  ogctx.textBaseline = 'alphabetic';
+
+  // Vertical frequency labels (octave markers only).
+  const octaveMarkers = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+  ogctx.fillStyle = 'rgba(255,255,255,0.32)';
+  ogctx.font = '9.5px -apple-system, system-ui';
+  ogctx.textAlign = 'center';
+  for (const f of octaveMarkers) {
+    const x = fToX(f);
+    if (x < PAD_LEFT - 8 || x > cssW - PAD_RIGHT + 8) continue;
+    const label = f >= 1000 ? `${f / 1000}k` : `${f}`;
+    ogctx.fillText(label, x, cssH - 4);
+  }
+  // Suppress unused-arg lint for plotH (kept for future use).
+  void plotH;
 }

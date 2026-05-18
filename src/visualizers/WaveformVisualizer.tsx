@@ -27,6 +27,11 @@ interface WorkerBundle {
   cleanupTimer: number | null;
   scratchTime: Uint8Array<ArrayBuffer>;
   scratchFreq: Uint8Array<ArrayBuffer>;
+  /** Last FRAME sequence number we sent. Incremented by the main RAF. */
+  lastSentSeq: number;
+  /** Last sequence number the worker has acked via READY. The next FRAME
+   *  is only sent when lastAckSeq === lastSentSeq (worker is idle). */
+  lastAckSeq: number;
 }
 
 // Cached per HTMLCanvasElement. WeakMap so entries are GC'd when the canvas
@@ -108,6 +113,18 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
       const scratchTime = new Uint8Array(fftSize);
       const scratchFreq = new Uint8Array(binCount);
 
+      // Listen for READY acks. Each one bumps lastAckSeq; the main RAF only
+      // sends the next FRAME when lastAckSeq has caught up to lastSentSeq.
+      // If READY arrives without a matching bundle (very small race during
+      // teardown), we ignore it.
+      worker.addEventListener('message', (ev: MessageEvent<{ type: string; seq?: number }>) => {
+        const m = ev.data;
+        if (m && m.type === 'READY' && typeof m.seq === 'number') {
+          const b = canvasBundles.get(canvas);
+          if (b) b.lastAckSeq = m.seq;
+        }
+      });
+
       // transferControlToOffscreen is one-shot per canvas. Wrap defensively in
       // case some upstream code path already burned the transfer slot.
       let offscreen: OffscreenCanvas;
@@ -141,6 +158,8 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
         cleanupTimer: null,
         scratchTime,
         scratchFreq,
+        lastSentSeq: 0,
+        lastAckSeq: 0,
       };
       canvasBundles.set(canvas, bundle);
       workerRef.current = worker;
@@ -192,7 +211,12 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
   }, [settings]);
 
   // Main-thread RAF — read analyser bytes, postMessage FRAME to worker.
+  // Backpressure: skip a frame if the worker hasn't acked the previous one
+  // yet. Prevents postMessage queue buildup under main-thread stress (CPU
+  // pin, GC pause, the EQ curve doing a heavy redraw) — we'd rather drop a
+  // frame than queue several and have the visualizer fall behind.
   useEffect(() => {
+    const canvas = canvasRef.current;
     if (!active) {
       workerRef.current?.postMessage({ type: 'PAUSE' });
       return;
@@ -204,10 +228,17 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
       const scratchT = scratchTimeRef.current;
       const scratchF = scratchFreqRef.current;
       const worker = workerRef.current;
-      if (!scratchT || !scratchF || !worker) return;
+      if (!scratchT || !scratchF || !worker || !canvas) return;
+      const bundle = canvasBundles.get(canvas);
+      if (!bundle) return;
+      // Drop frame if worker is still working on the previous one. The
+      // initial frame is always sent (lastSentSeq === lastAckSeq === 0).
+      if (bundle.lastSentSeq !== bundle.lastAckSeq) return;
       analyser.getByteTimeDomainData(scratchT);
       analyser.getByteFrequencyData(scratchF);
-      worker.postMessage({ type: 'FRAME', time: scratchT, freq: scratchF });
+      const seq = bundle.lastSentSeq + 1;
+      bundle.lastSentSeq = seq;
+      worker.postMessage({ type: 'FRAME', time: scratchT, freq: scratchF, seq });
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);

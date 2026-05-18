@@ -132,6 +132,10 @@ export interface DrawState {
   prevBassEnergy: number;
   onsetEnv: number;
   spectralBands: Float32Array;
+  /** Wall-clock timestamp of the previous draw, used to derive a frame-rate-
+   *  independent dt factor. Without this, 120 Hz displays animate at 2× the
+   *  speed of 60 Hz (since increments were applied per-frame, not per-time). */
+  lastDrawTimeMs: number;
 }
 
 export function createDrawState(): DrawState {
@@ -145,6 +149,7 @@ export function createDrawState(): DrawState {
     prevBassEnergy: 0,
     onsetEnv: 0,
     spectralBands: new Float32Array(64),
+    lastDrawTimeMs: 0,
   };
 }
 
@@ -165,6 +170,15 @@ export function drawFrame(
   const s = settings;
   const isSpectrum = s.waveformStyle === 'spectrum';
   const useSpectralPos = s.spectralPosition && !isSpectrum;
+
+  // Frame-rate-independent time delta, normalized to a 60 Hz reference frame.
+  // dt60 == 1 at 60 Hz, 0.5 at 120 Hz, ~2 at 30 Hz. Cap at 3 to avoid huge
+  // catch-up jumps after the window was inactive. First frame uses 1.
+  const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const dt60 = state.lastDrawTimeMs === 0
+    ? 1
+    : Math.min(3, Math.max(0.1, (nowMs - state.lastDrawTimeMs) / 16.667));
+  state.lastDrawTimeMs = nowMs;
 
   if (useSpectralPos) {
     updateSpectralBands(freq, sampleRate, state.spectralBands);
@@ -230,7 +244,7 @@ export function drawFrame(
       drawRibbon(ctx, width, height, time, palette, state.smoothedSamples, release, gain, spectral);
       break;
     case 'radial':
-      state.rotation += 0.0015;
+      state.rotation += 0.0015 * dt60;
       drawRadial(ctx, width, height, time, palette, state.smoothed, release, gain, state.rotation, s.barWidth, spectral);
       break;
     case 'dots':
@@ -250,11 +264,11 @@ export function drawFrame(
       drawSpectrum(ctx, width, height, freq, sampleRate, palette, state.smoothed, release, gain, s.barWidth);
       break;
     case 'silk':
-      state.tick++;
+      state.tick += dt60;
       drawSilk(ctx, width, height, time, palette, state.smoothedSamples, release, gain, state.tick, spectral);
       break;
     case 'particles': {
-      state.tick++;
+      state.tick += dt60;
       const nyquist = sampleRate / 2;
       const bassEnd = Math.max(2, Math.floor((200 / nyquist) * freq.length));
       const vocalStart = Math.max(bassEnd, Math.floor((300 / nyquist) * freq.length));
@@ -269,10 +283,10 @@ export function drawFrame(
       state.prevBassEnergy = bassEnergy;
       const onsetBoost = bassDelta > 0.03 ? Math.min(1, bassDelta * 6) : 0;
       if (onsetBoost > state.onsetEnv) state.onsetEnv = onsetBoost;
-      else state.onsetEnv *= 0.86;
+      else state.onsetEnv *= Math.pow(0.86, dt60);
       drawParticles(
         ctx, width, height, time, palette, state.smoothedSamples, release, gain,
-        state.particles!, state.tick, bassEnergy, vocalEnergy, state.onsetEnv, s.sensitivity, spectral,
+        state.particles!, state.tick, bassEnergy, vocalEnergy, state.onsetEnv, s.sensitivity, spectral, dt60,
       );
       break;
     }
@@ -301,11 +315,11 @@ function drawBars(
 ): void {
   const slot = barWidth + barGap;
   const barCount = getLinearBarCount(w, barWidth, barGap);
-  if (smoothed.length !== barCount) {
-    const next = new Float32Array(barCount);
-    smoothed.set(smoothed.subarray(0, Math.min(smoothed.length, barCount)));
-    smoothed = next;
-  }
+  // The dispatcher in drawFrame() calls ensureBarBuffer() for us; the local
+  // reassignment that used to live here was dead (the new Float32Array was
+  // discarded when the function returned, losing smoothing state on every
+  // size change). Trust the buffer the dispatcher passes; if its size is
+  // somehow off, fall back to plain index-zero reads rather than allocating.
   const startX = (w - barCount * slot + barGap) / 2;
   const midY = h / 2;
   const peakHeight = h * 0.78;
@@ -492,8 +506,7 @@ function drawRadial(
   spectral: Float32Array | null,
 ): void {
   const barCount = getRadialBarCount();
-  if (smoothed.length !== barCount) smoothed = new Float32Array(barCount);
-
+  // Buffer sizing is handled by the dispatcher via ensureBarBuffer.
   const cx = w / 2;
   const cy = h / 2;
   const minDim = Math.min(w, h);
@@ -601,8 +614,8 @@ function drawDots(
   spectral: Float32Array | null,
 ): void {
   const dotCount = getLinearBarCount(w, barWidth, barGap, 14);
-  if (smoothed.length !== dotCount) smoothed = new Float32Array(dotCount);
-
+  // Buffer sizing is handled by the dispatcher via ensureBarBuffer.
+  void dotCount; // (kept for clarity; realCount below drives the actual loop)
   const slot = (barWidth + barGap) * 3;
   const realCount = Math.max(14, Math.floor(w / slot));
   const startX = (w - realCount * slot + slot) / 2;
@@ -671,6 +684,7 @@ function drawParticles(
   onsetEnv: number,
   sensitivity: number,
   spectral: Float32Array | null,
+  dt60: number,
 ): void {
   const reactivity = Math.min(1.4, Math.max(0.3, sensitivity));
   const midY = h * 0.5;
@@ -751,7 +765,7 @@ function drawParticles(
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];
 
-    p.x += p.vx;
+    p.x += p.vx * dt60;
     if (p.x < 0) p.x += 1;
     else if (p.x >= 1) p.x -= 1;
 

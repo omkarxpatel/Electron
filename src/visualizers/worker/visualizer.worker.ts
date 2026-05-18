@@ -37,12 +37,14 @@ type InboundMessage =
       cssHeight: number;
       settings: Settings;
     }
-  | { type: 'FRAME'; time: Uint8Array; freq: Uint8Array }
+  | { type: 'FRAME'; time: Uint8Array; freq: Uint8Array; seq: number }
   | { type: 'SETTINGS'; settings: Settings }
   | { type: 'RESIZE'; dpr: number; cssWidth: number; cssHeight: number }
   | { type: 'PAUSE' }
   | { type: 'RESUME' }
   | { type: 'DESTROY' };
+
+interface ReadyMessage { type: 'READY'; seq: number }
 
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
@@ -69,12 +71,25 @@ self.addEventListener('message', (event: MessageEvent<InboundMessage>) => {
       // perfectly aligned with the audio-analyser cadence on the main
       // thread (no second-RAF phase lag) and ensures every fresh frame is
       // painted exactly once.
-      if (!running || drawing || !ctx || !settings) break;
+      //
+      // Backpressure: the main thread only sends the next FRAME after it
+      // receives our READY ack. If we're paused or not init'd we still
+      // ack so the main thread doesn't deadlock waiting on us.
+      if (!running || !ctx || !settings) {
+        ack(msg.seq);
+        break;
+      }
+      if (drawing) {
+        // Should not happen under correct backpressure, but defend in depth.
+        ack(msg.seq);
+        break;
+      }
       drawing = true;
       try {
         drawFrame(ctx, cssWidth, cssHeight, msg.time, msg.freq, sampleRate, settings, drawState);
       } finally {
         drawing = false;
+        ack(msg.seq);
       }
       break;
     case 'SETTINGS':
@@ -104,6 +119,17 @@ self.addEventListener('message', (event: MessageEvent<InboundMessage>) => {
       break;
   }
 });
+
+function ack(seq: number): void {
+  const msg: ReadyMessage = { type: 'READY', seq };
+  // `self` inside a dedicated worker module is the worker's global scope;
+  // we use the global postMessage to ack each frame. Typed loosely because
+  // the default lib doesn't include DedicatedWorkerGlobalScope unless
+  // tsconfig opts in to "WebWorker" lib — and we're sharing this file's
+  // helpers with the main thread via imports, so a worker-only lib opt-in
+  // would be wrong here.
+  (self as unknown as { postMessage(m: unknown): void }).postMessage(msg);
+}
 
 function handleInit(msg: Extract<InboundMessage, { type: 'INIT' }>): void {
   canvas = msg.canvas;

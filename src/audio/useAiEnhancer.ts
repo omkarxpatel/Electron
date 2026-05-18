@@ -269,7 +269,7 @@ export function useAiEnhancer({
       // ─── 4. Vocal detection ───
       const vocalR = bandStereoCorrelation(binsL, binsR, 250, 3000, sampleRate);
       const vocalRatio = bandEnergyRatio(binsM, 250, 3000, sampleRate);
-      const vocalEnergyMid = bandEnergyRatio(binsM, 250, 3000, sampleRate) || 0.0001;
+      const vocalEnergyMid = vocalRatio || 0.0001;  // same as vocalRatio; was being recomputed
       const vocalFormantBand = bandEnergyRatio(binsM, 250, 700, sampleRate);
       const formantInVocal = vocalFormantBand / vocalEnergyMid;
       const vocalRaw =

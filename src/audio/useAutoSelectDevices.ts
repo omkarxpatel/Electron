@@ -1,19 +1,27 @@
 import { useEffect, useRef } from 'react';
+import { readLastDeviceId, readLastSourceMode } from './useAudioSource';
+import { isBuiltInLaptopSpeakers, isVirtualSink } from './deviceLabel';
 
 /**
  * Auto-picks audio input + output devices on app start.
  *
- *  - Input: BlackHole 2ch (the user's standard system-audio capture route).
- *           Falls back to any BlackHole channel count if 2ch isn't installed.
+ *  - Input: first attempts to restore the user's previously-selected device
+ *           (so a relaunch resumes whatever the user was using). If that
+ *           device is no longer present, falls back to BlackHole 2ch — the
+ *           standard system-audio capture route.
  *
  *  - Output: prefers any non-built-in physical output (likely a connected
  *           Bluetooth device or wired headphones), falling back to MacBook
- *           speakers. Virtual sinks (BlackHole, aggregates) are excluded so
- *           the processed audio doesn't feed back into capture.
+ *           speakers. Virtual sinks (BlackHole, aggregates, meeting drivers)
+ *           are excluded so processed audio doesn't feed back into capture.
  *
  * Attempts run once per mount via a ref guard, but re-trigger on `devicechange`
- * until both succeed — that's what handles the "permission granted after
- * app start" path (enumerateDevices returns blank labels without permission).
+ * until both succeed — that handles the "permission granted after app start"
+ * path (enumerateDevices returns blank labels without permission).
+ *
+ * System Audio mode (ScreenCaptureKit) is intentionally NOT auto-resumed:
+ * macOS would pop the Screen Recording permission dialog every launch, which
+ * would be surprising. The user clicks "System Audio" themselves.
  */
 
 interface Params {
@@ -48,10 +56,14 @@ export function useAutoSelectDevices({ onUseDevice, onSelectOutput }: Params) {
       if (!hasLabels) return;
 
       if (!attemptedRef.current.input) {
-        const blackhole = pickBlackHole(inputs);
-        if (blackhole) {
+        // Prefer to restore the user's last-used device if it's still present.
+        // Falls back to BlackHole only if the restore target isn't available.
+        const restored =
+          readLastSourceMode() === 'device' ? pickRestored(inputs, readLastDeviceId()) : null;
+        const pick = restored ?? pickBlackHole(inputs);
+        if (pick) {
           attemptedRef.current.input = true;
-          onUseDevice(blackhole.deviceId);
+          onUseDevice(pick.deviceId);
         }
       }
 
@@ -72,6 +84,11 @@ export function useAutoSelectDevices({ onUseDevice, onSelectOutput }: Params) {
       navigator.mediaDevices.removeEventListener('devicechange', handler);
     };
   }, [onUseDevice, onSelectOutput]);
+}
+
+function pickRestored(inputs: MediaDeviceInfo[], lastId: string | null): MediaDeviceInfo | null {
+  if (!lastId) return null;
+  return inputs.find((d) => d.deviceId === lastId) ?? null;
 }
 
 function pickBlackHole(inputs: MediaDeviceInfo[]): MediaDeviceInfo | null {
@@ -101,10 +118,5 @@ function pickBestOutput(outputs: MediaDeviceInfo[]): MediaDeviceInfo | null {
   return real.find((d) => isBuiltInLaptopSpeakers(d.label)) ?? real[0] ?? null;
 }
 
-function isVirtualSink(label: string): boolean {
-  return /blackhole|aggregate|multi-?output|loopback|soundflower/i.test(label);
-}
-
-function isBuiltInLaptopSpeakers(label: string): boolean {
-  return /macbook/i.test(label) && /speaker/i.test(label);
-}
+// isVirtualSink and isBuiltInLaptopSpeakers now live in ./deviceLabel.ts
+// (shared with the one-time migration in useAudioOutput).

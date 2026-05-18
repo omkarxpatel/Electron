@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { EnhancerState } from '../state/enhancer';
 import { Knob } from './Knob';
 
@@ -14,7 +15,9 @@ interface Props {
 
 const KNOB_SIZE = 58;
 
-export function EnhancerPanel({
+export const EnhancerPanel = memo(EnhancerPanelImpl);
+
+function EnhancerPanelImpl({
   state,
   setBass,
   setMid,

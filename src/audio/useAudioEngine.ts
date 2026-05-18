@@ -188,17 +188,19 @@ export function useAudioEngine(
         const masterGain = ctx.createGain();
         masterGain.gain.value = 1;
 
-        // Brick-wall limiter — protects against clipping no matter how the
-        // user stacks input compensation + EQ + enhancer + master volume.
-        // Threshold at -1 dBFS leaves max headroom for loudness while still
-        // catching peaks before OS hard-clip. High ratio + fast attack =
-        // transparent peak limit; moderate release prevents pumping.
+        // Limiter — interim brick-wall behavior via DynamicsCompressor.
+        // True brick-wall limiting requires an AudioWorklet (Phase 4); these
+        // params trade a small loss in transparency for headroom against the
+        // worst-case stack: +6 dB BlackHole + +12 dB preamp + +12 dB band +
+        // +12 dB enhancer + 150 % volume. Threshold -3 keeps output clear of
+        // 0 dBFS even when peaks overshoot the ratio response curve; release
+        // 0.25 reduces audible pumping on bass-heavy material.
         const limiter = ctx.createDynamicsCompressor();
-        limiter.threshold.value = -1;
-        limiter.knee.value = 4;
-        limiter.ratio.value = 16;
-        limiter.attack.value = 0.003;
-        limiter.release.value = 0.18;
+        limiter.threshold.value = -3;
+        limiter.knee.value = 2;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.002;
+        limiter.release.value = 0.25;
 
         const analyserNode = ctx.createAnalyser();
         analyserNode.fftSize = 2048;
@@ -221,8 +223,12 @@ export function useAudioEngine(
         const preEqSplitter = ctx.createChannelSplitter(2);
         const preEqAnalyserLNode = ctx.createAnalyser();
         const preEqAnalyserRNode = ctx.createAnalyser();
-        preEqAnalyserLNode.fftSize = 2048;
-        preEqAnalyserRNode.fftSize = 2048;
+        // 1024 FFT (~47 Hz bins at 48 kHz) is plenty for the AI's ISO-10-band
+        // aggregation — bins are aggregated into ~octave-wide bands anyway, so
+        // halving the FFT size cuts those analysers' work in half with no
+        // measurable difference in classification or correction quality.
+        preEqAnalyserLNode.fftSize = 1024;
+        preEqAnalyserRNode.fftSize = 1024;
         preEqAnalyserLNode.smoothingTimeConstant = 0.5;
         preEqAnalyserRNode.smoothingTimeConstant = 0.5;
 
@@ -281,8 +287,10 @@ export function useAudioEngine(
         preEqAnalyserRRef.current = preEqAnalyserRNode;
         destinationConnectedRef.current = false;
 
-        // Apply current state to fresh nodes.
-        applyEqState(ctx, preamp, filters, eqStateRef.current);
+        // Apply current state to fresh nodes. Reset prev-applied so the
+        // first apply writes every band.
+        prevAppliedBandsRef.current = null;
+        applyEqState(ctx, preamp, filters, eqStateRef.current, aiEnabledRef.current, prevAppliedBandsRef);
         applyEnhancerState(
           ctx,
           bassShelf,
@@ -350,15 +358,26 @@ export function useAudioEngine(
 
   /* ─────────────────────────────────────────────────────────────
      Slider/preset/bypass changes — update node params in place.
+     When AI Enhance is on, the AI tick below is the sole writer to
+     filter.gain (it reads eqStateRef.current and writes base+delta).
+     If THIS effect also ran, the two would alternate setTargetAtTime
+     calls every 100 ms and the slider thumb would visibly jitter.
+     Gate accordingly. Preamp + bypass are still applied either way.
      ───────────────────────────────────────────────────────────── */
+
+  /** Previous baseline band values — used to only re-schedule the bands
+   *  whose gain has actually changed. Avoids 31 setTargetAtTime calls on
+   *  every single-band drag tick. Initialised lazily; first apply after a
+   *  graph rebuild always writes every band. */
+  const prevAppliedBandsRef = useRef<number[] | null>(null);
 
   useEffect(() => {
     const ctx = ctxRef.current;
     const preamp = preampRef.current;
     const filters = filtersRef.current;
     if (!ctx || !preamp || filters.length === 0) return;
-    applyEqState(ctx, preamp, filters, eqState);
-  }, [eqState]);
+    applyEqState(ctx, preamp, filters, eqState, aiEnabled, prevAppliedBandsRef);
+  }, [eqState, aiEnabled]);
 
   /* Input compensation — smoothly ramp the input-gain node when the
    * compensation value changes (e.g. user switched from BlackHole to mic). */
@@ -409,10 +428,23 @@ export function useAudioEngine(
       if (s.bypass) return;
       const delta = aiDeltaRef.current;
       const now = ctx.currentTime;
+      // Keep prevAppliedBandsRef in sync with what we're actually scheduling.
+      // Critical for the AI-off transition: when the user disables AI, the
+      // eqState effect runs with its dirty-band diff. If we didn't track the
+      // AI-influenced values here, the diff would compare stale baseline-vs-
+      // baseline and skip — leaving filters stuck at base+delta until the
+      // user moves a slider.
+      let prev = prevAppliedBandsRef.current;
+      if (prev === null || prev.length !== filters.length) {
+        prev = new Array(filters.length).fill(0);
+        prevAppliedBandsRef.current = prev;
+      }
       for (let i = 0; i < filters.length; i++) {
         const base = s.bands[i] ?? 0;
         const d = delta[i] ?? 0;
-        filters[i].gain.setTargetAtTime(base + d, now, aiSetTargetTau);
+        const v = base + d;
+        filters[i].gain.setTargetAtTime(v, now, aiSetTargetTau);
+        prev[i] = v;
       }
     }, 100);
     return () => window.clearInterval(id);
@@ -477,16 +509,40 @@ function applyEqState(
   preamp: GainNode,
   filters: BiquadFilterNode[],
   state: EQState,
+  aiEnabled: boolean,
+  prevAppliedRef: { current: number[] | null },
 ): void {
   const now = ctx.currentTime;
   if (state.bypass) {
     preamp.gain.setTargetAtTime(1, now, PARAM_RAMP);
+    // Force-zero all bands regardless of diff (bypass overrides any in-flight ramp).
     for (const f of filters) f.gain.setTargetAtTime(0, now, PARAM_RAMP);
+    prevAppliedRef.current = new Array(filters.length).fill(0);
     return;
   }
   preamp.gain.setTargetAtTime(Math.pow(10, state.preamp / 20), now, PARAM_RAMP);
+  // When AI is on, the AI tick owns filter gains — don't write them here.
+  if (aiEnabled) return;
+  // Per-band dirty diff. First call after a graph rebuild OR bandCount change
+  // writes all bands; subsequent calls only write bands whose value moved.
+  const prev = prevAppliedRef.current;
+  const fresh = prev === null || prev.length !== filters.length;
+  if (fresh) {
+    const next = new Array(filters.length).fill(0);
+    for (let i = 0; i < filters.length; i++) {
+      const v = state.bands[i] ?? 0;
+      filters[i].gain.setTargetAtTime(v, now, PARAM_RAMP);
+      next[i] = v;
+    }
+    prevAppliedRef.current = next;
+    return;
+  }
   for (let i = 0; i < filters.length; i++) {
-    filters[i].gain.setTargetAtTime(state.bands[i] ?? 0, now, PARAM_RAMP);
+    const v = state.bands[i] ?? 0;
+    if (v !== prev[i]) {
+      filters[i].gain.setTargetAtTime(v, now, PARAM_RAMP);
+      prev[i] = v;
+    }
   }
 }
 

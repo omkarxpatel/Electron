@@ -93,6 +93,12 @@ function magnitudeDb(coefs: BiquadCoefs, f: number, sampleRate: number): number 
 /**
  * Combined dB response of the EQ chain at one frequency.
  * First band = low shelf, last band = high shelf, the rest are peaking.
+ *
+ * Note: this is the per-call variant. The EQ response curve renders 320
+ * sample frequencies × up to 31 bands and was rebuilding biquad coefficients
+ * on every sample (~10k peakingCoefs calls per draw). The faster path is
+ * `buildBandCoefs` + `responseCurveDb` below — build the coefficient array
+ * once per parameter change, then evaluate `magnitudeDb` per sample frequency.
  */
 export function combinedResponseDb(
   freq: number,
@@ -122,6 +128,80 @@ export function combinedResponseDb(
   if (enhancerTrebleDb !== 0) {
     total += magnitudeDb(highShelfCoefs(10000, enhancerTrebleDb, sampleRate), freq, sampleRate);
   }
+  return total;
+}
+
+/** Precomputed biquad coefficients for an EQ-state snapshot. The flag
+ *  `nonZero` lets the per-sample loop skip pass-through bands entirely
+ *  without re-checking the gain each call. */
+interface BandCoefEntry {
+  coefs: BiquadCoefs;
+  nonZero: boolean;
+}
+
+export interface BandCoefSet {
+  bandCoefs: BandCoefEntry[];
+  bassEnhCoefs: BandCoefEntry | null;
+  trebleEnhCoefs: BandCoefEntry | null;
+  preampDb: number;
+}
+
+/**
+ * Build the coefficient set for an entire EQ-state snapshot. Call this once
+ * per `(bands, bandFreqs, Q, preamp, enhancer{Bass,Treble})` change; reuse
+ * the result for every sample frequency in the curve.
+ */
+export function buildBandCoefs(
+  bands: number[],
+  bandFreqs: number[],
+  Q: number,
+  preampDb: number,
+  enhancerBassDb = 0,
+  enhancerTrebleDb = 0,
+  sampleRate: number = DEFAULT_SAMPLE_RATE,
+): BandCoefSet {
+  const bandCoefs: BandCoefEntry[] = new Array(bands.length);
+  for (let i = 0; i < bands.length; i++) {
+    const fc = bandFreqs[i];
+    const gainDb = bands[i];
+    const isShelf = i === 0 || i === bands.length - 1;
+    // Peaking bands at 0 dB are mathematical pass-throughs; we still build
+    // a coef for shelves at 0 dB because the math has tiny but real behavior
+    // at the band edges (and old combinedResponseDb did too).
+    const nonZero = gainDb !== 0 || isShelf;
+    let coefs: BiquadCoefs;
+    if (i === 0) coefs = lowShelfCoefs(fc, gainDb, sampleRate);
+    else if (i === bands.length - 1) coefs = highShelfCoefs(fc, gainDb, sampleRate);
+    else coefs = peakingCoefs(fc, Q, gainDb, sampleRate);
+    bandCoefs[i] = { coefs, nonZero };
+  }
+  const bassEnhCoefs =
+    enhancerBassDb !== 0
+      ? { coefs: lowShelfCoefs(80, enhancerBassDb, sampleRate), nonZero: true }
+      : null;
+  const trebleEnhCoefs =
+    enhancerTrebleDb !== 0
+      ? { coefs: highShelfCoefs(10000, enhancerTrebleDb, sampleRate), nonZero: true }
+      : null;
+  return { bandCoefs, bassEnhCoefs, trebleEnhCoefs, preampDb };
+}
+
+/** Evaluate the response curve at one sample frequency using a precomputed
+ *  coefficient set. ~3-4× faster than `combinedResponseDb` per sample on a
+ *  31-band layout because we skip the per-call coefficient construction. */
+export function responseCurveDb(
+  freq: number,
+  set: BandCoefSet,
+  sampleRate: number = DEFAULT_SAMPLE_RATE,
+): number {
+  let total = set.preampDb;
+  for (let i = 0; i < set.bandCoefs.length; i++) {
+    const entry = set.bandCoefs[i];
+    if (!entry.nonZero) continue;
+    total += magnitudeDb(entry.coefs, freq, sampleRate);
+  }
+  if (set.bassEnhCoefs) total += magnitudeDb(set.bassEnhCoefs.coefs, freq, sampleRate);
+  if (set.trebleEnhCoefs) total += magnitudeDb(set.trebleEnhCoefs.coefs, freq, sampleRate);
   return total;
 }
 

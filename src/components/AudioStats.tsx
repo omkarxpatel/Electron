@@ -11,37 +11,36 @@ interface Props {
   active?: boolean;
 }
 
-interface Stats {
-  levelDb: number;
-  rmsDb: number;
-  peakDb: number;
-  peakHoldDb: number;
-  centroidHz: number;
-  crestDb: number;
-  stereo: number;
-}
-
-const INITIAL: Stats = {
-  levelDb: -Infinity,
-  rmsDb: -Infinity,
-  peakDb: -Infinity,
-  peakHoldDb: -Infinity,
-  centroidHz: 0,
-  crestDb: 0,
-  stereo: 0,
-};
-
 const LEVEL_WINDOW = 12;
 const COLLAPSE_KEY = 'av.audioStats.collapsed';
 
 export const AudioStats = memo(AudioStatsImpl);
 
+/**
+ * AudioStats writes its numeric readouts directly to DOM via refs instead of
+ * React state. Previously, the RAF tick called setStats ~12×/sec which
+ * triggered a React commit re-rendering all 7 <Stat> children. The pattern
+ * here mirrors what SpotifyNowPlaying does with its progress scrubber: the
+ * setState is reserved for "structural" UI (collapsed), and per-tick numeric
+ * updates write `textContent` directly.
+ */
 function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props) {
   useRenderCount('AudioStats');
-  const [stats, setStats] = useState<Stats>(INITIAL);
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem(COLLAPSE_KEY) === 'true',
   );
+
+  // DOM refs for the six numeric readouts. Updated each RAF tick, no setState.
+  const levelRef = useRef<HTMLSpanElement>(null);
+  const rmsRef = useRef<HTMLSpanElement>(null);
+  const peakRef = useRef<HTMLSpanElement>(null);
+  const holdRef = useRef<HTMLSpanElement>(null);
+  const crestRef = useRef<HTMLSpanElement>(null);
+  const stereoRef = useRef<HTMLSpanElement>(null);
+  const centroidRef = useRef<HTMLSpanElement>(null);
+
+  // Per-frame analysis state kept in refs so the RAF closure doesn't need to
+  // re-mount when something else re-renders this component.
   const peakHoldRef = useRef<number>(-Infinity);
   const rmsHistoryRef = useRef<number[]>([]);
 
@@ -55,7 +54,14 @@ function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props
 
   useEffect(() => {
     if (!analyser) {
-      setStats(INITIAL);
+      // Reset DOM readouts when no source.
+      setText(levelRef, '−∞ dB');
+      setText(rmsRef, '−∞ dB');
+      setText(peakRef, '−∞ dB');
+      setText(holdRef, '−∞ dB');
+      setText(crestRef, '0.0 dB');
+      setText(stereoRef, '—');
+      setText(centroidRef, '— Hz');
       peakHoldRef.current = -Infinity;
       rmsHistoryRef.current = [];
       return;
@@ -102,7 +108,9 @@ function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props
       const hist = rmsHistoryRef.current;
       hist.push(rms);
       if (hist.length > LEVEL_WINDOW) hist.shift();
-      const avgRms = hist.reduce((a, b) => a + b, 0) / hist.length;
+      let histSum = 0;
+      for (let i = 0; i < hist.length; i++) histSum += hist[i];
+      const avgRms = histSum / hist.length;
       const levelDb = avgRms > 0.0001 ? 20 * Math.log10(avgRms) : -Infinity;
 
       let weightedSum = 0;
@@ -115,8 +123,7 @@ function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props
       }
       const centroidHz = totalEnergy > 0 ? weightedSum / totalEnergy : 0;
 
-      const crestDb =
-        isFinite(peakDb) && isFinite(rmsDb) ? peakDb - rmsDb : 0;
+      const crestDb = isFinite(peakDb) && isFinite(rmsDb) ? peakDb - rmsDb : 0;
 
       let stereo = 1;
       if (lBuf && rBuf && analyserL && analyserR) {
@@ -135,15 +142,14 @@ function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props
         stereo = denom > 0.000001 ? sLR / denom : 1;
       }
 
-      setStats({
-        levelDb,
-        rmsDb,
-        peakDb,
-        peakHoldDb: peakHoldRef.current,
-        centroidHz,
-        crestDb,
-        stereo,
-      });
+      // Direct DOM writes — no React commit per tick.
+      setText(levelRef, fmtDb(levelDb));
+      setText(rmsRef, fmtDb(rmsDb));
+      setText(peakRef, fmtDb(peakDb));
+      setText(holdRef, fmtDb(peakHoldRef.current));
+      setText(crestRef, `${crestDb.toFixed(1)} dB`);
+      setText(stereoRef, fmtCorrelation(stereo));
+      setText(centroidRef, fmtHz(centroidHz));
     };
 
     rafId = requestAnimationFrame(tick);
@@ -156,37 +162,44 @@ function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props
         <div className="audio-stats-row">
           <Stat
             label="LEVEL"
-            value={fmtDb(stats.levelDb)}
+            valueRef={levelRef}
+            initial="−∞ dB"
             title="Current loudness — 1-second moving-average RMS in dBFS."
           />
           <Stat
             label="RMS"
-            value={fmtDb(stats.rmsDb)}
+            valueRef={rmsRef}
+            initial="−∞ dB"
             title="Per-frame average loudness in dBFS — faster than LEVEL."
           />
           <Stat
             label="PEAK"
-            value={fmtDb(stats.peakDb)}
+            valueRef={peakRef}
+            initial="−∞ dB"
             title="Highest sample amplitude this frame, in dBFS."
           />
           <Stat
             label="HOLD"
-            value={fmtDb(stats.peakHoldDb)}
+            valueRef={holdRef}
+            initial="−∞ dB"
             title="Peak with slow decay (~3 dB/sec)."
           />
           <Stat
             label="CREST"
-            value={`${stats.crestDb.toFixed(1)} dB`}
+            valueRef={crestRef}
+            initial="0.0 dB"
             title="Crest factor = PEAK − RMS. High (>15 dB) = dynamic, low (<6 dB) = heavily compressed / squashed."
           />
           <Stat
             label="STEREO"
-            value={fmtCorrelation(stats.stereo)}
+            valueRef={stereoRef}
+            initial="—"
             title="L/R correlation. +1.00 = mono, ~0 = wide stereo, negative = phase-inverted (problem)."
           />
           <Stat
             label="CENTROID"
-            value={fmtHz(stats.centroidHz)}
+            valueRef={centroidRef}
+            initial="— Hz"
             title="Where the spectrum's energy is centered. Low = bass-heavy, mid = vocal-forward, high = bright."
           />
         </div>
@@ -204,13 +217,25 @@ function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props
   );
 }
 
-function Stat({ label, value, title }: { label: string; value: string; title: string }) {
+interface StatProps {
+  label: string;
+  valueRef: React.Ref<HTMLSpanElement>;
+  initial: string;
+  title: string;
+}
+
+function Stat({ label, valueRef, initial, title }: StatProps) {
   return (
     <div className="audio-stat" title={title}>
       <span className="audio-stat-label">{label}</span>
-      <span className="audio-stat-value">{value}</span>
+      <span className="audio-stat-value" ref={valueRef}>{initial}</span>
     </div>
   );
+}
+
+function setText(ref: React.RefObject<HTMLSpanElement | null>, text: string): void {
+  const el = ref.current;
+  if (el && el.textContent !== text) el.textContent = text;
 }
 
 function fmtDb(db: number): string {

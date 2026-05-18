@@ -133,12 +133,16 @@ function SyncedLyrics({ lines, playback, active }: SyncedLyricsProps) {
   const currentIdxRef = useRef<number>(-1);
 
   // RAF loop: compute elapsed time from anchor + wall clock, find the current
-  // line, only setState if the index changed.
+  // line, only setState if the index changed. Throttled to ~10 Hz — lyric
+  // resolution is in seconds, checking 60 ×/sec is wasted work.
   useEffect(() => {
     if (!active) return;
     let rafId = 0;
-    const tick = () => {
+    let last = 0;
+    const tick = (now: number) => {
       rafId = requestAnimationFrame(tick);
+      if (now - last < 100) return;
+      last = now;
       const anchor = anchorElapsedMsRef.current;
       const since = isPlayingRef.current ? performance.now() - anchorReceivedAtRef.current : 0;
       const elapsedSec = (anchor + since) / 1000;

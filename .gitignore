@@ -5,7 +5,12 @@ node_modules/
 dist/
 dist-electron/
 release/
-build/
+
+# electron-builder intermediates / preview artifacts
+# (build/icon.svg, build/icon.png, build/icon.icns are tracked — they're
+# the inputs the release pipeline reads.)
+build/icon.iconset/
+build/icons-preview/
 
 # editor / OS
 .DS_Store
@@ -27,6 +32,17 @@ yarn-error.log*
 .env.development.local
 .env.production.local
 
-# local-only dev notes (not for the public repo)
+# local-only dev notes
 HANDOFF.md
 .claude/
+.claude-flow/
+
+# planning / audit working docs (internal — not for the public repo)
+/CLAUDE_CHANGES/
+/CODEX_CHANGES/
+/DEEP_REFACTOR_CANDIDATES.md
+/IMPLEMENTATION_PHASES.md
+/MASTER_OPTIMIZATION_ROADMAP.md
+/PERFORMANCE_PROFILING_PLAN.md
+/QUICK_WINS_CHECKLIST.md
+/RISKY_CHANGES.md

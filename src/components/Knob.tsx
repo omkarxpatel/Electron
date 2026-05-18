@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
 interface Props {
   label: string;
@@ -18,7 +18,9 @@ const ARC_START_DEG = -135;
 const ARC_END_DEG = 135;
 const ARC_SPAN = ARC_END_DEG - ARC_START_DEG;
 
-export function Knob({
+export const Knob = memo(KnobImpl);
+
+function KnobImpl({
   label,
   value,
   min,

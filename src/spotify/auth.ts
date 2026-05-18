@@ -137,8 +137,25 @@ async function exchangeCodeForTokens(
  * Trade the refresh token for a fresh access token. Spotify may also rotate
  * the refresh token in the response; if it does, we save the new one.
  * Returns the new access token.
+ *
+ * Mutex: when multiple Spotify requests fail with 401 simultaneously they all
+ * call refreshAccessToken. Without a mutex they'd each POST /token; Spotify
+ * could rotate the refresh token, and whichever response landed last would
+ * win — but the earlier responses' stored tokens would already be obsolete.
+ * Net effect: forced re-auth on the next request. We coalesce concurrent
+ * callers onto a single in-flight promise.
  */
-export async function refreshAccessToken(): Promise<string> {
+let refreshing: Promise<string> | null = null;
+
+export function refreshAccessToken(): Promise<string> {
+  if (refreshing) return refreshing;
+  refreshing = doRefresh().finally(() => {
+    refreshing = null;
+  });
+  return refreshing;
+}
+
+async function doRefresh(): Promise<string> {
   const clientId = getClientId();
   if (!clientId) throw new Error('No Spotify Client ID configured');
 
