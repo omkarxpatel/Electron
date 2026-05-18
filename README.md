@@ -12,19 +12,42 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
 
 ---
 
+## Contents
+
+- [Install](#install)
+- [First-run setup](#first-run-setup)
+  - [macOS permissions](#1-macos-permissions)
+  - [BlackHole 2ch](#2-optional-but-recommended-blackhole-2ch)
+  - [Spotify Client ID](#3-spotify-client-id)
+- [Features](#features)
+- [Mouse / keyboard cheatsheet](#mouse--keyboard-cheatsheet)
+- [Troubleshooting](#troubleshooting)
+  - [Install / launch issues](#install--launch-issues) — "damaged" error, right-click → Open, hidden window
+  - [No audio when Live is on](#i-clicked-live-but-i-dont-hear-any-audio) — diagnostic walkthrough
+  - [Audio is too quiet](#audio-is-playing-but-its-too-quiet) — volume, preamp, output device
+  - [Other](#other) — feedback, Spotify connect, permissions, empty device list
+- [For developers](#for-developers)
+- [Tech stack](#tech-stack)
+- [Known limitations](#known-limitations)
+- [License](#license)
+
+---
+
 ## Install
 
 1. **Download the latest `.dmg`** from the [Releases page](https://github.com/omkarxpatel/Spotify-Visualizer-Modifier/releases/latest). Pick the file that matches your Mac:
    - `AudioVisualizer-x.y.z-arm64.dmg` for Apple Silicon (M1, M2, M3, …)
    - `AudioVisualizer-x.y.z-x64.dmg` for Intel Macs
 2. **Open the DMG** and drag `Audio Visualizer` into your `Applications` folder.
-3. **First launch — Gatekeeper warning.** Because this app isn't code-signed (the Apple Developer Program costs $99/year and this is free), macOS will refuse to open it the normal way. Instead:
-   - Open `Applications` in Finder.
-   - **Right-click** (or Control-click) `Audio Visualizer` → **Open**.
-   - A dialog appears asking if you're sure. Click **Open**.
-   - You only have to do this once. After that, double-click works normally.
+3. **First launch — Gatekeeper warning.** Because this app isn't code-signed (the Apple Developer Program costs $99/year and this is free), macOS will refuse to open it. **On recent macOS versions you'll see "Audio Visualizer is damaged and can't be opened"** — that message is misleading; the app isn't damaged, just unsigned. To fix, open Terminal and run:
 
-   If the right-click trick doesn't work on your macOS version: open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the `Audio Visualizer` notice that appears after you tried to launch it.
+   ```sh
+   xattr -cr "/Applications/Audio Visualizer.app"
+   ```
+
+   That removes the `com.apple.quarantine` extended attribute macOS attaches to anything downloaded from a browser. Launch normally afterward — no further prompts.
+
+   On older macOS, the right-click trick may still work: right-click `Audio Visualizer` in `Applications` → **Open** → confirm. If neither works, see [Troubleshooting](#troubleshooting).
 
 That's it. No `brew install`, no `npm install`, no Node.
 
@@ -140,20 +163,91 @@ You only do this once per Mac.
 
 ## Troubleshooting
 
-**"App is damaged and can't be opened" on first launch**
-This is the Gatekeeper warning for unsigned apps. Right-click the app in `Applications` → **Open**, then click **Open** in the dialog. Documented in the install section above. (`xattr -dr com.apple.quarantine /Applications/Audio\ Visualizer.app` from Terminal removes it system-wide if you prefer.)
+### Install / launch issues
 
-**Live mode is silent**
-Either no audio source is connected, or the output device is set to a silent virtual driver. Check the top-bar dropdowns — input should be BlackHole 2ch (or System Audio), output should be real speakers / headphones.
+**"Audio Visualizer is damaged and can't be opened"**
+Misleading message — the app isn't damaged, it's unsigned. macOS slaps a quarantine flag on anything downloaded by a browser, and recent macOS versions reject unsigned apps with that flag much more aggressively than they used to.
+
+Fix from Terminal:
+```sh
+xattr -cr "/Applications/Audio Visualizer.app"
+```
+
+Or if the app is still in `~/Downloads`:
+```sh
+xattr -cr ~/Downloads/Audio\ Visualizer.app
+```
+
+Launch normally afterward. The flag is cleared once and the app stays usable.
+
+**Right-click → Open does nothing on macOS 15+**
+The old workaround stopped working on newer macOS. Use the `xattr` command above instead.
+
+**App opens but window is hidden / nothing visible**
+The app launched in the background. Click its icon in the Dock, or press `Cmd+Tab` to bring it forward.
+
+---
+
+### "I clicked Live but I don't hear any audio"
+
+Walk through these in order — most "no sound" cases are one of the first three.
+
+**1. Is something actually playing?**
+Spotify (or any audio source) needs to be playing on your Mac. Confirm by toggling **Live OFF** — if you can hear the source through your speakers normally, audio is reaching macOS at least.
+
+**2. macOS output device — what is the system playing through?**
+Click the volume icon in the menu bar. The selected output (highlighted) is where macOS sends audio.
+
+- If you're using **BlackHole as input** for the app: macOS output **must be BlackHole 2ch** so the app can capture the signal. (Your real speakers go silent — that's expected.)
+- If you're using **System Audio** mode (top-bar button): macOS output can be your real speakers, headphones, etc.
+
+**3. App's "Output device" dropdown — where does the processed signal go?**
+Top bar, second-to-last dropdown. The processed audio routes here.
+
+- Set this to a **real output** (AirPods, headphones, MacBook speakers — NOT BlackHole, or you'll create a silent feedback loop).
+- "System default" follows macOS's output — if macOS is set to BlackHole, "System default" also goes to BlackHole, which is silent. Pick a real device explicitly.
+
+**4. Is "Live" actually ON?**
+The Live indicator in the top right needs the orange dot lit. Without it, the app is in "visualize only" mode — no output through the app's chain, system audio plays directly through wherever macOS is routing it.
+
+**5. Did you connect AirPods / Bluetooth headphones AFTER launching the app?**
+Known caveat: the output picker doesn't auto-re-route when a new device connects mid-session. Open the **Output device** dropdown and pick the AirPods manually.
+
+**6. Audio worked, then stopped after switching sources**
+The audio context can get stuck on a stale device handle. Source picker → Disconnect → reconnect. If that doesn't help, quit and relaunch the app.
+
+---
+
+### Audio is playing but it's too quiet
+
+The app's chain is unity-gain at default settings; the volume knob (in the Enhancer panel) is a literal multiplier on top of that. 0..250%.
+
+- **100%** = same loudness as direct macOS playback.
+- **200%+** = noticeably louder for quietly-mastered content (classical, podcasts, older recordings). For modern hip-hop / pop already mastered near 0 dBFS, peaks will clip past ~150% — that's the digital ceiling, not a bug.
+- The **Preamp** slider (vertical, left of the EQ bands) adds another ±12 dB before EQ.
+- The **Bass / Mid / Treble** knobs add ±12 dB each at their respective shelf frequencies.
+
+If audio still feels quieter than direct playback at 100%, check:
+- macOS app-level volume (System Settings → Sound → some macOS versions expose a per-app mixer).
+- The output device's own volume (AirPods have hardware volume; some Bluetooth speakers have an internal level).
+
+---
+
+### Other
 
 **Live mode feedback (loud whining / echo)**
-The output device and input source are the same (or both go through BlackHole). Pick a different output device — your real speakers / headphones, not BlackHole.
+The output device and input source are routed through the same path. If your input is BlackHole, your output must NOT be BlackHole. Set the **Output device** dropdown to a real device.
 
 **Spotify won't connect**
-Make sure the redirect URI you added is exactly `http://127.0.0.1:8888/callback`. If you used `localhost`, change it. If port 8888 is taken by another app, quit it temporarily.
+- Redirect URI in your Spotify dashboard must be exactly `http://127.0.0.1:8888/callback`. Not `localhost` — Spotify deprecated localhost in 2024.
+- Port 8888 must be free. Quit any other dev server using it temporarily.
+- If the browser tab opens but never returns to the app, the redirect URI is probably wrong. Double-check it character-by-character.
 
 **Nothing happens when I click "System Audio"**
-macOS is asking for Screen Recording permission. Open **System Settings → Privacy & Security → Screen Recording** and enable `Audio Visualizer`, then click System Audio again.
+macOS is asking for Screen Recording permission silently. Open **System Settings → Privacy & Security → Screen Recording**, enable `Audio Visualizer`, then click System Audio again.
+
+**Input device dropdown is empty**
+macOS hides device labels from apps without microphone permission, even if you only plan to use BlackHole. Click "Grant microphone access" in the source dropdown when prompted, or go to **System Settings → Privacy & Security → Microphone** and enable the app.
 
 ---
 
