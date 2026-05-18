@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from './api';
 import { authorize, isAuthenticated, disconnect } from './auth';
 import { getClientId, setClientId, clearClientId } from './storage';
@@ -8,6 +8,16 @@ import type {
   SpotifyPlaylist,
   SpotifyTrack,
 } from './types';
+
+/** A track loaded from a playlist, paired with its ORIGINAL playlist position.
+ *  We can't use the filtered-array index as the position because null/local
+ *  items get filtered out — using the index would shift positions and play
+ *  the wrong track when Spotify resolves `play(context_uri, offset.position)`.
+ *  Storing position alongside the track makes the invariant local. */
+export interface PlaylistEntry {
+  position: number;
+  track: SpotifyTrack;
+}
 
 export interface SpotifyState {
   clientId: string | null;
@@ -19,12 +29,7 @@ export interface SpotifyState {
   playlistsLoading: boolean;
 
   selectedPlaylist: SpotifyPlaylist | null;
-  tracks: SpotifyTrack[];
-  /** Parallel to `tracks` — each entry is the original playlist position
-   *  of the corresponding track (BEFORE we filter out null/local items).
-   *  Required so the offset we pass to Spotify's `play(context_uri, offset)`
-   *  matches the actual playlist position, not the filtered-array index. */
-  trackPositions: number[];
+  entries: PlaylistEntry[];
   tracksLoading: boolean;
   /** Total tracks in the selected playlist (for pagination state). */
   tracksTotal: number;
@@ -57,8 +62,7 @@ export function useSpotify() {
     playlists: [],
     playlistsLoading: false,
     selectedPlaylist: null,
-    tracks: [],
-    trackPositions: [],
+    entries: [],
     tracksLoading: false,
     tracksTotal: 0,
     tracksNextOffset: null,
@@ -190,19 +194,14 @@ export function useSpotify() {
       // null/local items get filtered out (these would shift the indices
       // and cause clicks to play the wrong track).
       const baseOffset = res.offset ?? 0;
-      const tracks: SpotifyTrack[] = [];
-      const trackPositions: number[] = [];
+      const entries: PlaylistEntry[] = [];
       res.items.forEach((it, i) => {
-        if (it.track) {
-          tracks.push(it.track);
-          trackPositions.push(baseOffset + i);
-        }
+        if (it.track) entries.push({ position: baseOffset + i, track: it.track });
       });
       const fetchedThrough = baseOffset + res.items.length;
       setState((s) => ({
         ...s,
-        tracks,
-        trackPositions,
+        entries,
         tracksLoading: false,
         tracksTotal: res.total,
         // Continue from the next playlist position, NOT the filtered count —
@@ -224,24 +223,17 @@ export function useSpotify() {
     try {
       const res = await api.getPlaylistTracks(playlistId, 100, offset);
       const baseOffset = res.offset ?? offset;
-      const moreTracks: SpotifyTrack[] = [];
-      const morePositions: number[] = [];
+      const moreEntries: PlaylistEntry[] = [];
       res.items.forEach((it, i) => {
-        if (it.track) {
-          moreTracks.push(it.track);
-          morePositions.push(baseOffset + i);
-        }
+        if (it.track) moreEntries.push({ position: baseOffset + i, track: it.track });
       });
       const fetchedThrough = baseOffset + res.items.length;
       setState((cur) => {
         // Skip if user switched playlists during fetch
         if (cur.selectedPlaylist?.id !== playlistId) return { ...cur, tracksLoading: false };
-        const tracks = [...cur.tracks, ...moreTracks];
-        const trackPositions = [...cur.trackPositions, ...morePositions];
         return {
           ...cur,
-          tracks,
-          trackPositions,
+          entries: [...cur.entries, ...moreEntries],
           tracksLoading: false,
           tracksTotal: res.total,
           // Same fix as selectPlaylist — advance by the playlist-position
@@ -268,17 +260,13 @@ export function useSpotify() {
       if (contextUri) {
         // Resolve the playlist position to pass to Spotify:
         //   - explicitOffsetIdx wins (album drill-in passes its own index)
-        //   - otherwise find the track in our filtered array, then look up
-        //     the ORIGINAL playlist position from the parallel positions
-        //     array (filtering nulls/local items shifts the array index but
-        //     NOT the playlist position).
+        //   - otherwise find the entry for this track and use its stored
+        //     position (filtering nulls/local items shifts the array index
+        //     but NOT the playlist position the entry was built with).
         let trackIndex: number | undefined = explicitOffsetIdx;
         if (trackIndex === undefined) {
-          const filteredIdx = stateRef.current.tracks.findIndex((t) => t.id === track.id);
-          if (filteredIdx >= 0) {
-            const pos = stateRef.current.trackPositions[filteredIdx];
-            trackIndex = pos !== undefined ? pos : filteredIdx;
-          }
+          const entry = stateRef.current.entries.find((e) => e.track.id === track.id);
+          if (entry) trackIndex = entry.position;
         }
         await api.play(undefined, contextUri, trackIndex, deviceId);
       } else {
@@ -571,8 +559,13 @@ export function useSpotify() {
     };
   }, [state.authed, currentTrackId]);
 
+  // Display-only projection. Memoized so consumers passing `tracks` to
+  // memo'd children don't get a fresh array identity on every poll re-render.
+  const tracks = useMemo(() => state.entries.map((e) => e.track), [state.entries]);
+
   return {
     ...state,
+    tracks,
     saveClientId,
     connect,
     signOut,

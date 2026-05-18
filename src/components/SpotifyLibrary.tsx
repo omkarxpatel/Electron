@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { getSavedAlbums } from '../spotify/api';
-import type { SpotifyAlbum, SpotifyImage, SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
+import type { SpotifyAlbum, SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
+import { formatDuration } from '../shared/format';
+import { pickMediumImage, smallestImage } from '../shared/image';
 
 type Filter = 'all' | 'playlists' | 'albums';
 
@@ -18,26 +20,11 @@ interface Props {
   refreshKey: number;
 }
 
-function pickMediumImage(images: SpotifyImage[]): string | undefined {
-  if (!images || images.length === 0) return undefined;
-  return images[1]?.url ?? images[0]?.url;
-}
-
-function smallestImage(images: SpotifyImage[]): string | undefined {
-  if (!images || images.length === 0) return undefined;
-  return images[images.length - 1]?.url;
-}
-
-function formatDuration(ms: number): string {
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
 const SEARCH_DEBOUNCE_MS = 280;
 
-export function SpotifyLibrary({
+export const SpotifyLibrary = memo(SpotifyLibraryImpl);
+
+function SpotifyLibraryImpl({
   playlists,
   playlistsLoading,
   selectedPlaylistId,

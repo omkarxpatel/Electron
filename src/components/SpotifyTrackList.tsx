@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRenderCount } from '../perf';
-import type { SpotifyImage, SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
+import type { SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
+import { formatDuration } from '../shared/format';
+import { smallestImage } from '../shared/image';
 
 interface Props {
   playlist: SpotifyPlaylist | null;
@@ -10,18 +12,6 @@ interface Props {
   onPlay: (track: SpotifyTrack, contextUri: string) => void;
   onLoadMore: () => void;
   hasMore: boolean;
-}
-
-function smallestImage(images: SpotifyImage[]): string | undefined {
-  if (!images || images.length === 0) return undefined;
-  return images[images.length - 1]?.url;
-}
-
-function formatDuration(ms: number): string {
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 export const SpotifyTrackList = memo(SpotifyTrackListImpl);

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { getQueue } from '../spotify/api';
-import type { SpotifyImage, SpotifyTrack } from '../spotify/types';
+import type { SpotifyTrack } from '../spotify/types';
+import { formatDuration } from '../shared/format';
+import { smallestImage } from '../shared/image';
 
 interface Props {
   onPlay: (track: SpotifyTrack) => void;
@@ -13,18 +15,6 @@ interface Props {
 interface QueueState {
   currently_playing: SpotifyTrack | null;
   queue: SpotifyTrack[];
-}
-
-function smallestImage(images: SpotifyImage[] | undefined): string | undefined {
-  if (!images || images.length === 0) return undefined;
-  return images[images.length - 1]?.url;
-}
-
-function formatDuration(ms: number): string {
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 export function SpotifyQueue({ onPlay, currentlyPlayingId, refreshKey }: Props) {

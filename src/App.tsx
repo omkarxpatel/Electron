@@ -1,27 +1,11 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AudioSourceSelector } from './components/AudioSourceSelector';
-import { AudioStats } from './components/AudioStats';
-import { OutputDeviceSelector } from './components/OutputDeviceSelector';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { ChromeBar } from './components/ChromeBar';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SpotifyOnboarding } from './components/SpotifyOnboarding';
-import { prefetchLyrics } from './lyrics/useLyrics';
-import { getQueue } from './spotify/api';
-import { HoverOverlayPanel } from './components/HoverOverlayPanel';
-import { SpotifyTrackList } from './components/SpotifyTrackList';
-import { SpotifyNowPlaying } from './components/SpotifyNowPlaying';
+import { NowPlayingBar } from './components/NowPlayingBar';
+import { SpotifySection } from './components/SpotifySection';
+import { VisualizerBanner } from './components/VisualizerBanner';
 import { EqPanel } from './components/EqPanel';
-
-// Lazy-loaded post-auth chunks. SpotifyOverlay (library + search + queue +
-// album-detail) and LyricsPane (lrclib + ovh + LRC parser) are only used
-// after the user authenticates Spotify. Splitting them out trims the cold-
-// start parse cost. Suspense fallback is `null` because both panels render
-// in container slots that already have their own empty states.
-const SpotifyOverlay = lazy(() =>
-  import('./components/SpotifyOverlay').then((m) => ({ default: m.SpotifyOverlay })),
-);
-const LyricsPane = lazy(() =>
-  import('./components/LyricsPane').then((m) => ({ default: m.LyricsPane })),
-);
 import { useAiEnhancer } from './audio/useAiEnhancer';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
@@ -31,16 +15,24 @@ import { useVisibility } from './hooks/useVisibility';
 import { PerfOverlay, useRenderCount } from './perf';
 import { frequenciesFor } from './state/eq';
 import { useSettings } from './state/settings';
-import { useSpotify } from './spotify/useSpotify';
+import { SpotifyProvider, useLibrary } from './spotify/SpotifyProvider';
 import { useEQ } from './state/eq';
 import { useEnhancer } from './state/enhancer';
 import { PALETTES } from './visualizers/palettes';
-import { WaveformVisualizer } from './visualizers';
+import { hexToRgba } from './shared/color';
 import './App.css';
 
 const PLAYTHROUGH_KEY = 'av.eq.playthrough';
 
 export function App() {
+  return (
+    <SpotifyProvider>
+      <AppContent />
+    </SpotifyProvider>
+  );
+}
+
+function AppContent() {
   useRenderCount('App');
   const [panelOpen, setPanelOpen] = useState(false);
   const [playthrough, setPlaythrough] = useState<boolean>(
@@ -202,53 +194,29 @@ export function App() {
     },
     [eq.setBand],
   );
-  const spotify = useSpotify();
+  const library = useLibrary();
   const hasSource = audioSource.stream !== null;
-
-  /* ── Spotify overlay panel: hover-open with a 300ms close grace period.
-   *    Trigger lives in the playlist sidebar (music icon); panel is the
-   *    HoverOverlayPanel mounted at the App level. Both elements share these
-   *    handlers so moving the cursor between them keeps the panel open. */
-  const [overlayOpen, setOverlayOpen] = useState<boolean>(false);
-  const overlayCloseTimerRef = useRef<number | null>(null);
-  const cancelOverlayClose = useCallback((): void => {
-    if (overlayCloseTimerRef.current !== null) {
-      window.clearTimeout(overlayCloseTimerRef.current);
-      overlayCloseTimerRef.current = null;
-    }
-  }, []);
-  const requestOverlayClose = useCallback((): void => {
-    cancelOverlayClose();
-    overlayCloseTimerRef.current = window.setTimeout(() => {
-      setOverlayOpen(false);
-      overlayCloseTimerRef.current = null;
-    }, 300);
-  }, [cancelOverlayClose]);
-  const openOverlay = useCallback((): void => {
-    cancelOverlayClose();
-    setOverlayOpen(true);
-  }, [cancelOverlayClose]);
-  const closeOverlay = useCallback((): void => {
-    cancelOverlayClose();
-    setOverlayOpen(false);
-  }, [cancelOverlayClose]);
-  useEffect(() => () => cancelOverlayClose(), [cancelOverlayClose]);
-  // Stable trigger-props object — only changes when `overlayOpen` flips.
-  // Without useMemo here the music-icon button received fresh handler refs
-  // every parent render, which defeats its memoization potential.
-  const overlayTriggerProps = useMemo(
-    () => ({
-      onMouseEnter: openOverlay,
-      onMouseLeave: requestOverlayClose,
-      onClick: () => (overlayOpen ? closeOverlay() : openOverlay()),
-      'aria-expanded': overlayOpen,
-    }),
-    [overlayOpen, openOverlay, requestOverlayClose, closeOverlay],
-  );
 
   useEffect(() => {
     localStorage.setItem(PLAYTHROUGH_KEY, String(playthrough));
   }, [playthrough]);
+
+  // Reflect Live state in the window title so a glance at the macOS title bar
+  // (or Cmd+Tab preview) tells the user whether audio is currently being
+  // processed through the EQ chain. Restores on unmount.
+  useEffect(() => {
+    const base = 'Audio Visualizer & Modifier';
+    document.title = playthrough && hasSource ? `${base} — Live` : base;
+    return () => {
+      document.title = base;
+    };
+  }, [playthrough, hasSource]);
+
+  // Wire macOS App menu → Settings… (and Cmd+,) to open the Settings drawer.
+  // Subscribes once on mount; the preload returns an unsubscribe for cleanup.
+  useEffect(() => {
+    return window.api.appEvents.onPreferences(() => setPanelOpen(true));
+  }, []);
 
   // When Live toggles while we're already capturing system audio, re-acquire
   // the stream with the matching loopback mode. Live ON → `loopbackWithMute`
@@ -263,43 +231,15 @@ export function App() {
     }
   }, [playthrough, audioSource.mode, audioSource.useSystemAudio]);
 
-  const needsOnboarding = !spotify.clientId || !spotify.authed;
-  const showPlayerBar = spotify.authed;
-  // Derived from the playback object; cached so it has stable identity until
-  // the actual track changes (the playback poll dispatches new playback
-  // objects on relevant changes, so memo depends on item.id explicitly).
-  const playingItemId = spotify.playback?.item?.id;
-  const currentlyPlayingId = useMemo(() => playingItemId ?? null, [playingItemId]);
+  // Stable wrapper so memo'd AudioSourceSelector doesn't re-render on every
+  // App tick. The inline `() => audioSource.useSystemAudio(playthrough)` was
+  // a fresh function each render.
+  const handleUseSystemAudio = useCallback((): void => {
+    void audioSource.useSystemAudio(playthrough);
+  }, [audioSource.useSystemAudio, playthrough]);
 
-  // Lyrics prefetch — whenever the current track changes, fetch the queue
-  // and prime the lyrics cache for the next ~2 upcoming tracks. By the time
-  // the user advances, those lyrics are already in memory and render instantly.
-  useEffect(() => {
-    if (!spotify.authed || !currentlyPlayingId) return;
-    let cancelled = false;
-    // Slight delay so the queue is up-to-date after the track change has
-    // propagated through Spotify's servers.
-    const t = window.setTimeout(() => {
-      void getQueue()
-        .then((q) => {
-          if (cancelled || !q) return;
-          for (const upcoming of q.queue.slice(0, 2)) {
-            if (!upcoming) continue;
-            const title = upcoming.name;
-            const artist = upcoming.artists?.[0]?.name;
-            if (!title || !artist) continue;
-            prefetchLyrics(title, artist, upcoming.album?.name, upcoming.duration_ms);
-          }
-        })
-        .catch(() => {
-          /* queue read failures aren't worth surfacing — silent skip */
-        });
-    }, 600);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t);
-    };
-  }, [spotify.authed, currentlyPlayingId]);
+  const needsOnboarding = !library.clientId || !library.authed;
+  const showPlayerBar = library.authed;
 
   // Drive the whole app's accent color off the active visualizer palette.
   // Every component that highlights with green now uses var(--accent),
@@ -321,47 +261,38 @@ export function App() {
     return { accent: accentColor, themeStyle: style };
   }, [settings.palette]);
 
+  const handleTogglePanel = useCallback((): void => {
+    setPanelOpen((v) => !v);
+  }, []);
+  const handleTogglePlaythrough = useCallback((): void => {
+    setPlaythrough((v) => !v);
+  }, []);
+
   return (
     <div className="app" style={themeStyle}>
-      <header className="topbar">
-        <div className="brand">
-          <LogoIcon />
-          <div className="title">Audio Visualizer & Modifier</div>
-        </div>
-        <div className="topbar-right">
-          <AudioSourceSelector
-            mode={audioSource.mode}
-            deviceId={audioSource.deviceId}
-            busy={audioSource.busy}
-            error={audioSource.error}
-            onUseSystemAudio={() => audioSource.useSystemAudio(playthrough)}
-            onUseDevice={audioSource.useDevice}
-            onDisconnect={audioSource.disconnect}
-          />
-          <OutputDeviceSelector
-            outputDeviceId={audioOutput.outputDeviceId}
-            onSelect={audioOutput.setOutputDevice}
-          />
-          <button
-            className="icon-button gear-button"
-            onClick={() => setPanelOpen((v) => !v)}
-            aria-label="Settings"
-            aria-pressed={panelOpen}
-          >
-            <GearIcon />
-          </button>
-        </div>
-      </header>
+      <ChromeBar
+        sourceMode={audioSource.mode}
+        sourceDeviceId={audioSource.deviceId}
+        sourceBusy={audioSource.busy}
+        sourceError={audioSource.error}
+        onUseSystemAudio={handleUseSystemAudio}
+        onUseDevice={audioSource.useDevice}
+        onDisconnect={audioSource.disconnect}
+        outputDeviceId={audioOutput.outputDeviceId}
+        onSelectOutput={audioOutput.setOutputDevice}
+        panelOpen={panelOpen}
+        onTogglePanel={handleTogglePanel}
+      />
 
       <main className={`main-area ${showPlayerBar ? 'has-player-bar' : ''}`}>
         {needsOnboarding ? (
           <SpotifyOnboarding
-            clientId={spotify.clientId}
-            authed={spotify.authed}
-            authing={spotify.authing}
-            authError={spotify.authError}
-            saveClientId={spotify.saveClientId}
-            connect={spotify.connect}
+            clientId={library.clientId}
+            authed={library.authed}
+            authing={library.authing}
+            authError={library.authError}
+            saveClientId={library.saveClientId}
+            connect={library.connect}
           />
         ) : (
           <div className="workspace">
@@ -379,7 +310,7 @@ export function App() {
               active={isActive}
               reset={eq.reset}
               playthrough={playthrough}
-              togglePlaythrough={() => setPlaythrough((v) => !v)}
+              togglePlaythrough={handleTogglePlaythrough}
               playthroughDisabled={!hasSource}
               enhancerState={enhancer.state}
               setBass={enhancer.setBass}
@@ -393,83 +324,22 @@ export function App() {
               analyser={analyser}
             />
 
-            <div className="workspace-right">
-              <div className="sp-right-header">
-                <button
-                  type="button"
-                  className="sp-right-music-icon"
-                  data-active={overlayOpen ? 'true' : 'false'}
-                  aria-label="Open Spotify library"
-                  title="Hover to open library, search & queue"
-                  {...overlayTriggerProps}
-                >
-                  <IconLibrary />
-                </button>
-              </div>
-
-              <SpotifyTrackList
-                playlist={spotify.selectedPlaylist}
-                tracks={spotify.tracks}
-                loading={spotify.tracksLoading}
-                currentlyPlayingId={currentlyPlayingId}
-                onPlay={spotify.playTrack}
-                onLoadMore={spotify.loadMoreTracks}
-                hasMore={spotify.tracksNextOffset !== null}
-              />
-
-              <Suspense fallback={null}>
-                <LyricsPane playback={spotify.playback} active={isActive} />
-              </Suspense>
-            </div>
+            <SpotifySection active={isActive} />
           </div>
         )}
       </main>
 
       {analyser && !needsOnboarding && (
-        <div className="viz-banner">
-          <WaveformVisualizer analyser={analyser} settings={settings} active={isActive} />
-          <AudioStats analyser={analyser} analyserL={analyserL} analyserR={analyserR} active={isActive} />
-        </div>
-      )}
-
-      {showPlayerBar && (
-        <SpotifyNowPlaying
-          playback={spotify.playback}
-          togglePlay={spotify.togglePlay}
-          next={spotify.next}
-          previous={spotify.previous}
-          seek={spotify.seek}
-          setVolume={spotify.setVolume}
-          toggleShuffle={spotify.toggleShuffle}
-          cycleRepeat={spotify.cycleRepeat}
-          toggleSaveCurrent={spotify.toggleSaveCurrent}
-          savedCurrent={spotify.savedCurrent}
+        <VisualizerBanner
+          analyser={analyser}
+          analyserL={analyserL}
+          analyserR={analyserR}
+          settings={settings}
+          active={isActive}
         />
       )}
 
-      {!needsOnboarding && (
-        <HoverOverlayPanel
-          title="Spotify"
-          open={overlayOpen}
-          onMouseEnter={openOverlay}
-          onMouseLeave={requestOverlayClose}
-          onClose={closeOverlay}
-        >
-          <Suspense fallback={null}>
-            <SpotifyOverlay
-              playlists={spotify.playlists}
-              playlistsLoading={spotify.playlistsLoading}
-              selectedPlaylistId={spotify.selectedPlaylist?.id ?? null}
-              onSelectPlaylist={spotify.selectPlaylist}
-              searchTracks={spotify.searchTracks}
-              playTrack={spotify.playTrack}
-              currentlyPlayingId={currentlyPlayingId}
-              open={overlayOpen}
-              onClose={closeOverlay}
-            />
-          </Suspense>
-        </HoverOverlayPanel>
-      )}
+      {showPlayerBar && <NowPlayingBar />}
 
       <SettingsPanel
         open={panelOpen}
@@ -477,9 +347,9 @@ export function App() {
         settings={settings}
         update={update}
         reset={reset}
-        spotifyAuthed={spotify.authed}
-        onReconnectSpotify={spotify.connect}
-        onSignOutSpotify={spotify.signOut}
+        spotifyAuthed={library.authed}
+        onReconnectSpotify={library.connect}
+        onSignOutSpotify={library.signOut}
       />
 
       <PerfOverlay />
@@ -487,61 +357,3 @@ export function App() {
   );
 }
 
-/** Convert a hex color (#rrggbb) to an rgba string with the given alpha. */
-function hexToRgba(hex: string, alpha: number): string {
-  if (!hex.startsWith('#') || hex.length !== 7) return `rgba(29, 215, 96, ${alpha})`;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function IconLibrary() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.9"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M9 18V5l12-2v13" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="16" r="3" />
-    </svg>
-  );
-}
-
-function LogoIcon() {
-  return (
-    <svg
-      className="brand-logo"
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <line x1="5" y1="15" x2="5" y2="9" />
-      <line x1="10" y1="18" x2="10" y2="6" />
-      <line x1="14.5" y1="16" x2="14.5" y2="8" />
-      <line x1="19" y1="14" x2="19" y2="10" />
-    </svg>
-  );
-}
-
-function GearIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}

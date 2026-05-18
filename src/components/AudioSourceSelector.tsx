@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import type { SourceMode } from '../audio/useAudioSource';
 
 interface Props {
@@ -11,7 +11,9 @@ interface Props {
   onDisconnect: () => void;
 }
 
-export function AudioSourceSelector({
+export const AudioSourceSelector = memo(AudioSourceSelectorImpl);
+
+function AudioSourceSelectorImpl({
   mode,
   deviceId,
   busy,

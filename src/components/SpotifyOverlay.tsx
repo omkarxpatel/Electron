@@ -1,9 +1,10 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useRenderCount } from '../perf';
 import { getAlbum, type AlbumWithTracks } from '../spotify/api';
 import { SpotifyLibrary } from './SpotifyLibrary';
 import { SpotifyQueue } from './SpotifyQueue';
 import type { SpotifyAlbum, SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
+import { formatDuration } from '../shared/format';
 
 type View = 'library' | 'album' | 'queue';
 
@@ -53,12 +54,15 @@ function SpotifyOverlayImpl({
     }
   }, [open]);
 
-  const handleSelectPlaylist = (playlist: SpotifyPlaylist): void => {
-    onSelectPlaylist(playlist);
-    onClose();
-  };
+  const handleSelectPlaylist = useCallback(
+    (playlist: SpotifyPlaylist): void => {
+      onSelectPlaylist(playlist);
+      onClose();
+    },
+    [onSelectPlaylist, onClose],
+  );
 
-  const handleSelectAlbum = async (album: SpotifyAlbum): Promise<void> => {
+  const handleSelectAlbum = useCallback(async (album: SpotifyAlbum): Promise<void> => {
     setAlbumLoading(true);
     try {
       const full = await getAlbum(album.id);
@@ -71,12 +75,23 @@ function SpotifyOverlayImpl({
     } finally {
       setAlbumLoading(false);
     }
-  };
+  }, []);
 
-  const backToLibrary = (): void => {
+  const backToLibrary = useCallback((): void => {
     setSelectedAlbum(null);
     setView('library');
-  };
+  }, []);
+
+  const handlePlayTrackFromLibrary = useCallback(
+    (t: SpotifyTrack): void => {
+      playTrack(t);
+    },
+    [playTrack],
+  );
+
+  const handleOpenQueue = useCallback((): void => {
+    setView('queue');
+  }, []);
 
   return (
     <div className="sp-overlay-root">
@@ -88,9 +103,9 @@ function SpotifyOverlayImpl({
           onSelectPlaylist={handleSelectPlaylist}
           onSelectAlbum={handleSelectAlbum}
           searchTracks={searchTracks}
-          onPlayTrack={(t) => playTrack(t)}
+          onPlayTrack={handlePlayTrackFromLibrary}
           currentlyPlayingId={currentlyPlayingId}
-          onOpenQueue={() => setView('queue')}
+          onOpenQueue={handleOpenQueue}
           refreshKey={refreshKey}
         />
       )}
@@ -221,9 +236,3 @@ function QueueView({ onBack, onPlay, currentlyPlayingId, refreshKey }: QueueView
   );
 }
 
-function formatDuration(ms: number): string {
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}

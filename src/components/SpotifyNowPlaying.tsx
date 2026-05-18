@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef } from 'react';
 import { useRenderCount } from '../perf';
 import type { SpotifyPlaybackState, SpotifyImage } from '../spotify/types';
+import { formatDuration as formatTime } from '../shared/format';
 
 interface Props {
   playback: SpotifyPlaybackState | null;
@@ -15,13 +16,8 @@ interface Props {
   savedCurrent: boolean | null;
 }
 
-function formatTime(ms: number): string {
-  const t = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(t / 60);
-  const s = t % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
+// pickSmallestImage selects by area rather than relying on Spotify's image
+// ordering — the only caller that does this. Kept local for that reason.
 function pickSmallestImage(images: SpotifyImage[]): SpotifyImage | null {
   if (!images || images.length === 0) return null;
   let smallest: SpotifyImage = images[0];

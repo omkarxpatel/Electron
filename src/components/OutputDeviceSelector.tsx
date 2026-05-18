@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 
 /**
  * Picks where the processed audio is sent (AudioContext.setSinkId).
@@ -14,7 +14,9 @@ interface Props {
   onSelect: (id: string | null) => void;
 }
 
-export function OutputDeviceSelector({ outputDeviceId, onSelect }: Props) {
+export const OutputDeviceSelector = memo(OutputDeviceSelectorImpl);
+
+function OutputDeviceSelectorImpl({ outputDeviceId, onSelect }: Props) {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [open, setOpen] = useState(false);
   const [permissionNeeded, setPermissionNeeded] = useState(false);

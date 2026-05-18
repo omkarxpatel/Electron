@@ -56,14 +56,26 @@ export function useAutoSelectDevices({ onUseDevice, onSelectOutput }: Params) {
       if (!hasLabels) return;
 
       if (!attemptedRef.current.input) {
-        // Prefer to restore the user's last-used device if it's still present.
-        // Falls back to BlackHole only if the restore target isn't available.
-        const restored =
-          readLastSourceMode() === 'device' ? pickRestored(inputs, readLastDeviceId()) : null;
-        const pick = restored ?? pickBlackHole(inputs);
+        const lastMode = readLastSourceMode();
+        // Three resume paths:
+        //  - 'device' → restore the saved device, fall back to BlackHole.
+        //  - 'system' → leave input alone; user clicks "System Audio" themselves
+        //               so we don't trigger the Screen Recording permission
+        //               prompt unexpectedly on every launch.
+        //  - 'none'   → first launch / explicit disconnect; auto-pick BlackHole
+        //               as the sensible default for this app.
+        let pick: MediaDeviceInfo | null = null;
+        if (lastMode === 'device') {
+          pick = pickRestored(inputs, readLastDeviceId()) ?? pickBlackHole(inputs);
+        } else if (lastMode === 'none') {
+          pick = pickBlackHole(inputs);
+        }
         if (pick) {
           attemptedRef.current.input = true;
           onUseDevice(pick.deviceId);
+        } else if (lastMode === 'system') {
+          // System-audio mode: leave input idle, don't keep retrying.
+          attemptedRef.current.input = true;
         }
       }
 
