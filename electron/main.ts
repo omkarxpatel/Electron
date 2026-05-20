@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const REPO_URL = 'https://github.com/omkarxpatel/Spotify-Visualizer-Modifier';
+const REPO_URL = 'https://github.com/omkarxpatel/Electron';
 const ISSUES_URL = `${REPO_URL}/issues`;
 const RELEASES_URL = `${REPO_URL}/releases`;
 
@@ -282,7 +282,7 @@ function isAllowedExternalUrl(url: string): boolean {
   // as a generic GitHub-anywhere primitive.
   if (
     parsed.host === 'github.com' &&
-    parsed.pathname.startsWith('/omkarxpatel/Spotify-Visualizer-Modifier/releases')
+    parsed.pathname.startsWith('/omkarxpatel/Electron/releases')
   ) {
     return true;
   }
@@ -354,7 +354,7 @@ ipcMain.handle('system-audio:set-mute', (_event, mute: boolean) => {
  */
 function setupAboutPanel(): void {
   app.setAboutPanelOptions({
-    applicationName: 'Audio Visualizer & Modifier',
+    applicationName: 'Electron',
     applicationVersion: app.getVersion(),
     copyright: 'Copyright © 2026 Omkar Patel',
     credits: 'Built with Electron, React, Web Audio API.\nSpotify integration via PKCE OAuth.\nLyrics from lrclib.net and lyrics.ovh.',
@@ -484,7 +484,7 @@ function buildDockMenu(): void {
   if (process.platform !== 'darwin' || !app.dock) return;
   app.dock.setMenu(Menu.buildFromTemplate([
     {
-      label: 'Show Audio Visualizer',
+      label: 'Show Electron',
       click: () => {
         if (!win || win.isDestroyed()) {
           createWindow();
@@ -495,7 +495,7 @@ function buildDockMenu(): void {
       },
     },
     {
-      label: 'Hide Audio Visualizer',
+      label: 'Hide Electron',
       click: () => {
         if (win && !win.isDestroyed() && win.isVisible()) win.hide();
       },

@@ -47,7 +47,7 @@ function ChromeBarImpl({
     <header className="topbar">
       <div className="brand">
         <LogoIcon />
-        <div className="title">Audio Visualizer & Modifier</div>
+        <div className="title">Electron</div>
       </div>
       <div className="topbar-right">
         <AudioSourceSelector

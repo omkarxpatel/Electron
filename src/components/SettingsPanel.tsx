@@ -1,5 +1,12 @@
+import { useEffect, useState } from 'react';
 import type { Settings } from '../state/settings';
 import { PALETTES } from '../visualizers/palettes';
+import {
+  checkForUpdate,
+  dismissUpdate,
+  getLastCheckedAt,
+  type UpdateInfo,
+} from '../lib/updateChecker';
 
 interface Props {
   open: boolean;
@@ -174,12 +181,133 @@ export function SettingsPanel({
           </div>
         </Section>
 
+        <Section title="About">
+          <AboutSection />
+        </Section>
+
         <button className="reset-button" onClick={reset}>
           Reset to defaults
         </button>
       </div>
     </aside>
   );
+}
+
+/**
+ * Version + manual update check. The daily auto-check (via UpdateBanner)
+ * happens in the background regardless; this surface is for users who want
+ * to force a check or just see what version they're on.
+ *
+ * Three display states for the inline result:
+ *   - idle: shows the last-checked timestamp (or "Never")
+ *   - checking: spinner-ish indicator
+ *   - update available: name + version + Download + Skip
+ *   - up to date: brief confirmation, auto-clears
+ */
+type CheckStatus =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; info: UpdateInfo }
+  | { kind: 'uptodate' };
+
+function AboutSection() {
+  const version = window.api.app.version;
+  const [status, setStatus] = useState<CheckStatus>({ kind: 'idle' });
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(getLastCheckedAt());
+
+  // Auto-clear the "up to date" confirmation after 4 s so the row returns
+  // to showing the last-checked timestamp.
+  useEffect(() => {
+    if (status.kind !== 'uptodate') return;
+    const t = window.setTimeout(() => setStatus({ kind: 'idle' }), 4000);
+    return () => window.clearTimeout(t);
+  }, [status.kind]);
+
+  const handleCheck = async (): Promise<void> => {
+    setStatus({ kind: 'checking' });
+    const info = await checkForUpdate({ force: true });
+    setLastCheckedAt(getLastCheckedAt());
+    if (info) setStatus({ kind: 'available', info });
+    else setStatus({ kind: 'uptodate' });
+  };
+
+  const handleDownload = (info: UpdateInfo): void => {
+    const url = info.assetUrl ?? info.releasePageUrl;
+    void window.api.shell.openExternal(url).catch((err) => {
+      console.error('AboutSection: shell.openExternal refused', url, err);
+    });
+  };
+
+  const handleSkip = (info: UpdateInfo): void => {
+    dismissUpdate(info.latestVersion);
+    setStatus({ kind: 'idle' });
+  };
+
+  return (
+    <div className="settings-about">
+      <div className="settings-about-row">
+        <span className="settings-about-label">Version</span>
+        <span className="settings-about-value">{version}</span>
+      </div>
+      <div className="settings-about-row">
+        <span className="settings-about-label">Last checked</span>
+        <span className="settings-about-value">{formatLastChecked(lastCheckedAt)}</span>
+      </div>
+
+      <div className="settings-about-action">
+        <button
+          type="button"
+          className="settings-spotify-btn"
+          onClick={handleCheck}
+          disabled={status.kind === 'checking'}
+        >
+          {status.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+        </button>
+        {status.kind === 'uptodate' && (
+          <span className="settings-about-status">You're up to date.</span>
+        )}
+      </div>
+
+      {status.kind === 'available' && (
+        <div className="settings-about-update">
+          <div className="settings-about-update-text">
+            <strong>v{status.info.latestVersion} is available</strong>
+            {status.info.assetName ? (
+              <span className="settings-about-update-asset">{status.info.assetName}</span>
+            ) : null}
+          </div>
+          <div className="settings-about-update-actions">
+            <button
+              type="button"
+              className="settings-spotify-btn"
+              onClick={() => handleDownload(status.info)}
+            >
+              Download
+            </button>
+            <button
+              type="button"
+              className="settings-spotify-btn settings-spotify-btn-danger"
+              onClick={() => handleSkip(status.info)}
+              title="Don't show this version again."
+            >
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Format a UNIX-ms timestamp as a relative "3 hours ago" string. Coarse
+ *  bucketing — no sub-minute precision, no library. */
+function formatLastChecked(ts: number | null): string {
+  if (ts === null) return 'Never';
+  const delta = Date.now() - ts;
+  if (delta < 60_000) return 'Just now';
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} min ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} hr ago`;
+  return `${Math.floor(delta / 86_400_000)} days ago`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

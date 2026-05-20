@@ -1,13 +1,13 @@
 {
   "name": "audio-visualizer",
-  "productName": "Audio Visualizer & Modifier",
+  "productName": "Electron",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
-  "homepage": "https://github.com/omkarxpatel/Spotify-Visualizer-Modifier",
+  "homepage": "https://github.com/omkarxpatel/Electron",
   "repository": {
     "type": "git",
-    "url": "https://github.com/omkarxpatel/Spotify-Visualizer-Modifier.git"
+    "url": "https://github.com/omkarxpatel/Electron.git"
   },
   "license": "MIT",
   "author": "Omkar Patel",
@@ -38,8 +38,8 @@
   },
   "build": {
     "appId": "com.omkar.audiovisualizer",
-    "productName": "Audio Visualizer",
-    "artifactName": "AudioVisualizer-${version}-${arch}.${ext}",
+    "productName": "Electron",
+    "artifactName": "Electron-${version}-${arch}.${ext}",
     "copyright": "Copyright © 2026 Omkar Patel",
     "files": [
       "dist/**/*",
@@ -64,7 +64,7 @@
       "type": "distribution"
     },
     "dmg": {
-      "title": "Audio Visualizer ${version}",
+      "title": "Electron ${version}",
       "icon": "build/icon.icns",
       "iconSize": 110,
       "window": { "width": 540, "height": 380 },
@@ -76,7 +76,7 @@
     "publish": {
       "provider": "github",
       "owner": "omkarxpatel",
-      "repo": "Spotify-Visualizer-Modifier",
+      "repo": "Electron",
       "releaseType": "release"
     }
   }

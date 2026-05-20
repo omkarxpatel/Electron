@@ -3684,3 +3684,82 @@
   background: rgba(255, 255, 255, 0.08);
   color: #eee;
 }
+
+/* ============================================================
+   Settings → About section: version, last-checked, manual update.
+   ============================================================ */
+
+.settings-about {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-about-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.settings-about-label {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.settings-about-value {
+  font-variant-numeric: tabular-nums;
+  color: #eee;
+}
+
+.settings-about-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.settings-about-status {
+  font-size: 12px;
+  color: var(--accent-bright);
+  animation: settings-about-status-in 120ms ease-out;
+}
+
+@keyframes settings-about-status-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.settings-about-update {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: var(--accent-soft-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-about-update-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+}
+
+.settings-about-update-text strong {
+  color: var(--accent-bright);
+  font-weight: 600;
+}
+
+.settings-about-update-asset {
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-about-update-actions {
+  display: flex;
+  gap: 8px;
+}

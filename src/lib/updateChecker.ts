@@ -16,7 +16,7 @@
  */
 
 const RELEASES_API =
-  'https://api.github.com/repos/omkarxpatel/Spotify-Visualizer-Modifier/releases/latest';
+  'https://api.github.com/repos/omkarxpatel/Electron/releases/latest';
 
 const LAST_CHECK_KEY = 'av.update.lastCheckAt';
 const DISMISSED_VERSION_KEY = 'av.update.dismissedVersion';
@@ -73,7 +73,7 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /** Pick the .dmg asset matching the user's arch. Asset names follow the
- *  pattern `AudioVisualizer-x.y.z-{arch}.dmg`. Returns null if no match. */
+ *  pattern `Electron-x.y.z-{arch}.dmg`. Returns null if no match. */
 function pickAsset(assets: GithubAsset[], arch: string): GithubAsset | null {
   const archToken = arch === 'arm64' ? 'arm64' : 'x64';
   // Prefer the arch-tagged DMG; fall back to any DMG if the naming convention
@@ -143,4 +143,13 @@ export async function checkForUpdate(opts: CheckOptions = {}): Promise<UpdateInf
  *  until a release newer than `version` is published. */
 export function dismissUpdate(version: string): void {
   localStorage.setItem(DISMISSED_VERSION_KEY, normalizeVersion(version));
+}
+
+/** Timestamp of the last successful update check, or null if never checked.
+ *  Used by the Settings panel to show "Last checked 3 hours ago." */
+export function getLastCheckedAt(): number | null {
+  const raw = localStorage.getItem(LAST_CHECK_KEY);
+  if (!raw) return null;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }

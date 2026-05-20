@@ -108,7 +108,7 @@ function AppContent() {
   // (or Cmd+Tab preview) tells the user whether audio is currently being
   // processed through the EQ chain. Restores on unmount.
   useEffect(() => {
-    const base = 'Audio Visualizer & Modifier';
+    const base = 'Electron';
     document.title = playthrough && hasSource ? `${base} — Live` : base;
     return () => {
       document.title = base;

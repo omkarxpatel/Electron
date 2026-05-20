@@ -1,6 +1,8 @@
-# Audio Visualizer & Modifier
+# Electron
 
-[![Latest release](https://img.shields.io/github/v/release/omkarxpatel/Spotify-Visualizer-Modifier?label=latest&color=1DB954)](https://github.com/omkarxpatel/Spotify-Visualizer-Modifier/releases/latest)
+> **macOS audio visualizer + system-wide EQ + Spotify control surface.**
+
+[![Latest release](https://img.shields.io/github/v/release/omkarxpatel/Electron?label=latest&color=1DB954)](https://github.com/omkarxpatel/Electron/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-11%2B-555?logo=apple)](#install)
 [![License: MIT](https://img.shields.io/badge/license-MIT-555)](#license)
 
@@ -35,19 +37,45 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
 
 ## Install
 
-1. **Download the latest `.dmg`** from the [Releases page](https://github.com/omkarxpatel/Spotify-Visualizer-Modifier/releases/latest). Pick the file that matches your Mac:
-   - `AudioVisualizer-x.y.z-arm64.dmg` for Apple Silicon (M1, M2, M3, …)
-   - `AudioVisualizer-x.y.z-x64.dmg` for Intel Macs
-2. **Open the DMG** and drag `Audio Visualizer` into your `Applications` folder.
-3. **First launch — Gatekeeper warning.** Because this app isn't code-signed (the Apple Developer Program costs $99/year and this is free), macOS will refuse to open it. **On recent macOS versions you'll see "Audio Visualizer is damaged and can't be opened"** — that message is misleading; the app isn't damaged, just unsigned. To fix, open Terminal and run:
+1. **Download the latest `.dmg`** from the [Releases page](https://github.com/omkarxpatel/Electron/releases/latest). Pick the file that matches your Mac:
+   - `Electron-x.y.z-arm64.dmg` for Apple Silicon (M1, M2, M3, …)
+   - `Electron-x.y.z-x64.dmg` for Intel Macs
+2. **Open the DMG** and drag `Electron` into your `Applications` folder.
+3. **First launch — "Electron is damaged and can't be opened"** ← **this is expected**, and the message is misleading. The app is unsigned (the Apple Developer Program costs $99/year and this is a free hobby tool), so macOS slaps a quarantine flag on it that the OS interprets as "damaged." Strip the flag and the app launches normally:
+
+   ### The simplest fix (works on all macOS versions)
+
+   **Don't move the `.app` into `/Applications` yet.** Open Terminal and run these three commands one at a time:
 
    ```sh
-   xattr -cr "/Applications/Audio Visualizer.app"
+   xattr -cr ~/Downloads/Electron.app
+   mv ~/Downloads/Electron.app /Applications/
+   open /Applications/Electron.app
    ```
 
-   That removes the `com.apple.quarantine` extended attribute macOS attaches to anything downloaded from a browser. Launch normally afterward — no further prompts.
+   - The first command strips the quarantine flag while the app is still in `~/Downloads` (where Terminal has unrestricted access).
+   - The second command moves it to `/Applications`.
+   - The third launches it. macOS will accept it because the quarantine is already gone.
 
-   On older macOS, the right-click trick may still work: right-click `Audio Visualizer` in `Applications` → **Open** → confirm. If neither works, see [Troubleshooting](#troubleshooting).
+   ### If you already moved it to /Applications and it's "damaged"
+
+   `xattr` directly in `/Applications` will fail with `Operation not permitted` on modern macOS — Apple introduced **App Management** protection that blocks Terminal from modifying apps in `/Applications` by default. Two paths:
+
+   ```sh
+   # Path A: move it out, fix it, move it back
+   mv "/Applications/Electron.app" ~/Desktop/
+   xattr -cr ~/Desktop/Electron.app
+   mv ~/Desktop/Electron.app /Applications/
+   ```
+
+   ```
+   Path B: grant Terminal App Management permission
+     System Settings → Privacy & Security → App Management → toggle Terminal on
+     Restart Terminal, then:
+     xattr -cr "/Applications/Electron.app"
+   ```
+
+   Path A is one-shot; Path B is permanent (helpful if you anticipate more unsigned-app upgrades).
 
 That's it. No `brew install`, no `npm install`, no Node.
 
@@ -100,7 +128,7 @@ The Spotify integration needs a Client ID. This is free, takes ~2 minutes, and n
    It must be `127.0.0.1`, not `localhost` — Spotify deprecated localhost in 2024.
 4. Check the **Web API** box.
 5. Save, then copy the **Client ID** from the app overview page.
-6. Paste it into the Audio Visualizer onboarding screen.
+6. Paste it into the Electron onboarding screen.
 7. Click **Connect to Spotify** → authorize in your browser → return to the app.
 
 You only do this once per Mac.
@@ -165,20 +193,13 @@ You only do this once per Mac.
 
 ### Install / launch issues
 
-**"Audio Visualizer is damaged and can't be opened"**
-Misleading message — the app isn't damaged, it's unsigned. macOS slaps a quarantine flag on anything downloaded by a browser, and recent macOS versions reject unsigned apps with that flag much more aggressively than they used to.
+**"Electron is damaged and can't be opened"**
+Misleading message — the app isn't damaged, it's unsigned. macOS slaps a quarantine flag on anything downloaded by a browser, and recent macOS versions reject unsigned apps with that flag much more aggressively than they used to. The fix is documented in the [Install](#install) section above. Short version: run `xattr -cr` against the app *while it's in your `~/Downloads`*, then move it to `/Applications`.
 
-Fix from Terminal:
-```sh
-xattr -cr "/Applications/Audio Visualizer.app"
-```
-
-Or if the app is still in `~/Downloads`:
-```sh
-xattr -cr ~/Downloads/Audio\ Visualizer.app
-```
-
-Launch normally afterward. The flag is cleared once and the app stays usable.
+**"Operation not permitted" when I try `xattr` on an app in /Applications**
+Apple added **App Management** protection on recent macOS — Terminal can't modify apps in `/Applications` without explicit permission. Two ways out:
+- Move the app to your Desktop or Downloads, run `xattr -cr` there, move it back. The flag clear travels with the file.
+- Grant Terminal App Management permission: **System Settings → Privacy & Security → App Management** → toggle Terminal on, restart Terminal, then re-run `xattr -cr`.
 
 **Right-click → Open does nothing on macOS 15+**
 The old workaround stopped working on newer macOS. Use the `xattr` command above instead.
@@ -244,7 +265,7 @@ The output device and input source are routed through the same path. If your inp
 - If the browser tab opens but never returns to the app, the redirect URI is probably wrong. Double-check it character-by-character.
 
 **Nothing happens when I click "System Audio"**
-macOS is asking for Screen Recording permission silently. Open **System Settings → Privacy & Security → Screen Recording**, enable `Audio Visualizer`, then click System Audio again.
+macOS is asking for Screen Recording permission silently. Open **System Settings → Privacy & Security → Screen Recording**, enable `Electron`, then click System Audio again.
 
 **Input device dropdown is empty**
 macOS hides device labels from apps without microphone permission, even if you only plan to use BlackHole. Click "Grant microphone access" in the source dropdown when prompted, or go to **System Settings → Privacy & Security → Microphone** and enable the app.
@@ -256,8 +277,8 @@ macOS hides device labels from apps without microphone permission, even if you o
 If you want to run from source instead of the DMG:
 
 ```sh
-git clone https://github.com/omkarxpatel/Spotify-Visualizer-Modifier.git
-cd Spotify-Visualizer-Modifier
+git clone https://github.com/omkarxpatel/Electron.git
+cd Electron
 npm install
 npm run dev
 ```
