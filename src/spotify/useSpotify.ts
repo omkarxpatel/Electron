@@ -301,31 +301,58 @@ export function useSpotify() {
     }
   }, []);
 
+  // Transport actions all go through withDeviceFallback so a stale Spotify
+  // Connect session (typical after the user has been away for an hour or
+  // more) auto-recovers: on the first 404 we find an active device and
+  // retry once with ?device_id=. Without this, the Web API silently fails
+  // and the user is stuck pressing play in a third-party media controller
+  // (Now Playing widget, BetterNotch, AirPods double-tap, etc.) to nudge
+  // Spotify back to life — which works because those use macOS's system-
+  // level MPRemoteCommandCenter that talks to native Spotify directly.
   const togglePlay = useCallback(async () => {
     const p = stateRef.current.playback;
     try {
-      if (p?.is_playing) await api.pause();
-      else await api.play();
+      if (p?.is_playing) {
+        await withDeviceFallback((deviceId) => api.pause(deviceId));
+      } else {
+        await withDeviceFallback((deviceId) => api.play(undefined, undefined, undefined, deviceId));
+      }
     } catch (err) {
       console.error('togglePlay failed:', err);
     }
-  }, []);
+  }, [withDeviceFallback]);
 
   const next = useCallback(async () => {
-    try { await api.next(); } catch (err) { console.error(err); }
-  }, []);
+    try {
+      await withDeviceFallback((deviceId) => api.next(deviceId));
+    } catch (err) {
+      console.error('next failed:', err);
+    }
+  }, [withDeviceFallback]);
 
   const previous = useCallback(async () => {
-    try { await api.previous(); } catch (err) { console.error(err); }
-  }, []);
+    try {
+      await withDeviceFallback((deviceId) => api.previous(deviceId));
+    } catch (err) {
+      console.error('previous failed:', err);
+    }
+  }, [withDeviceFallback]);
 
   const seek = useCallback(async (ms: number) => {
-    try { await api.seek(ms); } catch (err) { console.error(err); }
-  }, []);
+    try {
+      await withDeviceFallback((deviceId) => api.seek(ms, deviceId));
+    } catch (err) {
+      console.error('seek failed:', err);
+    }
+  }, [withDeviceFallback]);
 
   const setVolume = useCallback(async (percent: number) => {
-    try { await api.setVolume(percent); } catch (err) { console.error(err); }
-  }, []);
+    try {
+      await withDeviceFallback((deviceId) => api.setVolume(percent, deviceId));
+    } catch (err) {
+      console.error('setVolume failed:', err);
+    }
+  }, [withDeviceFallback]);
 
   const toggleShuffle = useCallback(async () => {
     const current = stateRef.current.playback?.shuffle_state ?? false;

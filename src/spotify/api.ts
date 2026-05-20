@@ -175,25 +175,35 @@ export async function getRecentlyPlayed(limit = 1): Promise<RecentlyPlayedItem[]
   return data?.items ?? [];
 }
 
-export async function pause(): Promise<void> {
-  await request('/me/player/pause', { method: 'PUT' });
+// All transport endpoints take an optional deviceId so callers can target a
+// specific device after a 404 "no active device" — see useSpotify's
+// withDeviceFallback for the recovery pattern. Without it, the Web API
+// silently fails when Spotify Connect's session has gone idle (typical after
+// the user has been away for an hour or more).
+export async function pause(deviceId?: string): Promise<void> {
+  const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
+  await request(`/me/player/pause${query}`, { method: 'PUT' });
 }
 
-export async function next(): Promise<void> {
-  await request('/me/player/next', { method: 'POST' });
+export async function next(deviceId?: string): Promise<void> {
+  const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
+  await request(`/me/player/next${query}`, { method: 'POST' });
 }
 
-export async function previous(): Promise<void> {
-  await request('/me/player/previous', { method: 'POST' });
+export async function previous(deviceId?: string): Promise<void> {
+  const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
+  await request(`/me/player/previous${query}`, { method: 'POST' });
 }
 
-export async function seek(positionMs: number): Promise<void> {
-  await request(`/me/player/seek?position_ms=${Math.floor(positionMs)}`, { method: 'PUT' });
+export async function seek(positionMs: number, deviceId?: string): Promise<void> {
+  const dev = deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : '';
+  await request(`/me/player/seek?position_ms=${Math.floor(positionMs)}${dev}`, { method: 'PUT' });
 }
 
-export async function setVolume(percent: number): Promise<void> {
+export async function setVolume(percent: number, deviceId?: string): Promise<void> {
   const clamped = Math.max(0, Math.min(100, Math.floor(percent)));
-  await request(`/me/player/volume?volume_percent=${clamped}`, { method: 'PUT' });
+  const dev = deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : '';
+  await request(`/me/player/volume?volume_percent=${clamped}${dev}`, { method: 'PUT' });
 }
 
 export async function setShuffle(state: boolean, deviceId?: string): Promise<void> {
