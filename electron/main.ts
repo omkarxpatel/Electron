@@ -14,14 +14,6 @@ let win: BrowserWindow | null = null;
 let authServer: http.Server | null = null;
 
 /**
- * Tracks whether the user has initiated an actual quit (Cmd+Q, app menu).
- * Set in `before-quit`, read in the BrowserWindow `close` handler so we can
- * tell "user closed the window" (which should hide) from "user is quitting
- * the app" (which should let the close go through).
- */
-let quitting = false;
-
-/**
  * On startup, kill any older main-process Electron instances belonging to
  * THIS repo's node_modules. "New launch wins" — solves the dev-mode pile-up
  * where vite-plugin-electron HMR sometimes spawns the new Electron child
@@ -133,23 +125,14 @@ function createWindow() {
 
   win.once('ready-to-show', () => win?.show());
 
-  // macOS pattern: clicking the red close button hides the window instead of
-  // destroying it. This preserves all app state (audio context, AI tick,
-  // Spotify polling, settings) and matches how Mail / Music / Photos / every
-  // first-party Apple app behaves. The user quits via Cmd+Q, which flips
-  // the `quitting` flag (see `before-quit`) and lets the close go through.
-  //
-  // IMPORTANT: only enable hide-on-close in the PACKAGED (production) app.
-  // In dev mode, vite-plugin-electron restarts the main process on file
-  // changes; if our close handler intercepts and hides, the old hidden
-  // window never goes away and the new electron process spawns a fresh
-  // one alongside. The single-instance lock above mitigates this, but
-  // it's simpler and less surprising for dev to just let close = quit.
-  win.on('close', (e) => {
-    if (quitting || process.platform !== 'darwin' || !app.isPackaged) return;
-    e.preventDefault();
-    win?.hide();
-  });
+  // X-button closes the window and quits the app (see window-all-closed
+  // below). We previously did the macOS-native "hide on close, preserve
+  // state" pattern, but on Sequoia+ the visualizer worker's OffscreenCanvas
+  // doesn't release its GPU surface cleanly when the window is hidden,
+  // leading to a "window goes black, must force-quit" hang for users.
+  // Close = quit is unambiguous, takes ~2 s to re-launch, and Spotify auth
+  // + EQ presets survive in localStorage. Worth losing the native pattern
+  // to get reliable close behavior.
 
   // Block renderer-initiated new windows. The only legitimate "open externally"
   // path is the allowlisted `shell:open-external` IPC handler.
@@ -424,15 +407,24 @@ function buildAppMenu(): void {
         { role: 'zoomOut' },
         { type: 'separator' },
         { role: 'togglefullscreen' },
-        // DevTools only in dev builds — not exposed in the shipped DMG.
+        // Reload + Force Reload are dev-only — they reset all renderer state
+        // including Spotify auth, AI tick, audio context. Useful when iterating
+        // on the dev server; destructive in production.
         ...(!app.isPackaged
           ? ([
               { type: 'separator' },
               { role: 'reload' },
               { role: 'forceReload' },
-              { role: 'toggleDevTools' },
             ] as Electron.MenuItemConstructorOptions[])
           : []),
+        // Developer Tools stays available in packaged builds. Standard for
+        // OSS Electron apps (Slack, Discord, Signal all ship with it). Lets
+        // power users inspect production behavior, clear localStorage for
+        // debug purposes (e.g. forcing an update re-check), and report
+        // issues with real console errors attached. Not a security risk —
+        // the renderer is already locked down via CSP + contextIsolation.
+        { type: 'separator' },
+        { role: 'toggleDevTools' },
       ],
     },
 
@@ -532,7 +524,6 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
-  quitting = true;
   if (authServer) {
     authServer.close();
     authServer = null;
@@ -540,8 +531,10 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  // On macOS this fires only after `before-quit` (because we hide instead of
-  // close), so it's effectively the very-last cleanup hook. On non-darwin
-  // closing the last window quits the app — standard cross-platform pattern.
-  if (process.platform !== 'darwin') app.quit();
+  // Cross-platform: closing the last window quits the app. The previous
+  // macOS-only branch (skip quit, keep dock icon alive) was paired with the
+  // hide-on-close behavior in the BrowserWindow `close` handler; both are
+  // gone now in favor of predictable X-button behavior. See `createWindow`
+  // for the full rationale.
+  app.quit();
 });

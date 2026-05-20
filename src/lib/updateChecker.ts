@@ -21,9 +21,19 @@ const RELEASES_API =
 const LAST_CHECK_KEY = 'av.update.lastCheckAt';
 const DISMISSED_VERSION_KEY = 'av.update.dismissedVersion';
 
-/** 24-hour TTL between automatic checks. The user can force a check by
- *  passing { force: true } — used by the in-app "Check now" button. */
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Cache between automatic "no update found" results. Shorter (1 hr) than
+ *  the previous 24-hour TTL because the old value made the very first
+ *  release-after-install invisible — the install ran the check immediately,
+ *  cached "no update", and then ignored newer releases for a full day. With
+ *  1 hr the worst case is "you'll see a new release within an hour of
+ *  it landing on origin," which is the user expectation.
+ *
+ *  The TTL only applies when checkForUpdate returns null — when an update
+ *  IS available we never write the timestamp, so every focus / banner-mount
+ *  re-fetches and shows the user the same prompt until they dismiss or
+ *  download. GitHub's anonymous API limit is 60 req/hour per IP; even
+ *  hammering the check every focus event we're nowhere near the cap. */
+const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 interface GithubAsset {
   name: string;
@@ -96,12 +106,14 @@ interface CheckOptions {
 export async function checkForUpdate(opts: CheckOptions = {}): Promise<UpdateInfo | null> {
   const currentVersion = normalizeVersion(window.api.app.version);
 
-  // Cache gate — skip the network call entirely if we checked recently.
+  // Cache gate. Only suppresses re-checks when the LAST check came back
+  // empty — i.e. there was no newer release at the time. If an update was
+  // available the last time we looked we always re-fetch, so the banner
+  // doesn't go stale relative to a newer release that just landed.
   if (!opts.force) {
     const last = parseInt(localStorage.getItem(LAST_CHECK_KEY) ?? '0', 10) || 0;
     if (Date.now() - last < CHECK_INTERVAL_MS) return null;
   }
-  localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
 
   let release: GithubRelease;
   try {
@@ -111,22 +123,41 @@ export async function checkForUpdate(opts: CheckOptions = {}): Promise<UpdateInf
     if (!res.ok) {
       // 404 = no releases yet; 403 = rate-limited. Either way, silently bail —
       // an update banner is a nice-to-have, not a feature we should alert about.
+      // Set the timestamp so we don't hammer the API on a flapping connection.
+      localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
       return null;
     }
     release = (await res.json()) as GithubRelease;
   } catch {
+    localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
     return null;
   }
 
-  if (release.draft || release.prerelease) return null;
+  if (release.draft || release.prerelease) {
+    localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+    return null;
+  }
 
   const latestVersion = normalizeVersion(release.tag_name);
-  if (compareVersions(latestVersion, currentVersion) <= 0) return null;
+  if (compareVersions(latestVersion, currentVersion) <= 0) {
+    // Up to date — cache the negative result so we don't re-fetch on every
+    // focus event. The TTL is short enough that a newer release lands in
+    // the user's banner within ~1 hr of it being published.
+    localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+    return null;
+  }
 
   // User dismissed this exact version — keep silent until a newer one drops.
   const dismissed = localStorage.getItem(DISMISSED_VERSION_KEY);
-  if (dismissed && normalizeVersion(dismissed) === latestVersion) return null;
+  if (dismissed && normalizeVersion(dismissed) === latestVersion) {
+    localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+    return null;
+  }
 
+  // Update available — DO NOT write LAST_CHECK_KEY. We want the next focus
+  // event (or banner mount) to refetch so the user sees the same prompt
+  // even after a window-hide / reload cycle, AND so a newer release that
+  // drops between now and the user clicking Download is detected.
   const asset = pickAsset(release.assets ?? [], window.api.app.arch);
 
   return {
