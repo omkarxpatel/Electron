@@ -5,6 +5,11 @@
 export interface ElectronApi {
   platform: NodeJS.Platform;
   electronVersion: string;
+  /** Static app identity, available synchronously. */
+  app: {
+    version: string;
+    arch: string;
+  };
   spotifyAuth: {
     listenForCallback(expectedState: string): Promise<{ code: string }>;
     cancel(): Promise<void>;

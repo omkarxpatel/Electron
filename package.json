@@ -2,7 +2,7 @@
   "name": "audio-visualizer",
   "productName": "Audio Visualizer & Modifier",
   "private": true,
-  "version": "0.1.5",
+  "version": "1.0.0",
   "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
   "homepage": "https://github.com/omkarxpatel/Spotify-Visualizer-Modifier",
   "repository": {

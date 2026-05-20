@@ -4,6 +4,13 @@ const api = {
   platform: process.platform,
   electronVersion: process.versions.electron,
 
+  /** Static app identity — populated once at preload time via sync IPC and
+   *  exposed as plain values so the renderer doesn't have to await them. */
+  app: {
+    version: ipcRenderer.sendSync('app:version') as string,
+    arch: process.arch,
+  },
+
   spotifyAuth: {
     listenForCallback: (expectedState: string): Promise<{ code: string }> =>
       ipcRenderer.invoke('spotify-auth:listen', expectedState),

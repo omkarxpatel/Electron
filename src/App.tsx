@@ -4,6 +4,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { SpotifyOnboarding } from './components/SpotifyOnboarding';
 import { NowPlayingBar } from './components/NowPlayingBar';
 import { SpotifySection } from './components/SpotifySection';
+import { UpdateBanner } from './components/UpdateBanner';
 import { VisualizerBanner } from './components/VisualizerBanner';
 import { EqSection } from './components/EqSection';
 import { useAudioEngine } from './audio/useAudioEngine';
@@ -172,6 +173,7 @@ function AppContent() {
 
   return (
     <div className="app" style={themeStyle}>
+      <UpdateBanner />
       <ChromeBar
         sourceMode={audioSource.mode}
         sourceDeviceId={audioSource.deviceId}

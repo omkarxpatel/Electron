@@ -276,8 +276,24 @@ function isAllowedExternalUrl(url: string): boolean {
   let parsed: URL;
   try { parsed = new URL(url); } catch { return false; }
   if (parsed.protocol !== 'https:') return false;
-  return parsed.host === 'accounts.spotify.com' || parsed.host === 'developer.spotify.com';
+  if (parsed.host === 'accounts.spotify.com' || parsed.host === 'developer.spotify.com') return true;
+  // GitHub URLs needed by the update checker — release pages + DMG download
+  // links. Scope to this project's repo only so the allowlist doesn't double
+  // as a generic GitHub-anywhere primitive.
+  if (
+    parsed.host === 'github.com' &&
+    parsed.pathname.startsWith('/omkarxpatel/Spotify-Visualizer-Modifier/releases')
+  ) {
+    return true;
+  }
+  return false;
 }
+
+ipcMain.on('app:version', (event) => {
+  // Sync IPC at preload-init time so the renderer can read window.api.app.version
+  // as a plain string instead of an async getter.
+  event.returnValue = app.getVersion();
+});
 
 ipcMain.handle('shell:open-external', async (_event, url: string) => {
   if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {
