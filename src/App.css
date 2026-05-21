@@ -3685,6 +3685,55 @@
   color: #eee;
 }
 
+/* Secondary "View / Open release page" link styled flat — not the primary
+   action, doesn't compete with Download / Restart for attention. */
+.update-banner-link {
+  appearance: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+
+.update-banner-link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #eee;
+}
+
+/* Progress bar inside the banner — shown only during downloading state. */
+.update-banner-progress {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.update-banner-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+  border-radius: 2px;
+}
+
+/* Error / manual-fallback states use a muted-amber accent so they read as
+   "something went wrong" without screaming red. */
+.update-banner[data-state='error'],
+.update-banner[data-state='manual-fallback'] {
+  background: rgba(245, 158, 11, 0.12);
+  border-bottom-color: rgba(245, 158, 11, 0.4);
+}
+
+.update-banner[data-state='error'] .update-banner-text strong,
+.update-banner[data-state='manual-fallback'] .update-banner-text strong {
+  color: #fbbf24;
+}
+
 /* ============================================================
    Settings → About section: version, last-checked, manual update.
    ============================================================ */
@@ -3762,4 +3811,31 @@
 .settings-about-update-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Progress bar inside the Settings About download block. */
+.settings-about-progress {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.settings-about-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+  border-radius: 3px;
+}
+
+/* Error / manual-fallback variant of the update block — muted amber. */
+.settings-about-update-error {
+  background: rgba(245, 158, 11, 0.10);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.settings-about-update-error .settings-about-update-text strong {
+  color: #fbbf24;
 }

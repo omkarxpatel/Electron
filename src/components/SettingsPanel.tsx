@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import type { Settings } from '../state/settings';
 import { PALETTES } from '../visualizers/palettes';
 import {
   checkForUpdate,
-  dismissUpdate,
-  getLastCheckedAt,
-  type UpdateInfo,
-} from '../lib/updateChecker';
+  dismissVersion,
+  downloadUpdate,
+  installUpdate,
+  openReleasePage,
+  useUpdateState,
+} from '../lib/updateService';
+import type { UpdateState } from '../types/api';
 
 interface Props {
   open: boolean;
@@ -194,54 +197,27 @@ export function SettingsPanel({
 }
 
 /**
- * Version + manual update check. The daily auto-check (via UpdateBanner)
- * happens in the background regardless; this surface is for users who want
- * to force a check or just see what version they're on.
+ * Version + auto-update status mirror of the main-process state machine.
+ * Renders the same state the top-bar UpdateBanner renders, but in a denser
+ * Settings-panel form factor: always visible (even when up-to-date), with
+ * a manual "Check for updates" trigger for users who want to force a check.
  *
- * Three display states for the inline result:
- *   - idle: shows the last-checked timestamp (or "Never")
- *   - checking: spinner-ish indicator
- *   - update available: name + version + Download + Skip
- *   - up to date: brief confirmation, auto-clears
+ * All state lives in updateService — this is a pure consumer.
  */
-type CheckStatus =
-  | { kind: 'idle' }
-  | { kind: 'checking' }
-  | { kind: 'available'; info: UpdateInfo }
-  | { kind: 'uptodate' };
-
 function AboutSection() {
   const version = window.api.app.version;
-  const [status, setStatus] = useState<CheckStatus>({ kind: 'idle' });
-  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(getLastCheckedAt());
-
-  // Auto-clear the "up to date" confirmation after 4 s so the row returns
-  // to showing the last-checked timestamp.
-  useEffect(() => {
-    if (status.kind !== 'uptodate') return;
-    const t = window.setTimeout(() => setStatus({ kind: 'idle' }), 4000);
-    return () => window.clearTimeout(t);
-  }, [status.kind]);
-
-  const handleCheck = async (): Promise<void> => {
-    setStatus({ kind: 'checking' });
-    const info = await checkForUpdate({ force: true });
-    setLastCheckedAt(getLastCheckedAt());
-    if (info) setStatus({ kind: 'available', info });
-    else setStatus({ kind: 'uptodate' });
-  };
-
-  const handleDownload = (info: UpdateInfo): void => {
-    const url = info.assetUrl ?? info.releasePageUrl;
-    void window.api.shell.openExternal(url).catch((err) => {
-      console.error('AboutSection: shell.openExternal refused', url, err);
-    });
-  };
-
-  const handleSkip = (info: UpdateInfo): void => {
-    dismissUpdate(info.latestVersion);
-    setStatus({ kind: 'idle' });
-  };
+  const state = useUpdateState();
+  const handleCheck = useCallback(() => void checkForUpdate(), []);
+  const handleDownload = useCallback(() => void downloadUpdate(), []);
+  const handleInstall = useCallback(() => void installUpdate(), []);
+  const handleOpenPage = useCallback(
+    (url?: string) => void openReleasePage(url),
+    [],
+  );
+  const handleSkip = useCallback(
+    (v: string) => void dismissVersion(v),
+    [],
+  );
 
   return (
     <div className="settings-about">
@@ -250,8 +226,8 @@ function AboutSection() {
         <span className="settings-about-value">{version}</span>
       </div>
       <div className="settings-about-row">
-        <span className="settings-about-label">Last checked</span>
-        <span className="settings-about-value">{formatLastChecked(lastCheckedAt)}</span>
+        <span className="settings-about-label">Status</span>
+        <span className="settings-about-value">{formatStateSummary(state)}</span>
       </div>
 
       <div className="settings-about-action">
@@ -259,38 +235,126 @@ function AboutSection() {
           type="button"
           className="settings-spotify-btn"
           onClick={handleCheck}
-          disabled={status.kind === 'checking'}
+          disabled={state.kind === 'checking' || state.kind === 'downloading'}
         >
-          {status.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+          {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
         </button>
-        {status.kind === 'uptodate' && (
-          <span className="settings-about-status">You're up to date.</span>
-        )}
       </div>
 
-      {status.kind === 'available' && (
+      {state.kind === 'available' && (
         <div className="settings-about-update">
           <div className="settings-about-update-text">
-            <strong>v{status.info.latestVersion} is available</strong>
-            {status.info.assetName ? (
-              <span className="settings-about-update-asset">{status.info.assetName}</span>
-            ) : null}
+            <strong>v{state.version} is available</strong>
+            <span className="settings-about-update-asset">Downloading in the background…</span>
           </div>
           <div className="settings-about-update-actions">
             <button
               type="button"
               className="settings-spotify-btn"
-              onClick={() => handleDownload(status.info)}
+              onClick={handleDownload}
             >
-              Download
+              Download now
+            </button>
+            <button
+              type="button"
+              className="settings-spotify-btn"
+              onClick={() => handleOpenPage(state.releasePageUrl)}
+            >
+              View release
             </button>
             <button
               type="button"
               className="settings-spotify-btn settings-spotify-btn-danger"
-              onClick={() => handleSkip(status.info)}
-              title="Don't show this version again."
+              onClick={() => handleSkip(state.version)}
             >
               Skip
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'downloading' && (
+        <div className="settings-about-update">
+          <div className="settings-about-update-text">
+            <strong>Downloading v{state.version}</strong>
+            <span className="settings-about-update-asset">
+              {state.progress.percent.toFixed(0)}% · {formatBytes(state.progress.transferred)} /{' '}
+              {formatBytes(state.progress.total)}
+            </span>
+          </div>
+          <div className="settings-about-progress" role="progressbar" aria-valuenow={state.progress.percent} aria-valuemin={0} aria-valuemax={100}>
+            <div className="settings-about-progress-fill" style={{ width: `${state.progress.percent}%` }} />
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'downloaded' && (
+        <div className="settings-about-update">
+          <div className="settings-about-update-text">
+            <strong>v{state.version} ready to install</strong>
+            <span className="settings-about-update-asset">
+              Restart finishes the update. Settings and Spotify auth are preserved.
+            </span>
+          </div>
+          <div className="settings-about-update-actions">
+            <button
+              type="button"
+              className="settings-spotify-btn"
+              onClick={handleInstall}
+            >
+              Restart now
+            </button>
+            <button
+              type="button"
+              className="settings-spotify-btn settings-spotify-btn-danger"
+              onClick={() => handleSkip(state.version)}
+            >
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'error' && (
+        <div className="settings-about-update settings-about-update-error">
+          <div className="settings-about-update-text">
+            <strong>{state.category === 'network' ? "Couldn't reach the update server" : 'Update check failed'}</strong>
+            <span className="settings-about-update-asset">{truncate(state.message, 140)}</span>
+          </div>
+          <div className="settings-about-update-actions">
+            {state.canRetry && (
+              <button
+                type="button"
+                className="settings-spotify-btn"
+                onClick={handleCheck}
+              >
+                Retry
+              </button>
+            )}
+            <button
+              type="button"
+              className="settings-spotify-btn"
+              onClick={() => handleOpenPage(state.lastReleasePageUrl)}
+            >
+              Open release page
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'manual-fallback' && (
+        <div className="settings-about-update settings-about-update-error">
+          <div className="settings-about-update-text">
+            <strong>Auto-update couldn't finish</strong>
+            <span className="settings-about-update-asset">{state.reason}</span>
+          </div>
+          <div className="settings-about-update-actions">
+            <button
+              type="button"
+              className="settings-spotify-btn"
+              onClick={() => handleOpenPage(state.releasePageUrl)}
+            >
+              Download manually
             </button>
           </div>
         </div>
@@ -299,15 +363,41 @@ function AboutSection() {
   );
 }
 
-/** Format a UNIX-ms timestamp as a relative "3 hours ago" string. Coarse
- *  bucketing — no sub-minute precision, no library. */
-function formatLastChecked(ts: number | null): string {
-  if (ts === null) return 'Never';
+function formatStateSummary(state: UpdateState): string {
+  switch (state.kind) {
+    case 'idle': return 'Idle';
+    case 'checking': return 'Checking…';
+    case 'up-to-date': return `Up to date · last checked ${formatRelative(state.checkedAt)}`;
+    case 'available': return `v${state.version} available`;
+    case 'downloading': return `Downloading v${state.version} (${state.progress.percent.toFixed(0)}%)`;
+    case 'downloaded': return `v${state.version} ready to install`;
+    case 'error': return 'Update check failed';
+    case 'manual-fallback': return 'Auto-install failed — manual download required';
+  }
+}
+
+function formatRelative(ts: number): string {
   const delta = Date.now() - ts;
-  if (delta < 60_000) return 'Just now';
+  if (delta < 60_000) return 'just now';
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} min ago`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} hr ago`;
   return `${Math.floor(delta / 86_400_000)} days ago`;
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

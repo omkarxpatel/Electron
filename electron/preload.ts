@@ -45,6 +45,46 @@ const api = {
       return () => ipcRenderer.off('app-event:preferences', wrapped);
     },
   },
+
+  /**
+   * Auto-update bridge. The state machine lives in the main process (see
+   * electron/updater.ts) — this is the renderer's view into it.
+   *
+   *   getInitialState() — sync read of the current state, used at mount to
+   *     hydrate the UI without a flash before the first push arrives.
+   *   onState(handler)  — subscribe to all subsequent state changes.
+   *   check / download / install / openFallback / dismissVersion — actions
+   *     forwarded to the main-process updater. All async via ipcRenderer.invoke.
+   *
+   * The state shape matches electron/updater.ts UpdateState. Keeping it
+   * unstructured here (returning `unknown`) is intentional — types are
+   * declared once in src/types/api.d.ts so renderer and main can't drift.
+   */
+  update: {
+    getInitialState(): unknown {
+      return ipcRenderer.sendSync('update:get-state');
+    },
+    onState(handler: (state: unknown) => void): () => void {
+      const wrapped = (_e: unknown, state: unknown): void => handler(state);
+      ipcRenderer.on('update:state', wrapped);
+      return () => ipcRenderer.off('update:state', wrapped);
+    },
+    check(): Promise<void> {
+      return ipcRenderer.invoke('update:check');
+    },
+    download(): Promise<void> {
+      return ipcRenderer.invoke('update:download');
+    },
+    install(): Promise<void> {
+      return ipcRenderer.invoke('update:install');
+    },
+    openFallback(url?: string): Promise<void> {
+      return ipcRenderer.invoke('update:open-fallback', url);
+    },
+    dismissVersion(version: string): Promise<void> {
+      return ipcRenderer.invoke('update:dismiss-version', version);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);

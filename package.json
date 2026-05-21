@@ -2,7 +2,7 @@
   "name": "audio-visualizer",
   "productName": "Electron",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
   "homepage": "https://github.com/omkarxpatel/Electron",
   "repository": {
@@ -21,6 +21,7 @@
     "icon:gen": "bash scripts/build-icon.sh"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -52,8 +53,20 @@
     "mac": {
       "category": "public.app-category.music",
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.icns",
       "darkModeSupport": true,
@@ -67,10 +80,22 @@
       "title": "Electron ${version}",
       "icon": "build/icon.icns",
       "iconSize": 110,
-      "window": { "width": 540, "height": 380 },
+      "window": {
+        "width": 540,
+        "height": 380
+      },
       "contents": [
-        { "x": 140, "y": 200, "type": "file" },
-        { "x": 400, "y": 200, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "publish": {

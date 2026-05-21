@@ -3,6 +3,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { setupAutoUpdater, teardownAutoUpdater } from './updater';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -509,6 +510,7 @@ app.whenReady().then(async () => {
   buildDockMenu();
   registerDisplayMediaHandler();
   createWindow();
+  setupAutoUpdater();
 
   // Clicking the dock icon (or Cmd+Tabbing back) on macOS. If we still have
   // a window object, just show it (preserves all state). If somehow the
@@ -528,6 +530,7 @@ app.on('before-quit', () => {
     authServer.close();
     authServer = null;
   }
+  teardownAutoUpdater();
 });
 
 app.on('window-all-closed', () => {
