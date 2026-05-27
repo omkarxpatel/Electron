@@ -12,6 +12,8 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
 
 > macOS 11 Big Sur or later. Tested on Apple Silicon and Intel.
 
+<img width="1496" height="945" alt="image" src="https://github.com/user-attachments/assets/d804c52f-c899-4b36-b2da-5f726a14a00e" />
+
 ---
 
 ## Contents
