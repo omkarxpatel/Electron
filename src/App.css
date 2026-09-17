@@ -2540,6 +2540,20 @@
 .eq-controls {
   display: grid;
   grid-template-columns: 88px 1fr 130px;
+  /* Load-bearing. The implicit row is `auto`, which sizes to content, while
+     `flex: 1` + `min-height: 0` lets this box be given less than that — so
+     on a short window the row stayed at its content height and the faders
+     painted outside the box, over the enhancer card below. Measured at
+     1279x796: box 151px, content 271px, children reaching 105px into the
+     enhancer.
+
+     minmax(0, 1fr) ties the row to whatever height flex assigned. That also
+     gives .eq-band a definite height, which is what `flex: 1` on
+     .eq-band-track-wrap needs to resolve against — without it the fader had
+     nothing to divide and fell back to its own max-height. Now the faders
+     get shorter as the window does, which is the behaviour a mixer strip
+     should have. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
   flex: 1;
   min-height: 0;
@@ -3130,13 +3144,27 @@
   flex-direction: column;
   min-height: 0;
   gap: 8px;
-  flex-shrink: 0;
+  /* Was flex-shrink: 0, which kept the column at its full content height
+     inside an `overflow: hidden` parent — so on a short window the last
+     presets were cut off mid-button with nothing to indicate it. */
+  flex-shrink: 1;
 }
 
 .eq-presets-row {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* Seven buttons need 269px and there is not always 269px. Scrolling the
+     list keeps every preset reachable; clipping them does not. Reset stays
+     outside this, pinned below, since it is the one control that should
+     never scroll out of view. */
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.eq-presets-row::-webkit-scrollbar {
+  display: none;
 }
 
 .eq-preset-chip {
@@ -3964,6 +3992,12 @@
   flex-direction: column;
   gap: 4px;
   flex: 1 1 auto;
+  /* A flex item's default min-width is `auto`, meaning it will not shrink
+     below min-content — and this card's min-content is its full 420px, so
+     it held that width and pushed the volume and balance knobs past the
+     clip edge, where they vanished entirely. .knob-stack, .output-meter and
+     .wavestrip all already carry this; the card was the one that missed it. */
+  min-width: 0;
   max-width: 420px;
   padding: 7px 11px;
   border-radius: 8px;
