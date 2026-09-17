@@ -203,7 +203,7 @@ export function createDrawState(): DrawState {
     scopeClearedAt: 0,
     scopeWipeFor: 0,
     scopeEchoes: [],
-    scopeLattice: 0,
+    scopeLattice: 1,
     scopeCoherence: 0.5,
     scopeCohLo: 0.3,
     scopeCohHi: 0.7,
@@ -473,12 +473,14 @@ export function drawFrame(
             const RATIOS = [0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 5 / 3, 2, 2.5, 3, 4];
             state.scopeRatio = RATIOS[Math.floor(Math.random() * RATIOS.length)];
           } else {
-            // Off roughly half the time — the lattice is a strong effect, and
-            // constant faceting is as monotonous as never faceting. Weighted
-            // toward the looser grids, since the tightest one packs enough
-            // chords in to read as clutter rather than as structure.
-            state.scopeLattice =
-              Math.random() < 0.55 ? 0 : 1 + Math.floor(Math.random() * 3);
+            // Weighted hard toward the coarse grid. The even-ish split this
+            // replaces spent more than half its time at lattice 0 — the
+            // ungridded free curve — and only about a sixth on the coarse
+            // grid, which is the look actually worth showing. 2 and 3 stay in
+            // as occasional variety and 0 as contrast, but none of them are
+            // the default any more.
+            const r = Math.random();
+            state.scopeLattice = r < 0.7 ? 1 : r < 0.82 ? 2 : r < 0.9 ? 3 : 0;
           }
         }
       }

@@ -218,8 +218,8 @@ const SECTIONS: Section[] = [
     blurb:
       'Nothing pinned. This is exactly what the app does: parameters re-roll ' +
       'on bass onsets above an adaptive threshold, with a forced roll if ' +
-      'nothing has changed in 5 seconds. Watch the readout to see which ' +
-      'variable moved.',
+      'nothing has changed in 5 seconds. The lattice roll is weighted 70/12/' +
+      '8/10 toward 1/2/3/0. Watch the readout to see which variable moved.',
     specs: [{ title: 'Scope — unpinned', note: 'Live re-rolling.' }],
   },
   {
