@@ -1230,33 +1230,6 @@
   transform: scale(0.97);
 }
 
-.sp-track-table th {
-  text-align: left;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.4);
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.sp-track-table th:first-child {
-  padding-left: 28px;
-  width: 56px;
-  text-align: right;
-}
-
-.sp-track-table th:last-child {
-  padding-right: 28px;
-  text-align: right;
-  width: 80px;
-}
-
-.sp-track-table th:nth-child(3) {
-  width: 28%;
-}
-
 .sp-track-row {
   cursor: pointer;
   transition: background 80ms ease;
@@ -1355,6 +1328,11 @@
 }
 
 .sp-track-album {
+  /* Was on `th:nth-child(3)`. The header row is gone, and with
+     `table-layout: fixed` the first rendered row is what defines the columns,
+     so the width has to live on the cell now. Index (56px) and duration
+     (80px) were already declared on their cells. */
+  width: 28%;
   color: rgba(255, 255, 255, 0.5);
   white-space: nowrap;
   overflow: hidden;
@@ -3235,8 +3213,9 @@
   display: none;
 }
 
-/* Hide the album column when space is tight (right column is 340px) */
-.workspace-right .sp-track-table th:nth-child(3),
+/* Hide the album column when space is tight (right column is 340px). The cell
+   is enough: with `table-layout: fixed` the first row defines the columns, so
+   a display:none cell drops its column rather than leaving a gap. */
 .workspace-right .sp-track-album {
   display: none;
 }
@@ -3520,34 +3499,8 @@
   overflow: visible;
 }
 
-.sp-track-table thead {
-  display: table-header-group;
-  position: relative;
-}
-
 .sp-track-table tbody {
   display: table-row-group;
-}
-
-.sp-track-table thead th {
-  position: sticky;
-  top: 0;
-  /* 0.96 alpha made this an opaque slab and left the blur doing nothing —
-     nothing was showing through to blur. Lower alpha + a stronger blur keeps
-     scrolled rows an illegible smear (which is all the sticky header needs)
-     while the backdrop still reads through.
-
-     Desaturated rather than saturated. saturate(1.2) was boosting the colour
-     of whatever cover art happened to be scrolled under the header, so the
-     column labels sat on a warm or cold patch depending on the artwork —
-     per cell, since each th filters only its own area, which made it read as
-     a mismatched block rather than as one bar. Dropping saturation to zero
-     keeps the frosted-glass depth and takes the hue with it; the extra alpha
-     damps the brightness that came through the same way. */
-  background: rgba(10, 10, 10, 0.62);
-  backdrop-filter: blur(20px) saturate(0);
-  -webkit-backdrop-filter: blur(20px) saturate(0);
-  z-index: 2;
 }
 
 .sp-track-loading-more {

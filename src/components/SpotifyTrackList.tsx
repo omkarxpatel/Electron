@@ -198,14 +198,6 @@ function SpotifyTrackListImpl({
       ) : (
         <div className="sp-track-scroll" ref={scrollRef} onScroll={scheduleScrollCheck}>
           <table className="sp-track-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Title</th>
-                <th>Album</th>
-                <th className="sp-track-duration">Duration</th>
-              </tr>
-            </thead>
             <tbody>
               {tracks.map((track, index) => (
                 <TrackRow
