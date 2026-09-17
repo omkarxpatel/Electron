@@ -46,11 +46,19 @@ export function LyricsPane({ playback, active = true }: Props) {
     );
   }
   if (!lyrics.found || !hasContent) {
-    return (
-      <aside className="lyrics-pane">
-        <div className="lyrics-empty">No lyrics found for this track</div>
-      </aside>
-    );
+    // Nothing to show, so give the space back instead of parking an empty
+    // panel in it. The slot is `flex: 0 0 180px` in a column whose other
+    // child is `flex: 1`, so returning null hands those 180px to the track
+    // list rather than leaving a gap.
+    //
+    // The loading and instrumental branches above deliberately still render.
+    // Collapsing while a lookup is in flight would mean that every track
+    // which turns out to HAVE lyrics gets the panel appearing partway
+    // through it — lrclib takes 8-15 s — shoving the track list up mid-song.
+    // Most tracks have lyrics, so showing the lookup and collapsing on a miss
+    // costs one layout shift on the tracks without them, where the other way
+    // round costs one on every track with them.
+    return null;
   }
   if (lyrics.lines.length === 0) {
     // Plain only (fast path responded, synced hasn't / won't). Render the
