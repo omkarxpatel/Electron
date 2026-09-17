@@ -163,6 +163,13 @@ export interface DrawState {
   scopeDeltaPeak: number;
   /** Tick of the last shape re-roll, so a figure cannot hold forever. */
   scopeLastRoll: number;
+  /** Two timbral profiles of the same signal at different time constants.
+   *  Their divergence is what marks a section change. See sectionNoveltyOf. */
+  scopeProfShort: Float32Array;
+  scopeProfLong: Float32Array;
+  /** Set when the music has moved on, cleared when the next beat lands the
+   *  change. Splits "should the figure change" from "change it now". */
+  scopeRollArmed: boolean;
   /** Rotational symmetry, re-rolled on strong onsets. */
   scopeSymmetry: number;
   /** Spin direction, +1 or -1. Flips on some onsets. Shared by both radial
@@ -225,6 +232,9 @@ export function createDrawState(): DrawState {
     scopeCohHi: 0.7,
     scopeDeltaPeak: 0.02,
     scopeLastRoll: 0,
+    scopeProfShort: new Float32Array(SCOPE_NOV_BANDS),
+    scopeProfLong: new Float32Array(SCOPE_NOV_BANDS),
+    scopeRollArmed: false,
     scopeSymmetry: 3,
     scopeSpin: 1,
     scopeSpinTarget: 1,
@@ -479,12 +489,7 @@ export function drawFrame(
       const ink = scopeInk;
       {
         const bDelta = bassDeltaOf(freq, sampleRate, state);
-        // Re-rolling symmetry, spin, ratio and lattice on bass hits is what
-        // makes the figure evolve instead of being one shape forever.
-        // Coherence biases this rather than blocking it: a hard gate held the
-        // shape frozen through every tonal passage, which traded away all the
-        // variety to buy stability. A probability keeps a good pattern
-        // standing most of the time while still letting it surprise you.
+        const novelty = sectionNoveltyOf(freq, sampleRate, state, dt60);
         // ── Onset threshold, relative to the material ──
         // A fixed threshold only fires on music with hard bass transients.
         // Measured over 30 s against three signals it produced 172 shape
@@ -498,51 +503,50 @@ export function drawFrame(
 
         // Each onset shoves the rotation and the shove bleeds off, so hits
         // land as a visible lurch on top of whatever the steady rate is.
+        // This stays per-beat: the beat should be legible in the motion even
+        // while the shape holds.
         if (bDelta > onsetThresh) {
           state.scopeSpinKick = Math.min(2.5, state.scopeSpinKick + bDelta * 5);
         }
         state.scopeSpinKick *= Math.pow(0.93, dt60);
-        const stale = state.tick - state.scopeLastRoll > SCOPE_MAX_DWELL;
 
-        if ((bDelta > onsetThresh || stale) && Math.random() > ink * 0.6) {
+        // ── When the figure is allowed to become something else ──
+        // The music moving on arms a change; the next beat lands it. Keeping
+        // those separate is the whole point. Re-rolling on the onset alone
+        // asked the wrong question — an onset means a beat happened, not that
+        // anything is different — and the figure turned over roughly twice a
+        // second on any kick-driven track. Arming on novelty instead means a
+        // change coincides with something actually arriving in the music,
+        // and firing it on the following transient means it still lands on a
+        // beat rather than drifting in between them.
+        //
+        // Coherence biases the arming rather than blocking it: a hard gate
+        // held the shape frozen through every tonal passage, which traded
+        // away all the variety to buy stability.
+        const dwell = state.tick - state.scopeLastRoll;
+        if (dwell > SCOPE_MIN_DWELL && novelty > SCOPE_NOV_ARM) {
+          state.scopeRollArmed = true;
+        }
+        // Coherence biases which beat lands an armed change, not whether one
+        // does. A hard gate held the shape frozen through every tonal
+        // passage, trading away all the variety to buy stability; as a
+        // per-beat probability it lets a pattern that is resolving stand
+        // through another hit or two and no longer than that. It belongs on
+        // this decision and not on the arming above, which is evaluated every
+        // frame and would shrug the probability off within a few of them.
+        const landed = state.scopeRollArmed && bDelta > onsetThresh && Math.random() > ink * 0.6;
+        // The backstop, for material that neither changes nor punches —
+        // without it, sustained and compressed mixes hold one figure
+        // indefinitely, which is the failure this style had before.
+        if (landed || dwell > SCOPE_MAX_DWELL) {
+          state.scopeRollArmed = false;
           state.scopeLastRoll = state.tick;
-          const roll = Math.random();
-          if (roll < 0.34) {
-            state.scopeSymmetry = 2 + Math.floor(Math.random() * 7); // 2..8
-          } else if (roll < 0.5) {
-            // Direction and rate together. Flipping direction alone always
-            // looked the same, because the rate never changed — the figure
-            // wheeled at one speed forever and only ever reversed. Re-rolling
-            // the multiplier is what makes the motion read as phrased rather
-            // than as a metronome. 0 is in the set not to stop the figure —
-            // measured, it is never still, because the onset kick keeps
-            // feeding it — but to drop the steady rate away so that between
-            // hits it drifts and on each hit it lurches.
-            if (Math.random() < 0.55) state.scopeSpin = -state.scopeSpin;
-            const RATES = [0, 0.3, 0.7, 1, 1.6, 2.6, 4];
-            state.scopeSpinTarget = RATES[Math.floor(Math.random() * RATES.length)];
-          } else if (roll < 0.74) {
-            // Small rational ratios give closed, knot-like figures; anything
-            // far from one just smears. A wider set than before, since this
-            // is the main source of shape variety.
-            const RATIOS = [0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 5 / 3, 2, 2.5, 3, 4];
-            state.scopeRatio = RATIOS[Math.floor(Math.random() * RATIOS.length)];
-          } else {
-            // Weighted hard toward the coarse grid. The even-ish split this
-            // replaces spent more than half its time at lattice 0 — the
-            // ungridded free curve — and only about a sixth on the coarse
-            // grid, which is the look actually worth showing. 2 and 3 stay in
-            // as occasional variety and 0 as contrast, but none of them are
-            // the default any more.
-            const r = Math.random();
-            state.scopeLattice = r < 0.7 ? 1 : r < 0.82 ? 2 : r < 0.9 ? 3 : 0;
-            // Change the grid's geometry only some of the time, so a given
-            // cell shape gets to be explored at several coarsenesses before
-            // it is swapped out.
-            if (Math.random() < 0.45) {
-              state.scopeGridKind = Math.floor(Math.random() * SCOPE_GRID_COUNT);
-            }
-          }
+          // Twice, because changes are now an order of magnitude rarer and
+          // each one should read as a decision. The two picks can collide, so
+          // some transitions move one facet and some move two — which is
+          // itself variety.
+          rollScopeShape(state);
+          rollScopeShape(state);
         }
       }
       // Eased toward the target so a rate change glides rather than steps —
@@ -1368,7 +1372,45 @@ const SCOPE_GRID_COUNT = 4;
 /** Longest a single figure may hold before a re-roll is forced, regardless of
  *  what the onset detector thinks. Ambient material can genuinely contain no
  *  onsets at all, and the visualizer still has to go somewhere. */
-const SCOPE_MAX_DWELL = 300;
+const SCOPE_MAX_DWELL = 840;
+/** Floor on how long a figure holds, in the same units. Nothing re-rolls
+ *  inside this window however much the music changes. Without it the figure
+ *  turned over about twice a second on any kick-driven track, which reads as
+ *  churn rather than as the visual following the music. */
+const SCOPE_MIN_DWELL = 360;
+/** Shape distance above which a change is armed, in sectionNoveltyOf's 0..2
+ *  space. Chosen from measurement, not taste: across two minutes each of
+ *  four synthetic materials, constant instrumentation never exceeded 0.009
+ *  while real section boundaries peaked between 0.222 and 0.343. Anywhere in
+ *  that gap works; this sits low in it so a modest arrangement change still
+ *  counts, and the dwell floor rather than the threshold is what bounds how
+ *  often the figure can turn over. */
+const SCOPE_NOV_ARM = 0.15;
+/** Bands in the timbral profile, log-spaced across the range below. Coarse
+ *  on purpose: this should notice an instrument arriving, not a melody
+ *  moving. */
+const SCOPE_NOV_BANDS = 12;
+const SCOPE_NOV_EDGES = (() => {
+  const LO = 40;
+  const HI = 12000;
+  const e = new Float32Array(SCOPE_NOV_BANDS + 1);
+  for (let i = 0; i <= SCOPE_NOV_BANDS; i++) {
+    e[i] = LO * Math.pow(HI / LO, i / SCOPE_NOV_BANDS);
+  }
+  return e;
+})();
+/** The two profile rates, per 60 Hz frame. Short is about 1.5 s — longer
+ *  than a beat at any tempo that matters, so a kick lands inside it rather
+ *  than against it. Long is about 8 s, roughly a musical phrase.
+ *
+ *  The pair is the point. Comparing a single frame against one slow average
+ *  measures the beat, not the arrangement: measured that way a constant
+ *  four-on-the-floor loop armed a change on every kick and the figure sat
+ *  pinned against its minimum dwell. A repeating beat contributes equally to
+ *  both of these, so it cancels, and only a sustained change in content
+ *  pulls them apart. */
+const SCOPE_NOV_SHORT = 0.989;
+const SCOPE_NOV_LONG = 0.998;
 /** Capture one trace in every N frames. */
 const SCOPE_ECHO_EVERY = 3;
 /** Points kept per captured trace. */
@@ -1578,6 +1620,108 @@ function coherenceOf(
 
   const span = Math.max(0.02, state.scopeCohHi - state.scopeCohLo);
   return Math.min(1, Math.max(0, (c - state.scopeCohLo) / span));
+}
+
+/**
+ * How different the music is right now from what it has been, 0..1 — in
+ * effect, "has a new section started?"
+ *
+ * A bass onset says a beat landed. It says nothing about whether anything
+ * changed, which is why arming a re-roll on onsets alone turned the figure
+ * over several times a second on anything with a kick in it — measured at
+ * 916 changes in two minutes. This tracks a coarse timbral profile at two
+ * time constants and measures how far they have come apart, so it responds
+ * to an instrument entering, a drop, or a chorus arriving, and stays flat
+ * while the same beat repeats.
+ */
+function sectionNoveltyOf(
+  freq: Uint8Array,
+  sampleRate: number,
+  state: DrawState,
+  dt60: number,
+): number {
+  const nyq = sampleRate / 2;
+  const short = state.scopeProfShort;
+  const long = state.scopeProfLong;
+  const ks = 1 - Math.pow(SCOPE_NOV_SHORT, dt60);
+  const kl = 1 - Math.pow(SCOPE_NOV_LONG, dt60);
+  let sumShort = 0;
+  let sumLong = 0;
+  for (let b = 0; b < SCOPE_NOV_BANDS; b++) {
+    const i0 = Math.max(1, Math.floor((SCOPE_NOV_EDGES[b] / nyq) * freq.length));
+    const i1 = Math.min(
+      freq.length,
+      Math.max(i0 + 1, Math.floor((SCOPE_NOV_EDGES[b + 1] / nyq) * freq.length)),
+    );
+    let sum = 0;
+    for (let i = i0; i < i1; i++) sum += freq[i];
+    const now = sum / (i1 - i0) / 255;
+    short[b] += (now - short[b]) * ks;
+    long[b] += (now - long[b]) * kl;
+    sumShort += short[b];
+    sumLong += long[b];
+  }
+  if (sumShort < 0.01 || sumLong < 0.01) return 0;
+
+  // Each profile is normalized to unit sum before they are compared, so what
+  // comes back is the distance between two SHAPES and carries no information
+  // about level. Dividing the raw distance by the long profile's total is not
+  // the same thing and is not enough: it rescales the measurement but leaves
+  // a level change in it, so a passage that merely swelled read as a new one.
+  // Measured that way a slow tremolo on otherwise constant material reached
+  // 0.42, overlapping the 0.25 that real section changes produced, and no
+  // threshold could separate them. A drop or a build still registers strongly
+  // here, because instruments leaving changes the shape too.
+  //
+  // Range is 0..2 (total variation between two distributions). Because it is
+  // already relative, it can carry a fixed threshold where the onset detector
+  // could not.
+  let dist = 0;
+  for (let b = 0; b < SCOPE_NOV_BANDS; b++) {
+    dist += Math.abs(short[b] / sumShort - long[b] / sumLong);
+  }
+  return dist;
+}
+
+/** Re-roll one facet of the figure. Called more than once per change, so a
+ *  change reads as the figure deciding on something new rather than as a
+ *  single parameter nudging. */
+function rollScopeShape(state: DrawState): void {
+  const roll = Math.random();
+  if (roll < 0.34) {
+    state.scopeSymmetry = 2 + Math.floor(Math.random() * 7); // 2..8
+  } else if (roll < 0.5) {
+    // Direction and rate together. Flipping direction alone always looked
+    // the same, because the rate never changed — the figure wheeled at one
+    // speed forever and only ever reversed. Re-rolling the multiplier is
+    // what makes the motion read as phrased rather than as a metronome. 0 is
+    // in the set not to stop the figure — measured, it is never still,
+    // because the onset kick keeps feeding it — but to drop the steady rate
+    // away so that between hits it drifts and on each hit it lurches.
+    if (Math.random() < 0.55) state.scopeSpin = -state.scopeSpin;
+    const RATES = [0, 0.3, 0.7, 1, 1.6, 2.6, 4];
+    state.scopeSpinTarget = RATES[Math.floor(Math.random() * RATES.length)];
+  } else if (roll < 0.74) {
+    // Small rational ratios give closed, knot-like figures; anything far
+    // from one just smears. A wider set than before, since this is the main
+    // source of shape variety.
+    const RATIOS = [0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 5 / 3, 2, 2.5, 3, 4];
+    state.scopeRatio = RATIOS[Math.floor(Math.random() * RATIOS.length)];
+  } else {
+    // Weighted hard toward the coarse grid. The even-ish split this replaces
+    // spent more than half its time at lattice 0 — the ungridded free curve
+    // — and only about a sixth on the coarse grid, which is the look
+    // actually worth showing. 2 and 3 stay in as occasional variety and 0 as
+    // contrast, but none of them are the default any more.
+    const r = Math.random();
+    state.scopeLattice = r < 0.7 ? 1 : r < 0.82 ? 2 : r < 0.9 ? 3 : 0;
+    // Change the grid's geometry only some of the time, so a given cell
+    // shape gets to be explored at several coarsenesses before it is
+    // swapped out.
+    if (Math.random() < 0.45) {
+      state.scopeGridKind = Math.floor(Math.random() * SCOPE_GRID_COUNT);
+    }
+  }
 }
 
 /* ============================================================
