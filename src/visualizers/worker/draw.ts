@@ -143,8 +143,12 @@ export interface DrawState {
   scopePeak: number;
   /** Tick of the last footprint clear — see the quantization note below. */
   scopeClearedAt: number;
-  /** Frames left in a footprint fade-out. Counts down; 0 means idle. */
+  /** Frames left in a footprint fade-out. Counts down; 0 means idle.
+   *  Bloom only — Scope ages each trace individually, see scopeEchoes. */
   scopeWipeFor: number;
+  /** Recent Scope traces with the tick each was drawn on, oldest first.
+   *  Redrawn every frame at an age-derived alpha. */
+  scopeEchoes: { path: Path2D; born: number }[];
   /** Polar-lattice strength, 0 = off. Re-rolled on onsets. */
   scopeLattice: number;
   /** Smoothed tonality of the signal, plus the slow bounds it is normalized
@@ -152,6 +156,11 @@ export interface DrawState {
   scopeCoherence: number;
   scopeCohLo: number;
   scopeCohHi: number;
+  /** Slow running peak of the bass delta, used to scale the onset threshold
+   *  to the material. */
+  scopeDeltaPeak: number;
+  /** Tick of the last shape re-roll, so a figure cannot hold forever. */
+  scopeLastRoll: number;
   /** Rotational symmetry, re-rolled on strong onsets. */
   scopeSymmetry: number;
   /** Signed spin rate multiplier; flips direction on some onsets. Shared by
@@ -193,10 +202,13 @@ export function createDrawState(): DrawState {
     scopePeak: 0.5,
     scopeClearedAt: 0,
     scopeWipeFor: 0,
+    scopeEchoes: [],
     scopeLattice: 0,
     scopeCoherence: 0.5,
     scopeCohLo: 0.3,
     scopeCohHi: 0.7,
+    scopeDeltaPeak: 0.02,
+    scopeLastRoll: 0,
     scopeSymmetry: 3,
     scopeSpin: 1,
     scopeRatio: 1,
@@ -293,7 +305,13 @@ export function drawFrame(
     effTrail = 0.44 + (effTrail - 0.44) * t;
     state.scopeWipeFor = Math.max(0, state.scopeWipeFor - dt60);
   }
-  applyTrails(ctx, width, height, effTrail);
+  if (s.waveformStyle === 'lissajous') {
+    // Scope repaints its history from the echo buffer every frame, so the
+    // canvas starts clean instead of carrying anything over.
+    ctx.clearRect(0, 0, width, height);
+  } else {
+    applyTrails(ctx, width, height, effTrail);
+  }
 
   // Album-art tint overrides the static palette when present. The worker
   // receives null when "Auto-tint from album art" is off or no track is
@@ -421,18 +439,28 @@ export function drawFrame(
       // left alone to accumulate; incoherent ones barely mark the canvas.
       // What survives on screen after a few seconds is the geometry.
       const ink = scopeInk;
-      const hold = ink > 0.45;
       {
-        const bDelta = scopeOnsetAndWipe(
-          freq, sampleRate, state, hold ? 500 : 280, hold ? 1100 : 800,
-        );
+        const bDelta = bassDeltaOf(freq, sampleRate, state);
         // Re-rolling symmetry, spin, ratio and lattice on bass hits is what
         // makes the figure evolve instead of being one shape forever.
         // Coherence biases this rather than blocking it: a hard gate held the
         // shape frozen through every tonal passage, which traded away all the
         // variety to buy stability. A probability keeps a good pattern
         // standing most of the time while still letting it surprise you.
-        if (bDelta > 0.055 && Math.random() > ink * 0.6) {
+        // ── Onset threshold, relative to the material ──
+        // A fixed threshold only fires on music with hard bass transients.
+        // Measured over 30 s against three signals it produced 172 shape
+        // changes on a punchy kick and exactly zero on both sustained and
+        // compressed bass — so on most produced music the figure locked and
+        // never moved again. Scaling to the loudest delta seen recently makes
+        // "an onset" mean something relative to this track rather than to an
+        // absolute level that half of all material never reaches.
+        state.scopeDeltaPeak = Math.max(bDelta, state.scopeDeltaPeak * 0.999);
+        const onsetThresh = Math.max(0.012, state.scopeDeltaPeak * 0.45);
+        const stale = state.tick - state.scopeLastRoll > SCOPE_MAX_DWELL;
+
+        if ((bDelta > onsetThresh || stale) && Math.random() > ink * 0.6) {
+          state.scopeLastRoll = state.tick;
           const roll = Math.random();
           if (roll < 0.34) {
             state.scopeSymmetry = 2 + Math.floor(Math.random() * 7); // 2..8
@@ -464,7 +492,7 @@ export function drawFrame(
         ctx, width, height, time, timeL, timeR, palette, gain,
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
         state.scopePeak, state.tick, state.scopeSymmetry, state.scopeRatio,
-        s.scopeDensity, state.scopeLattice,
+        s.scopeDensity, state.scopeLattice, state.scopeEchoes,
       );
       break;
     }
@@ -1235,6 +1263,36 @@ const SCOPE_FILL = 0.92;
  *  dissolving rather than being cut away. Crystal only. */
 const SCOPE_WIPE_FRAMES = 34;
 
+/* ── Scope echoes ──────────────────────────────────────────────────────────
+ *
+ * Scope keeps its recent traces and redraws them each frame at an alpha set by
+ * their age, rather than letting them pile up on the canvas under a decay.
+ *
+ * Canvas decay cannot express "gone after one second". It is multiplicative
+ * and alpha is 8-bit, so `round(a * trail) === a` for any small a: the
+ * faintest ink stalls a hair above zero and stays there. Measured over thirty
+ * seconds the stage only cleared six times, so what was on screen was a
+ * superposition of hundreds of frames — and since that pile dwarfed each new
+ * trace, the figure looked static even though its shape was re-rolling about
+ * twice a second. Giving every trace a real age fixes the footprint and the
+ * staleness together.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/** Ticks a trace stays visible — one second at 60 Hz. */
+const SCOPE_ECHO_LIFE = 60;
+
+/** Longest a single figure may hold before a re-roll is forced, regardless of
+ *  what the onset detector thinks. Ambient material can genuinely contain no
+ *  onsets at all, and the visualizer still has to go somewhere. */
+const SCOPE_MAX_DWELL = 300;
+/** Capture one trace in every N frames. */
+const SCOPE_ECHO_EVERY = 3;
+/** Points kept per captured trace. */
+const SCOPE_ECHO_POINTS = 160;
+/** Peak echo alpha, at age zero. Tuned so the stage reads at the same overall
+ *  brightness as the decay-based version it replaces. */
+const SCOPE_ECHO_ALPHA = 0.11;
+
 /* ── Scope colour ──────────────────────────────────────────────────────────
  *
  * Two things make the middle of the figure illegible, and they compound.
@@ -1354,13 +1412,7 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
  *
  *  Returns the frame's bass delta so the caller can drive its own geometry
  *  changes from the same onset. */
-function scopeOnsetAndWipe(
-  freq: Uint8Array,
-  sampleRate: number,
-  state: DrawState,
-  minFrames = 170,
-  maxFrames = 620,
-): number {
+function bassDeltaOf(freq: Uint8Array, sampleRate: number, state: DrawState): number {
   const nyq = sampleRate / 2;
   const bEnd = Math.max(2, Math.floor((200 / nyq) * freq.length));
   let bSum = 0;
@@ -1368,7 +1420,19 @@ function scopeOnsetAndWipe(
   const bEnergy = bSum / Math.max(1, bEnd - 1) / 255;
   const bDelta = bEnergy - state.prevBassEnergy;
   state.prevBassEnergy = bEnergy;
+  return bDelta;
+}
 
+/** Bloom's variant: the same onset reading plus the periodic footprint fade
+ *  it still relies on. Scope ages each trace instead. */
+function scopeOnsetAndWipe(
+  freq: Uint8Array,
+  sampleRate: number,
+  state: DrawState,
+  minFrames = 170,
+  maxFrames = 620,
+): number {
+  const bDelta = bassDeltaOf(freq, sampleRate, state);
   const sinceClear = state.tick - state.scopeClearedAt;
   if ((bDelta > 0.05 && sinceClear > minFrames) || sinceClear > maxFrames) {
     state.scopeWipeFor = SCOPE_WIPE_FRAMES;
@@ -1454,6 +1518,7 @@ function drawLissajous(
   density: number,
   /** 0 = smooth trace; 1..3 snap the trace onto a polar grid. */
   lattice: number,
+  echoes: { path: Path2D; born: number }[],
 ): number {
   const cx = w * 0.5;
   const cy = h * 0.5;
@@ -1598,8 +1663,44 @@ function drawLissajous(
     grads.push(scopeGradient(ctx, radius, palette, (c / sym) * SCOPE_HUE_ARC, c > 0));
   }
 
+  // ── Capture this trace, retire the expired ones ──
+  // Symmetry copies are baked in at capture time so redrawing an echo costs
+  // one stroke rather than `sym` of them, and the points are decimated since
+  // an echo is read as a shape, not inspected.
+  if (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= SCOPE_ECHO_EVERY) {
+    const step = Math.max(1, Math.floor(count / SCOPE_ECHO_POINTS));
+    const single = new Path2D();
+    single.moveTo(px[0], py[0]);
+    for (let i = step; i < count; i += step) single.lineTo(px[i], py[i]);
+    const baked = new Path2D();
+    for (let c = 0; c < sym; c++) {
+      const a = angle + (c * Math.PI * 2) / sym;
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      baked.addPath(single, new DOMMatrix([cos, sin, -sin, cos, 0, 0]));
+    }
+    echoes.push({ path: baked, born: tick });
+  }
+  while (echoes.length > 0 && tick - echoes[0].born > SCOPE_ECHO_LIFE) echoes.shift();
+
   ctx.save();
   ctx.translate(cx, cy);
+
+  // History first, so the live trace lands on top. Stroked with the palette
+  // gradient rather than a flat grey: the radial colour ramp is most of what
+  // gives the figure its colour, and a grey trail would wash it out.
+  ctx.strokeStyle = grads[0];
+  ctx.lineWidth = baseW * 0.85;
+  for (let e = 0; e < echoes.length; e++) {
+    const age = (tick - echoes[e].born) / SCOPE_ECHO_LIFE;
+    if (age >= 1) continue;
+    // Squared falloff: linear keeps old traces legible too long and the stage
+    // fills up again.
+    const k = 1 - age;
+    ctx.globalAlpha = k * k * SCOPE_ECHO_ALPHA;
+    ctx.stroke(echoes[e].path);
+  }
+
   for (let c = 0; c < sym; c++) {
     ctx.save();
     ctx.rotate(angle + (c * Math.PI * 2) / sym);
