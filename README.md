@@ -21,7 +21,7 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
 - [Install](#install)
 - [First-run setup](#first-run-setup)
   - [macOS permissions](#1-macos-permissions)
-  - [BlackHole 2ch](#2-optional-but-recommended-blackhole-2ch)
+  - [BlackHole 2ch — heavily recommended](#2-blackhole-2ch--heavily-recommended)
   - [Spotify Client ID](#3-spotify-client-id)
 - [Features](#features)
 - [Mouse / keyboard cheatsheet](#mouse--keyboard-cheatsheet)
@@ -94,7 +94,9 @@ On first launch, macOS prompts you for these as you use each feature. Granting t
 - **Microphone** — needed for the app to list your audio input devices (the OS hides device labels from apps that don't have mic access, even if you only plan to use BlackHole).
 - **Screen Recording** — needed *only* if you want to capture system audio without a virtual driver, via the **System Audio** button in the top bar. The actual screen video is discarded immediately; only audio is used.
 
-### 2. (Optional but recommended) BlackHole 2ch
+### 2. BlackHole 2ch — heavily recommended
+
+> **Install this.** It is technically optional, but it is the only routing that makes Live mode work properly. Everything below assumes you have it.
 
 BlackHole is a free virtual audio device that lets the app capture system audio cleanly and route the processed signal back to your speakers/headphones. Without it, "Live mode" can produce a feedback loop because the processed audio gets re-captured by the OS.
 
@@ -113,7 +115,7 @@ Or download the `.pkg` directly from [existential.audio/blackhole](https://exist
 
 Now system audio flows through the app and the EQ'd output reaches your real speakers.
 
-If you skip BlackHole, you can still use the **System Audio** button to capture via macOS ScreenCaptureKit (requires Screen Recording permission). Live mode may feedback when used this way; visualizer-only works fine.
+**If you skip BlackHole**, the **System Audio** button captures via macOS ScreenCaptureKit instead (requires Screen Recording permission). This is a fallback, not an equivalent: the visualizer works fine, but Live mode is prone to feedback because the OS re-captures the processed output. If you want the EQ and Enhancer to actually affect what you hear, install BlackHole.
 
 ### 3. Spotify Client ID
 
