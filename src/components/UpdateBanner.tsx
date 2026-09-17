@@ -22,10 +22,12 @@ import type { UpdateState } from '../types/api';
  *   error           — categorized message + Retry (if retryable) / Open page
  *   manual-fallback — install failed, only path is manual download
  *
- * The banner always exposes a "Skip" or "Dismiss" action when a version is
- * known, so a user who doesn't want to update can clear the banner without
- * downloading. Dismissals are per-version (main remembers); the banner
- * resurfaces only when a NEWER version drops.
+ * Skip is offered while a version is merely `available` — that's the last
+ * point where refusing it means anything. Once the download completes it is
+ * staged with Squirrel and lands on the next quit no matter what, so the
+ * `downloaded` banner offers no Skip rather than a button that wouldn't
+ * work. Skips are per-version and persisted by main; the banner resurfaces
+ * only when a NEWER version drops.
  */
 export const UpdateBanner = memo(UpdateBannerImpl);
 
@@ -72,7 +74,7 @@ function BannerContent({ state }: { state: UpdateState }) {
           <div className="update-banner-text">
             <strong>Update available — v{state.version}</strong>
             <span className="update-banner-sub">
-              Downloading in the background.
+              Choose Download to install it, or skip this version.
             </span>
           </div>
           <div className="update-banner-actions">
@@ -80,9 +82,9 @@ function BannerContent({ state }: { state: UpdateState }) {
               type="button"
               className="update-banner-primary"
               onClick={handleDownload}
-              title="Start the download now (it begins automatically anyway)"
+              title="Download it now; it installs when you next quit"
             >
-              Download now
+              Download
             </button>
             <button
               type="button"
@@ -138,7 +140,8 @@ function BannerContent({ state }: { state: UpdateState }) {
           <div className="update-banner-text">
             <strong>v{state.version} ready to install</strong>
             <span className="update-banner-sub">
-              Restart the app to finish updating. Spotify auth and settings are preserved.
+              Restart now, or it installs automatically next time you quit.
+              Spotify auth and settings are preserved.
             </span>
           </div>
           <div className="update-banner-actions">
@@ -155,15 +158,6 @@ function BannerContent({ state }: { state: UpdateState }) {
               onClick={() => handleOpenPage(state.releasePageUrl)}
             >
               View
-            </button>
-            <button
-              type="button"
-              className="update-banner-dismiss"
-              onClick={() => handleSkip(state.version)}
-              aria-label={`Skip v${state.version}`}
-              title="Skip — restart will not include this update until you opt back in"
-            >
-              ×
             </button>
           </div>
         </>

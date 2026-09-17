@@ -373,7 +373,9 @@ function AboutSection() {
         <div className="settings-about-update">
           <div className="settings-about-update-text">
             <strong>v{state.version} is available</strong>
-            <span className="settings-about-update-asset">Downloading in the background…</span>
+            <span className="settings-about-update-asset">
+              Download it to install on your next quit, or skip this version.
+            </span>
           </div>
           <div className="settings-about-update-actions">
             <button
@@ -381,7 +383,7 @@ function AboutSection() {
               className="settings-spotify-btn"
               onClick={handleDownload}
             >
-              Download now
+              Download
             </button>
             <button
               type="button"
@@ -421,7 +423,8 @@ function AboutSection() {
           <div className="settings-about-update-text">
             <strong>v{state.version} ready to install</strong>
             <span className="settings-about-update-asset">
-              Restart finishes the update. Settings and Spotify auth are preserved.
+              Restart now, or it installs on your next quit. Settings and Spotify
+              auth are preserved.
             </span>
           </div>
           <div className="settings-about-update-actions">
@@ -431,13 +434,6 @@ function AboutSection() {
               onClick={handleInstall}
             >
               Restart now
-            </button>
-            <button
-              type="button"
-              className="settings-spotify-btn settings-spotify-btn-danger"
-              onClick={() => handleSkip(state.version)}
-            >
-              Skip
             </button>
           </div>
         </div>

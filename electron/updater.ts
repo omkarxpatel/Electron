@@ -1,4 +1,6 @@
-import { BrowserWindow, app, ipcMain, shell } from 'electron';
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { autoUpdater, type ProgressInfo, type UpdateInfo, type UpdateDownloadedEvent } from 'electron-updater';
 
 /**
@@ -10,8 +12,11 @@ import { autoUpdater, type ProgressInfo, type UpdateInfo, type UpdateDownloadedE
  *   - Categorized errors (network / install / unknown) with appropriate
  *     retry semantics. Network errors back off + retry automatically; install
  *     errors halt and surface a manual-fallback option.
- *   - Per-version dismissal honored across launches (persisted in the renderer's
- *     localStorage by the UI; main just trusts the renderer's "dismiss" call).
+  *   - A native prompt as soon as a new version is found: install now, install
+ *     on quit, or skip. Nothing downloads until that question is answered;
+ *     "install on quit" is what lands the update with no further action.
+ *   - Per-version dismissal honored across launches (persisted by main in
+ *     userData; the renderer's "dismiss" call writes through to it).
  *   - Periodic background checks every hour while running, plus a one-shot
  *     check 8 s after startup so the first paint isn't fighting the network.
  *
@@ -26,6 +31,8 @@ import { autoUpdater, type ProgressInfo, type UpdateInfo, type UpdateDownloadedE
 
 const REPO_URL = 'https://github.com/omkarxpatel/Electron';
 const RELEASES_URL = `${REPO_URL}/releases`;
+
+const SKIP_FILE_NAME = 'update-skip.json';
 
 const PERIODIC_CHECK_INTERVAL_MS = 60 * 60 * 1000;  // 1 hr
 const INITIAL_CHECK_DELAY_MS = 8 * 1000;            // 8 s after ready
@@ -83,6 +90,45 @@ let lastSeenReleaseNotes: string | undefined;
 // we always background-download because autoDownload = true, but if the user
 // dismissed and a NEW version drops we want to re-trigger.
 let suppressUntilNewerThan: string | null = null;
+// Guards the install prompt so a re-check that re-emits `update-downloaded`
+// for an already-answered version doesn't ask twice.
+let promptedForVersion: string | null = null;
+// Set when the user picked "Install now" — the restart happens once the
+// download lands, not at click time.
+let installWhenDownloaded = false;
+
+// ── Skipped-version persistence ────────────────────────────────────────────
+// Kept on disk, not just in memory: an install prompt that reappears on every
+// launch after the user said "skip" is worse than no prompt at all. Path is
+// resolved lazily because app.getPath() is only valid after `ready`.
+
+function skipFilePath(): string {
+  return join(app.getPath('userData'), SKIP_FILE_NAME);
+}
+
+function readSkippedVersion(): string | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(skipFilePath(), 'utf-8'));
+    const v = (parsed as { version?: unknown } | null)?.version;
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  } catch {
+    // Missing or unreadable file just means "nothing skipped".
+    return null;
+  }
+}
+
+function writeSkippedVersion(version: string | null): void {
+  try {
+    writeFileSync(skipFilePath(), JSON.stringify({ version }), 'utf-8');
+  } catch (err) {
+    log('warn', 'could not persist skipped version:', err);
+  }
+}
+
+/** True when the user has skipped exactly this version. */
+function isSkipped(version: string): boolean {
+  return suppressUntilNewerThan !== null && version === suppressUntilNewerThan;
+}
 
 function log(level: 'info' | 'warn' | 'error', ...args: unknown[]): void {
   // eslint-disable-next-line no-console
@@ -189,6 +235,18 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
     return;
   }
 
+  if (opts.source === 'user') {
+    // An explicit "Check for updates" click is how a user takes back a skip.
+    // Without this the persisted skip would be a one-way door until the next
+    // release, with the UI insisting the app is up to date.
+    if (suppressUntilNewerThan !== null) {
+      log('info', `user-initiated check clears the skip on v${suppressUntilNewerThan}`);
+      suppressUntilNewerThan = null;
+      writeSkippedVersion(null);
+      promptedForVersion = null;
+    }
+  }
+
   log('info', `Checking for updates (source=${opts.source})`);
   broadcast({ kind: 'checking' });
   try {
@@ -221,6 +279,54 @@ function triggerInstall(): void {
   // is closing anyway so it doesn't matter; matching the docs default.
   // isForceRunAfter=true: relaunch when done.
   autoUpdater.quitAndInstall(true, true);
+}
+
+/** Ask once per version, before downloading anything, and act on the answer.
+ *
+ *  Asking *before* the download is what makes "skip" truthful: on macOS the
+ *  only mechanism behind `autoInstallOnAppQuit` is MacUpdater handing the
+ *  finished download to Squirrel, which then applies it whenever the app
+ *  exits. Once that handoff happens there is no clean way to call it back, so
+ *  a version the user refused must never be downloaded in the first place.
+ *
+ *  The no-window branch is effectively unreachable (this app quits with its
+ *  last window); it just declines to download rather than deciding for the user. */
+async function promptForUpdate(version: string): Promise<void> {
+  if (promptedForVersion === version) return;
+  promptedForVersion = version;
+
+  const win =
+    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  if (!win) {
+    log('warn', 'no window to prompt in; leaving the update undownloaded');
+    return;
+  }
+
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'info',
+    title: 'Update available',
+    message: `Version ${version} is available.`,
+    detail:
+      'It downloads in the background. Installing restarts the app — your Spotify sign-in, EQ settings and visualizer presets are preserved.',
+    buttons: ['Install now', 'Install when I quit', 'Skip this version'],
+    defaultId: 0,
+    cancelId: 1,
+    normalizeAccessKeys: false,
+  });
+
+  if (response === 2) {
+    suppressUntilNewerThan = version;
+    writeSkippedVersion(version);
+    log('info', `v${version} skipped by user; not downloading`);
+    broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
+    return;
+  }
+
+  // Both remaining answers download now. They differ only in whether we
+  // restart as soon as it lands, or let Squirrel apply it on the next quit.
+  installWhenDownloaded = response === 0;
+  log('info', `v${version} accepted (${installWhenDownloaded ? 'restart when ready' : 'install on quit'})`);
+  await triggerDownload();
 }
 
 function openReleasePage(url?: string): void {
@@ -266,9 +372,15 @@ function handleError(err: unknown): void {
 // ── Setup ──────────────────────────────────────────────────────────────────
 
 export function setupAutoUpdater(): void {
-  // Defer to the user via UI; don't quit-and-install without an explicit click.
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = false;
+  // Nothing is fetched until the user says yes — see promptForUpdate.
+  autoUpdater.autoDownload = false;
+  // Must be true *before* any download finishes: on macOS this flag is what
+  // makes MacUpdater hand the file to Squirrel, and only a staged update gets
+  // applied on exit. Flipping it later has no effect (MacUpdater.js reads it
+  // once, at download completion), which is why consent is collected up front.
+  autoUpdater.autoInstallOnAppQuit = true;
+  suppressUntilNewerThan = readSkippedVersion();
+  if (suppressUntilNewerThan) log('info', `v${suppressUntilNewerThan} is skipped (persisted)`);
   // Tee electron-updater's internal logger into our log() so events are
   // attributable in the main-process console.
   autoUpdater.logger = {
@@ -288,7 +400,7 @@ export function setupAutoUpdater(): void {
     consecutiveFailures = 0;
     lastSeenVersion = info.version;
     lastSeenReleaseNotes = typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined;
-    if (suppressUntilNewerThan && info.version === suppressUntilNewerThan) {
+    if (isSkipped(info.version)) {
       log('info', `v${info.version} matches dismissed version; suppressing UI`);
       broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
       return;
@@ -299,6 +411,7 @@ export function setupAutoUpdater(): void {
       releaseNotes: lastSeenReleaseNotes,
       releasePageUrl: releasePageUrlFor(info.version),
     });
+    void promptForUpdate(info.version);
   });
 
   autoUpdater.on('update-not-available', () => {
@@ -331,6 +444,12 @@ export function setupAutoUpdater(): void {
       releaseNotes: lastSeenReleaseNotes,
       releasePageUrl: releasePageUrlFor(info.version),
     });
+    // "Install when I quit" needs nothing here: the download is already staged
+    // with Squirrel, which applies it on exit.
+    if (installWhenDownloaded) {
+      installWhenDownloaded = false;
+      triggerInstall();
+    }
   });
 
   autoUpdater.on('error', (err: Error) => {
@@ -350,6 +469,8 @@ export function setupAutoUpdater(): void {
   ipcMain.handle('update:dismiss-version', (_e, version: string) => {
     if (typeof version === 'string' && version.length > 0) {
       suppressUntilNewerThan = version.startsWith('v') ? version.slice(1) : version;
+      installWhenDownloaded = false;
+      writeSkippedVersion(suppressUntilNewerThan);
       log('info', `Suppressing UI for v${suppressUntilNewerThan} until a newer release`);
       broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
     }
