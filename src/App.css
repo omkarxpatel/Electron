@@ -3509,10 +3509,18 @@
   /* 0.96 alpha made this an opaque slab and left the blur doing nothing —
      nothing was showing through to blur. Lower alpha + a stronger blur keeps
      scrolled rows an illegible smear (which is all the sticky header needs)
-     while the backdrop still reads through. */
-  background: rgba(10, 10, 10, 0.45);
-  backdrop-filter: blur(20px) saturate(1.2);
-  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+     while the backdrop still reads through.
+
+     Desaturated rather than saturated. saturate(1.2) was boosting the colour
+     of whatever cover art happened to be scrolled under the header, so the
+     column labels sat on a warm or cold patch depending on the artwork —
+     per cell, since each th filters only its own area, which made it read as
+     a mismatched block rather than as one bar. Dropping saturation to zero
+     keeps the frosted-glass depth and takes the hue with it; the extra alpha
+     damps the brightness that came through the same way. */
+  background: rgba(10, 10, 10, 0.62);
+  backdrop-filter: blur(20px) saturate(0);
+  -webkit-backdrop-filter: blur(20px) saturate(0);
   z-index: 2;
 }
 
