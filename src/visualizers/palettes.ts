@@ -235,6 +235,66 @@ export function buildCustomPalette(colors: readonly [string, string, string]): P
   };
 }
 
+/**
+ * A palette partway between two others, for crossfading one theme into the
+ * next. `t` of 0 gives a's colors, 1 gives b's.
+ *
+ * Both sides are resampled at b's stop positions rather than paired up
+ * stop-for-stop. The palettes in this file carry anywhere from two to four
+ * stops and album-art extraction always synthesizes three, so there is often
+ * no stop-for-stop pairing to make; and interpolating position alongside
+ * color would slide the gradient's shape around mid-fade when all that was
+ * asked for was a change of color.
+ *
+ * The id encodes both endpoints and the step, and has to: every gradient
+ * cache in the render path keys on palette.id, so a reused id would serve the
+ * first step's colors for the length of the fade.
+ */
+export function mixPalettes(a: Palette, b: Palette, t: number): Palette {
+  const k = Math.max(0, Math.min(1, t));
+  const stops = b.stops.map(({ pos }) => {
+    const from = sampleRgbAt(a, pos);
+    const to = sampleRgbAt(b, pos);
+    return { pos, color: rgbToHex(mix(from[0], to[0], k), mix(from[1], to[1], k), mix(from[2], to[2], k)) };
+  });
+  const ga = hexToRgbTriplet(a.glowColor);
+  const gb = hexToRgbTriplet(b.glowColor);
+  return {
+    id: `mix:${a.id}>${b.id}@${Math.round(k * 1000)}`,
+    label: b.label,
+    stops,
+    glowColor: rgbToHex(mix(ga[0], gb[0], k), mix(ga[1], gb[1], k), mix(ga[2], gb[2], k)),
+    ambient: mixAmbient(a.ambient, b.ambient, k),
+  };
+}
+
+function mix(x: number, y: number, t: number): number {
+  return Math.round(x + (y - x) * t);
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+}
+
+/** Interpolate two `rgba(...)` strings. Alpha is interpolated too rather than
+ *  taken from either end, because it is not constant across these palettes —
+ *  mono sits at 0.10 and most of the rest at 0.16 or 0.18, so holding one
+ *  end's value would step the stage wash at the start or the finish of a
+ *  fade. Falls back to the destination if either side isn't an rgb/rgba. */
+function mixAmbient(a: string, b: string, t: number): string {
+  const pa = parseRgba(a);
+  const pb = parseRgba(b);
+  if (!pa || !pb) return b;
+  const alpha = pa[3] + (pb[3] - pa[3]) * t;
+  return `rgba(${mix(pa[0], pb[0], t)}, ${mix(pa[1], pb[1], t)}, ${mix(pa[2], pb[2], t)}, ${alpha.toFixed(3)})`;
+}
+
+function parseRgba(s: string): [number, number, number, number] | null {
+  const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(s.trim());
+  if (!m) return null;
+  return [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]];
+}
+
 /** Hex -> low-alpha rgba for the stage ambient wash. Falls back to a neutral
  *  tint if the string isn't a 6-digit hex (e.g. a named color from a paste). */
 function hexToAmbient(hex: string): string {
