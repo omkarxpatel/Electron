@@ -6,6 +6,7 @@ interface Props {
   authing: boolean;
   authError: string | null;
   saveClientId: (id: string) => void;
+  resetClientId: () => void;
   connect: () => void;
 }
 
@@ -15,6 +16,7 @@ export function SpotifyOnboarding({
   authing,
   authError,
   saveClientId,
+  resetClientId,
   connect,
 }: Props) {
   const [input, setInput] = useState<string>('');
@@ -94,7 +96,7 @@ export function SpotifyOnboarding({
         {authError && <div className="sp-error">{authError}</div>}
         <button
           className="sp-button sp-button-ghost"
-          onClick={() => saveClientId('')}
+          onClick={resetClientId}
         >
           Change Client ID
         </button>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { EQState } from '../state/eq';
 import { frequenciesFor, qFor } from '../state/eq';
 import type { EnhancerState } from '../state/enhancer';
+import { buildBandCoefs, logSpacedFrequencies, responseCurveDb } from './biquadResponse';
 
 interface AudioEngineState {
   analyser: AnalyserNode | null;
@@ -11,6 +12,12 @@ interface AudioEngineState {
    *  so its analysis isn't a closed feedback loop with its own corrections. */
   preEqAnalyserL: AnalyserNode | null;
   preEqAnalyserR: AnalyserNode | null;
+  /** Peak catcher node, exposed so the UI can read live gain reduction
+   *  (`.reduction`) without reaching into the graph. */
+  limiter: DynamicsCompressorNode | null;
+  /** Headroom the auto-trim is currently giving back, in dB (>= 0). Surfaced
+   *  so the Enhancer can show that a boost moved tone, not level. */
+  autoTrimDb: number;
   error: string | null;
   status: 'Idle' | 'Connecting' | 'Listening' | 'Error';
 }
@@ -72,6 +79,8 @@ export function useAudioEngine(
   const [analyserR, setAnalyserR] = useState<AnalyserNode | null>(null);
   const [preEqAnalyserL, setPreEqAnalyserL] = useState<AnalyserNode | null>(null);
   const [preEqAnalyserR, setPreEqAnalyserR] = useState<AnalyserNode | null>(null);
+  const [limiter, setLimiter] = useState<DynamicsCompressorNode | null>(null);
+  const [autoTrimDb, setAutoTrimDb] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<AudioEngineState['status']>('Idle');
 
@@ -85,10 +94,17 @@ export function useAudioEngine(
   const trebleShelfRef = useRef<BiquadFilterNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
-  /** Brick-wall limiter sitting between masterGain and the output. Prevents
-   *  clipping no matter how the user stacks compensation + EQ + bass enhance
-   *  + volume. Without this the OS hard-clips and the result is distorted /
-   *  quieter (driver applies its own protection). */
+  /** Peak catcher sitting BEFORE masterGain (see the wiring comment below).
+   *  Scope is stage-overflow only: preamp + EQ + enhancer can stack +30 dB
+   *  cumulative, and this keeps that from hard-clipping. It deliberately does
+   *  NOT protect against the user's volume knob, which is downstream and is a
+   *  literal multiplier by design.
+   *
+   *  Corollary, and the reason this note is emphatic: any gain applied
+   *  UPSTREAM of this node is subject to being clawed back. At threshold -1
+   *  dBFS / ratio 20, loud material keeps ~5 % of whatever you add here. Do
+   *  not put loudness compensation before this node — it will behave as a
+   *  compressor, not as gain. That bug shipped once already. */
   const limiterRef = useRef<DynamicsCompressorNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const splitterRef = useRef<ChannelSplitterNode | null>(null);
@@ -296,6 +312,7 @@ export function useAudioEngine(
         pannerRef.current = panner;
         masterGainRef.current = masterGain;
         limiterRef.current = limiter;
+        setLimiter(limiter);
         analyserRef.current = analyserNode;
         splitterRef.current = splitter;
         analyserLRef.current = analyserLNode;
@@ -308,7 +325,9 @@ export function useAudioEngine(
         // Apply current state to fresh nodes. Reset prev-applied so the
         // first apply writes every band.
         prevAppliedBandsRef.current = null;
-        applyEqState(ctx, preamp, filters, eqStateRef.current, aiEnabledRef.current, prevAppliedBandsRef);
+        setAutoTrimDb(
+          applyEqState(ctx, preamp, filters, eqStateRef.current, enhancerStateRef.current, aiEnabledRef.current, prevAppliedBandsRef),
+        );
         applyEnhancerState(
           ctx,
           bassShelf,
@@ -370,6 +389,8 @@ export function useAudioEngine(
       analyserLRef.current = null;
       analyserRRef.current = null;
       splitterRef.current = null;
+      limiterRef.current = null;
+      setLimiter(null);
       destinationConnectedRef.current = false;
     };
   }, [stream, eqState.bandCount]);
@@ -394,8 +415,10 @@ export function useAudioEngine(
     const preamp = preampRef.current;
     const filters = filtersRef.current;
     if (!ctx || !preamp || filters.length === 0) return;
-    applyEqState(ctx, preamp, filters, eqState, aiEnabled, prevAppliedBandsRef);
-  }, [eqState, aiEnabled]);
+    setAutoTrimDb(
+      applyEqState(ctx, preamp, filters, eqState, enhancerState, aiEnabled, prevAppliedBandsRef),
+    );
+  }, [eqState, enhancerState, aiEnabled]);
 
   /* Input compensation — smoothly ramp the input-gain node when the
    * compensation value changes (e.g. user switched from BlackHole to mic). */
@@ -519,7 +542,63 @@ export function useAudioEngine(
     }
   }, [playthrough, analyser]);
 
-  return { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, error, status };
+  return {
+    analyser,
+    analyserL,
+    analyserR,
+    preEqAnalyserL,
+    preEqAnalyserR,
+    limiter,
+    autoTrimDb,
+    error,
+    status,
+  };
+}
+
+/** Probe grid for the auto-trim peak search. 96 log-spaced points over
+ *  20 Hz–20 kHz is ~1/7-octave — fine enough to land on a cascade peak to
+ *  within ~0.1 dB, cheap enough to run on every slider tick. */
+const TRIM_PROBE_FREQS = logSpacedFrequencies(96);
+
+/**
+ * Peak gain (dB) of the tone section: the EQ band cascade plus the
+ * enhancer's bass/treble shelves. Never negative — we only ever give
+ * headroom back, never add gain.
+ *
+ * Why this exists: overlapping biquads sum. Ten 1-octave bands at +6 dB
+ * (Q 1.41, with shelves on the ends) peak around +9 dB, not +6. That excess
+ * lands on a master already mixed to ~-1 dBFS, so it goes straight into the
+ * limiter — measured ~8.4 dB of gain reduction for ~0.5 dB of real level.
+ * The result is an accidental compressor: pumping, smeared transients, and
+ * a curve that sounds worse than bypass. Trimming the preamp by the cascade
+ * peak makes a boost change TONE rather than LEVEL, which is what the
+ * sliders claim to do, and keeps the limiter idle on normal material.
+ */
+function toneSectionPeakDb(
+  bands: number[],
+  bandFreqs: number[],
+  q: number,
+  enhancerBassDb: number,
+  enhancerTrebleDb: number,
+  enhancerMidDb: number,
+  sampleRate: number,
+): number {
+  const set = buildBandCoefs(
+    bands,
+    bandFreqs,
+    q,
+    0,
+    enhancerBassDb,
+    enhancerTrebleDb,
+    enhancerMidDb,
+    sampleRate,
+  );
+  let peak = 0;
+  for (let i = 0; i < TRIM_PROBE_FREQS.length; i++) {
+    const v = responseCurveDb(TRIM_PROBE_FREQS[i], set, sampleRate);
+    if (v > peak) peak = v;
+  }
+  return peak;
 }
 
 function applyEqState(
@@ -527,20 +606,35 @@ function applyEqState(
   preamp: GainNode,
   filters: BiquadFilterNode[],
   state: EQState,
+  enhancerState: EnhancerState,
   aiEnabled: boolean,
   prevAppliedRef: { current: number[] | null },
-): void {
+): number {
   const now = ctx.currentTime;
   if (state.bypass) {
     preamp.gain.setTargetAtTime(1, now, PARAM_RAMP);
     // Force-zero all bands regardless of diff (bypass overrides any in-flight ramp).
     for (const f of filters) f.gain.setTargetAtTime(0, now, PARAM_RAMP);
     prevAppliedRef.current = new Array(filters.length).fill(0);
-    return;
+    return 0;
   }
-  preamp.gain.setTargetAtTime(Math.pow(10, state.preamp / 20), now, PARAM_RAMP);
+  // Auto headroom trim. Applied to the NODE only — `state.preamp` is a
+  // user-facing control and stays exactly where the user put it, so the UI
+  // keeps reading back their own value. Their preamp and this trim simply
+  // sum in dB before hitting the gain node.
+  const enhBypassed = enhancerState.bypass;
+  const trimDb = toneSectionPeakDb(
+    state.bands,
+    frequenciesFor(state.bandCount),
+    qFor(state.bandCount),
+    enhBypassed ? 0 : enhancerState.bass,
+    enhBypassed ? 0 : enhancerState.treble,
+    enhBypassed ? 0 : enhancerState.mid,
+    ctx.sampleRate,
+  );
+  preamp.gain.setTargetAtTime(Math.pow(10, (state.preamp - trimDb) / 20), now, PARAM_RAMP);
   // When AI is on, the AI tick owns filter gains — don't write them here.
-  if (aiEnabled) return;
+  if (aiEnabled) return trimDb;
   // Per-band dirty diff. First call after a graph rebuild OR bandCount change
   // writes all bands; subsequent calls only write bands whose value moved.
   const prev = prevAppliedRef.current;
@@ -553,7 +647,7 @@ function applyEqState(
       next[i] = v;
     }
     prevAppliedRef.current = next;
-    return;
+    return trimDb;
   }
   for (let i = 0; i < filters.length; i++) {
     const v = state.bands[i] ?? 0;
@@ -562,6 +656,7 @@ function applyEqState(
       prev[i] = v;
     }
   }
+  return trimDb;
 }
 
 function applyEnhancerState(

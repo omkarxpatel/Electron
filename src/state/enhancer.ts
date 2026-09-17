@@ -11,10 +11,12 @@ import { useCallback, useEffect, useState } from 'react';
  *   volume  : master output, 0..250 (% of unity, i.e. -∞ dB to +8 dB)
  *   balance : stereo pan, -100 (full L) .. +100 (full R)
  *
- * The 250 % ceiling pairs with the limiter (threshold -1 dBFS): the limiter
- * clamps peaks while the average level keeps rising roughly dB-for-dB with
- * masterGain. Past ~250 % the average enters the limiter knee and you get
- * compression instead of additional loudness — diminishing returns.
+ * masterGain is the LAST node before the destination — it sits AFTER the
+ * limiter, so the limiter never sees its output. Volume is therefore a
+ * literal multiplier all the way to 250 %: the signal reaching it is already
+ * ceiling-limited to about -1 dBFS, so anything past ~112 % drives the output
+ * above 0 dBFS and the OS hard-clips. That is intended — the knob delivers
+ * what it says and the user backs off if they don't like how it sounds.
  */
 
 export interface EnhancerState {

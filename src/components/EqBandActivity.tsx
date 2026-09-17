@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { useRenderCount } from '../perf';
-import { PALETTES, sampleAt } from '../visualizers/palettes';
+import { PALETTES, sampleAt, type Palette } from '../visualizers/palettes';
 import type { PaletteId } from '../state/settings';
 
 interface Props {
@@ -15,6 +15,9 @@ interface Props {
    *  palette 1), so the activity bars read as an ombre that matches the
    *  visualizer below. */
   paletteId: PaletteId;
+  /** Album-art derived palette. When non-null, supersedes paletteId for the
+   *  per-band ombre. */
+  paletteOverride: Palette | null;
   /** When false, the RAF loop is paused (window hidden). */
   active?: boolean;
 }
@@ -35,7 +38,7 @@ interface Props {
  */
 export const EqBandActivity = memo(EqBandActivityImpl);
 
-function EqBandActivityImpl({ analyser, bandFreqs, bands, paletteId, active = true }: Props) {
+function EqBandActivityImpl({ analyser, bandFreqs, bands, paletteId, paletteOverride, active = true }: Props) {
   useRenderCount('EqBandActivity');
   const containerRef = useRef<HTMLDivElement>(null);
   /* Latest band gains via ref so the RAF loop reads current values
@@ -137,10 +140,12 @@ function EqBandActivityImpl({ analyser, bandFreqs, bands, paletteId, active = tr
     return () => cancelAnimationFrame(rafId);
   }, [analyser, bandFreqs, active]);
 
-  // Per-band fill colors sampled across the palette. Recomputes only when
-  // palette or band count changes, NOT on every slider drag or RAF tick.
+  // Per-band fill colors sampled across the effective palette (album override
+  // when present, else the user's static palette). Recomputes only when the
+  // resolved palette identity or band count changes, NOT on every slider
+  // drag or RAF tick.
   const bandFills = useMemo(() => {
-    const palette = PALETTES[paletteId];
+    const palette = paletteOverride ?? PALETTES[paletteId];
     const n = bandFreqs.length;
     return bandFreqs.map((_, i) => {
       const t = n <= 1 ? 0.5 : i / (n - 1);
@@ -152,7 +157,7 @@ function EqBandActivityImpl({ analyser, bandFreqs, bands, paletteId, active = tr
         fillDim: `rgba(${inner}, 0.08)`,
       };
     });
-  }, [paletteId, bandFreqs]);
+  }, [paletteId, paletteOverride, bandFreqs]);
 
   const before = 'rgba(255, 255, 255, 0.35)';
   const beforeDim = 'rgba(255, 255, 255, 0.04)';
