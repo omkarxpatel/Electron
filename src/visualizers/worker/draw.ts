@@ -358,7 +358,10 @@ export function drawFrame(
   // backing store. Measured on a 1512x850 retina stage: 250 ms a frame with
   // the shadow on, 8.3 ms with it off, same geometry. That is 4 fps versus
   // the display's full rate, and it is the whole of the reported lag.
-  const ownBloom = s.waveformStyle === 'lissajous' || s.waveformStyle === 'crystal';
+  const ownBloom =
+    s.waveformStyle === 'lissajous' ||
+    s.waveformStyle === 'crystal' ||
+    s.waveformStyle === 'silk';
   ctx.shadowBlur = ownBloom ? 0 : glowBlur(s);
   ctx.shadowColor = palette.glowColor;
   ctx.lineCap = 'round';
@@ -438,7 +441,7 @@ export function drawFrame(
       break;
     case 'silk':
       state.tick += dt60;
-      drawSilk(ctx, width, height, time, palette, state.smoothedSamples, release, gain, state.tick, spectral);
+      drawSilk(ctx, width, height, time, palette, state.smoothedSamples, release, gain, state.tick, spectral, s.glow);
       break;
     case 'particles': {
       state.tick += dt60;
@@ -1246,6 +1249,7 @@ function drawSilk(
   gain: number,
   tick: number,
   spectral: Float32Array | null,
+  glow: number,
 ): void {
   const midY = h * 0.5;
   const slowDamp = slowDampOf(motionDampOf(stageScaleOf(h)));
@@ -1266,8 +1270,19 @@ function drawSilk(
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  const prevShadow = ctx.shadowBlur;
-  ctx.shadowBlur = Math.min(prevShadow, 6);
+  // ── Why this draws its own glow ──
+  // Silk strokes 48 curves a frame and used to set shadowBlur for each one.
+  // shadowBlur is applied per stroke, across the whole backing store, so that
+  // was 48 full-canvas blurs a frame: measured on a 1512x850 retina stage,
+  // 58.0 ms with it and 1.6 ms without, same geometry. 17 fps against the
+  // display's full rate, and the whole of the reported lag. Scope hit exactly
+  // this and the fix is the same — carry the glow in the geometry instead, as
+  // one wide translucent pass under the fine one.
+  //
+  // The slider now reaches this style properly, too. The old blur was
+  // min(glow * 32, 6), which saturated at a glow of 0.19 and so sat at 6 for
+  // almost the whole range of the control.
+  const bloomW = 2 + glow * 7;
 
   const LINE_COUNT = 48;
   const center = (LINE_COUNT - 1) / 2;
@@ -1282,10 +1297,11 @@ function drawSilk(
     const yOffset = dist * (h * 0.20);
     const wobble = Math.sin(tick * 0.006 + k * 0.41) * (h * 0.06) * slowDamp;
 
-    ctx.globalAlpha = (1 - absDist * absDist * 0.85) * 0.13;
-    ctx.lineWidth = 0.7;
+    const coreAlpha = (1 - absDist * absDist * 0.85) * 0.13;
 
-    ctx.beginPath();
+    // Built once and stroked twice. Rebuilding 180 curve segments for the
+    // second pass would cost more than the pass itself.
+    const path = new Path2D();
     let prevX = 0;
     let prevY = midY;
     for (let p = 0; p < N_POINTS; p++) {
@@ -1297,22 +1313,33 @@ function drawSilk(
       const x = t * w;
       const y = midY + sample * baseAmp * ampScale * ampMod + yOffset + wobble;
       if (p === 0) {
-        ctx.moveTo(x, y);
+        path.moveTo(x, y);
       } else if (p < N_POINTS - 1) {
         const cx = (prevX + x) / 2;
         const cy = (prevY + y) / 2;
-        ctx.quadraticCurveTo(prevX, prevY, cx, cy);
+        path.quadraticCurveTo(prevX, prevY, cx, cy);
       } else {
-        ctx.lineTo(x, y);
+        path.lineTo(x, y);
       }
       prevX = x;
       prevY = y;
     }
-    ctx.stroke();
+    // Wide and faint first, then the core on top. The bloom's share is set
+    // so the pair lays down the ink the blurred stroke did rather than
+    // whatever looked bright in isolation: ink goes as alpha times width, so
+    // spreading over bloomW and keeping the alpha it had would have been
+    // several times the original. Measured against the shadow version at the
+    // same geometry, this lands within a few percent on both mean ink and
+    // lit-pixel coverage.
+    ctx.globalAlpha = coreAlpha * 0.16;
+    ctx.lineWidth = bloomW;
+    ctx.stroke(path);
+    ctx.globalAlpha = coreAlpha;
+    ctx.lineWidth = 0.7;
+    ctx.stroke(path);
   }
 
   ctx.globalAlpha = 1;
-  ctx.shadowBlur = prevShadow;
 }
 
 
