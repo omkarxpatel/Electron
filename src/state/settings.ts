@@ -52,12 +52,12 @@ export interface VisualProfile {
    *  it sets that outline's resolution — faceted at the low end, smooth at
    *  the high. */
   scopeDensity: number;
-  /** 0..2 — brightness of Scope's peripheral corner lighting. A literal
-   *  multiplier on the layer's alpha: 0 turns it off entirely, 1 is the
-   *  tuned level, and the top of the range is deliberately past it so the
-   *  surround can be pushed brighter than the default if that is the look
-   *  wanted. Immersive only — four corner glows across the banner strip is a
-   *  smear, so the banner ignores it. */
+  /** 0..2 — brightness of the peripheral corner lighting, on both radial
+   *  styles. A literal multiplier on that layer's alpha: 0 turns it off
+   *  entirely, 1 is the tuned level, and the top of the range is deliberately
+   *  past it so the surround can be pushed brighter than the default if that
+   *  is the look wanted. Immersive only — four corner glows across the banner
+   *  strip is a smear, so the banner ignores it. */
   scopeAmbience: number;
 }
 

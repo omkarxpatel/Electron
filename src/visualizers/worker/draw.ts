@@ -141,11 +141,6 @@ export interface DrawState {
   /** Slow-following peak magnitude, used to auto-range the plot so it fills
    *  the stage regardless of how hot the source is. */
   scopePeak: number;
-  /** Tick of the last footprint clear — see the quantization note below. */
-  scopeClearedAt: number;
-  /** Frames left in a footprint fade-out. Counts down; 0 means idle.
-   *  Bloom only — Scope ages each trace individually, see scopeEchoes. */
-  scopeWipeFor: number;
   /** Recent Scope traces with the tick each was drawn on, oldest first.
    *  Redrawn every frame at an age-derived alpha. */
   scopeEchoes: { path: Path2D; born: number }[];
@@ -191,9 +186,11 @@ export interface DrawState {
   scopeRatio: number;
   /** Crystal: nested copies of the figure, 1..3. */
   crystalLayers: number;
-  /** Crystal: superformula fold count. Snapped on change, never interpolated
-   *  — a fractional m leaves the curve open where it should close. */
-  crystalM: number;
+  /** Crystal: superformula fold counts, one per term. Snapped on change,
+   *  never interpolated — a fractional fold count leaves the curve open where
+   *  it should close. Unequal means an asymmetric form. */
+  crystalM1: number;
+  crystalM2: number;
   /** Crystal: superformula exponents [n1, n2, n3], eased toward crystalNTo so
    *  a shape change morphs instead of cutting. */
   crystalN: Float32Array;
@@ -220,8 +217,6 @@ export function createDrawState(): DrawState {
     scopeY: null,
     scopeAngle: 0,
     scopePeak: 0.5,
-    scopeClearedAt: 0,
-    scopeWipeFor: 0,
     scopeEchoes: [],
     scopeLattice: 1,
     // Module consts are initialised before any call to this, so the forward
@@ -244,7 +239,8 @@ export function createDrawState(): DrawState {
     scopeAmbPeak: new Float32Array(4),
     scopeRatio: 1,
     crystalLayers: 2,
-    crystalM: 6,
+    crystalM1: 6,
+    crystalM2: 6,
     crystalN: new Float32Array([0.6, 1.4, 1.4]),
     crystalNTo: new Float32Array([0.6, 1.4, 1.4]),
     onsetEnv: 0,
@@ -316,32 +312,21 @@ export function drawFrame(
       ? Math.pow(coherenceOf(freq, sampleRate, state, dt60), 2)
       : 0;
 
-  // Capped below 0.94: past that the quantization floor (see
-  // scopeOnsetAndWipe) leaves residue bright enough to read as a grey
-  // footprint over the whole stage.
-  let effTrail =
-    s.waveformStyle === 'lissajous' || s.waveformStyle === 'crystal'
-      ? 0.88 + Math.min(0.6, s.trail) * 0.085
-      : s.trail;
-
-  // ── Footprint fade-out ──
-  // This used to be a clearRect, which emptied the stage between one frame
-  // and the next — the footprint wasn't decaying, it was being deleted.
-  // Ramping the decay down dissolves it over about half a second instead.
-  // The floor has to dip below 0.5 to achieve anything: above that,
-  // `round(1 * trail) === 1` and the faintest residue rounds back to itself
-  // forever, which is the whole reason a periodic clear was needed at all.
-  if (state.scopeWipeFor > 0) {
-    const t = state.scopeWipeFor / SCOPE_WIPE_FRAMES;
-    effTrail = 0.44 + (effTrail - 0.44) * t;
-    state.scopeWipeFor = Math.max(0, state.scopeWipeFor - dt60);
-  }
-  if (s.waveformStyle === 'lissajous') {
-    // Scope repaints its history from the echo buffer every frame, so the
-    // canvas starts clean instead of carrying anything over.
+  // Both radial styles repaint their history from an echo buffer every frame,
+  // so the canvas starts clean instead of carrying anything over.
+  //
+  // What this replaces, for both of them, was multiplicative decay plus a
+  // periodic hard fade-out. Decay alone cannot finish the job: alpha is 8-bit
+  // and `round(a * trail) === a` for small a, so the faintest residue rounds
+  // back to itself forever and accumulates into a grey footprint across the
+  // whole stage. The scheduled fade-out existed only to clear that, and it is
+  // what made the background disappear all at once every few seconds. Ageing
+  // each trace on its own clock instead means the oldest material leaves
+  // continuously and nothing needs wiping.
+  if (s.waveformStyle === 'lissajous' || s.waveformStyle === 'crystal') {
     ctx.clearRect(0, 0, width, height);
   } else {
-    applyTrails(ctx, width, height, effTrail);
+    applyTrails(ctx, width, height, s.trail);
   }
 
   // Album-art tint overrides the static palette when present. The worker
@@ -580,22 +565,55 @@ export function drawFrame(
         state.scopeX = new Float32Array(n);
         state.scopeY = new Float32Array(n);
       }
-      // Picking a new shape on strong bass hits is what makes the figure
-      // evolve instead of being one form forever. Long persistence means the
-      // old outline is still fading as the new one draws, so a change reads
-      // as a morph rather than a cut.
+      // Light the rim before anything else goes down. Immersive only: four
+      // corner glows across a 110px banner strip is a smear, not a surround.
+      if (isLargeStage(stageScaleOf(height))) {
+        drawScopeAmbience(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, dt60);
+      }
+      // ── When the figure becomes another shape ──
+      // Same arrangement as Scope: novelty arms a change and the next beat
+      // lands it. This used to fire on a fixed bass delta of 0.055, which is
+      // the bug Scope was measured out of — against three signals a fixed
+      // threshold produced 172 changes on a punchy kick and exactly zero on
+      // both sustained and compressed bass, so on most produced music the
+      // form locked and never moved again.
+      //
+      // Long persistence means the old outline is still fading as the new one
+      // draws, so a change here reads as a morph rather than a cut.
       {
-        const bDelta = scopeOnsetAndWipe(freq, sampleRate, state);
-        if (bDelta > 0.055) {
+        const bDelta = bassDeltaOf(freq, sampleRate, state);
+        const novelty = sectionNoveltyOf(freq, sampleRate, state, dt60);
+        state.scopeDeltaPeak = Math.max(bDelta, state.scopeDeltaPeak * 0.999);
+        const onsetThresh = Math.max(0.012, state.scopeDeltaPeak * 0.45);
+
+        // The rotation gets shoved on every beat regardless, so the beat
+        // stays legible in the motion while the form holds.
+        if (bDelta > onsetThresh) {
+          state.scopeSpinKick = Math.min(2.5, state.scopeSpinKick + bDelta * 5);
+        }
+        state.scopeSpinKick *= Math.pow(0.93, dt60);
+
+        const dwell = state.tick - state.scopeLastRoll;
+        if (dwell > SCOPE_MIN_DWELL && novelty > SCOPE_NOV_ARM) {
+          state.scopeRollArmed = true;
+        }
+        if ((state.scopeRollArmed && bDelta > onsetThresh) || dwell > SCOPE_MAX_DWELL) {
+          state.scopeRollArmed = false;
+          state.scopeLastRoll = state.tick;
           const roll = Math.random();
           if (roll < 0.58) {
             const pick = CRYSTAL_SHAPES[Math.floor(Math.random() * CRYSTAL_SHAPES.length)];
-            state.crystalM = pick[0];
-            state.crystalNTo[0] = pick[1];
-            state.crystalNTo[1] = pick[2];
-            state.crystalNTo[2] = pick[3];
+            state.crystalM1 = pick[0];
+            state.crystalM2 = pick[1];
+            state.crystalNTo[0] = pick[2];
+            state.crystalNTo[1] = pick[3];
+            state.crystalNTo[2] = pick[4];
           } else if (roll < 0.8) {
-            state.scopeSpin = -state.scopeSpin;
+            // Direction and rate together, as in Scope. Flipping direction
+            // alone always looked the same, because the rate never changed.
+            if (Math.random() < 0.6) state.scopeSpin = -state.scopeSpin;
+            const RATES = [0, 0.35, 0.7, 1, 1.5, 2.4];
+            state.scopeSpinTarget = RATES[Math.floor(Math.random() * RATES.length)];
           } else {
             state.crystalLayers = 1 + Math.floor(Math.random() * 3); // 1..3
           }
@@ -610,13 +628,20 @@ export function drawFrame(
           state.crystalN[i] += (state.crystalNTo[i] - state.crystalN[i]) * k;
         }
       }
+      // Eased toward the target so a rate change glides rather than steps —
+      // an instant jump in angular velocity reads as a glitch.
+      state.scopeSpinCur +=
+        (state.scopeSpinTarget - state.scopeSpinCur) * (1 - Math.pow(0.97, dt60));
       state.scopeAngle +=
-        (0.0008 + Math.min(0.002, state.envelope * 0.003)) * state.scopeSpin * dt60;
+        (0.0008 + Math.min(0.002, state.envelope * 0.003)) *
+        (state.scopeSpinCur + state.scopeSpinKick) *
+        state.scopeSpin * dt60;
       state.scopePeak = drawCrystal(
         ctx, width, height, time, timeL, timeR, palette, gain,
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
-        state.scopePeak, state.tick, state.crystalLayers, state.crystalM,
-        state.crystalN, s.scopeDensity,
+        state.scopePeak, state.tick, state.crystalLayers,
+        state.crystalM1, state.crystalM2, state.crystalN, s.scopeDensity,
+        state.scopeEchoes,
       );
       break;
     }
@@ -1362,7 +1387,6 @@ const SCOPE_FILL = 0.92;
 
 /** Frames a footprint fade-out runs for — long enough to read as the trace
  *  dissolving rather than being cut away. Crystal only. */
-const SCOPE_WIPE_FRAMES = 34;
 
 /* ── Scope echoes ──────────────────────────────────────────────────────────
  *
@@ -1573,24 +1597,6 @@ function bassDeltaOf(freq: Uint8Array, sampleRate: number, state: DrawState): nu
   const bEnergy = bSum / Math.max(1, bEnd - 1) / 255;
   const bDelta = bEnergy - state.prevBassEnergy;
   state.prevBassEnergy = bEnergy;
-  return bDelta;
-}
-
-/** Bloom's variant: the same onset reading plus the periodic footprint fade
- *  it still relies on. Scope ages each trace instead. */
-function scopeOnsetAndWipe(
-  freq: Uint8Array,
-  sampleRate: number,
-  state: DrawState,
-  minFrames = 170,
-  maxFrames = 620,
-): number {
-  const bDelta = bassDeltaOf(freq, sampleRate, state);
-  const sinceClear = state.tick - state.scopeClearedAt;
-  if ((bDelta > 0.05 && sinceClear > minFrames) || sinceClear > maxFrames) {
-    state.scopeWipeFor = SCOPE_WIPE_FRAMES;
-    state.scopeClearedAt = state.tick;
-  }
   return bDelta;
 }
 
@@ -2177,7 +2183,7 @@ function drawLissajous(
  * use Scope.
  */
 
-/** Curated [m, n1, n2, n3] parameter sets.
+/** Curated [m1, m2, n1, n2, n3] parameter sets.
  *
  *  Most of the superformula's parameter space is ugly, and the few regions
  *  that aren't are what people mean by "geometric". Randomizing the
@@ -2187,27 +2193,64 @@ function drawLissajous(
  *
  *  These are all chosen from the curved side of that space: n1 below 1 with
  *  low n2/n3 gives smooth lobes, where the large exponents that produce
- *  hard-edged polygons and cusped stars belong to Scope. */
-const CRYSTAL_SHAPES: readonly [number, number, number, number][] = [
-  [3, 0.5, 1.5, 1.5],  // trefoil — three smooth lobes
-  [4, 0.5, 1.5, 1.5],  // quatrefoil
-  [5, 0.4, 1.6, 1.6],  // five-petal rose
-  [6, 0.6, 1.4, 1.4],  // six-petal bloom
-  [8, 0.5, 1.3, 1.3],  // eight-lobe rosette
-  [2, 1, 4, 8],        // teardrop
-  [7, 3, 4, 17],       // ruffled flower
-  [5, 2, 13, 3],       // soft-armed starfish
-  [3, 1, 1, 1],        // rounded triangle
-  [6, 1, 1, 1],        // rounded hexagon
-  [12, 1, 1, 1],       // rippled disc
-  [16, 1.2, 1, 1],     // fine ripple ring
+ *  hard-edged polygons and cusped stars belong to Scope.
+ *
+ *  m1 and m2 are the fold counts of the cosine and sine terms. Equal for
+ *  every rotationally symmetric entry; the three at the end differ, which is
+ *  the only way to get a form with no rotational symmetry at all out of this
+ *  formula. That family mostly degenerates — of twelve pairs rendered and
+ *  inspected, most collapsed to a line or left the curve open, and these are
+ *  the three that survived. Do not add to it without looking at the result.
+ */
+const CRYSTAL_SHAPES: readonly [number, number, number, number, number][] = [
+  // ── smooth lobes and petals ──
+  [3, 3, 0.5, 1.5, 1.5],     // trefoil — three smooth lobes
+  [4, 4, 0.5, 1.5, 1.5],     // quatrefoil
+  [5, 5, 0.4, 1.6, 1.6],     // five-petal rose
+  [6, 6, 0.6, 1.4, 1.4],     // six-petal bloom
+  [8, 8, 0.5, 1.3, 1.3],     // eight-lobe rosette
+  [5, 5, 0.3, 1.7, 1.7],     // sharper five-petal
+  [7, 7, 0.45, 1.5, 1.5],    // seven-point soft star
+  [9, 9, 0.4, 1.4, 1.4],     // nine-point star
+  [10, 10, 0.55, 1.35, 1.35],// ten-point star
+  [11, 11, 0.5, 1.3, 1.3],   // eleven-point, finely spiked
+  // ── rounded polygons ──
+  [3, 3, 1, 1, 1],           // rounded triangle
+  [5, 5, 1, 1, 1],           // concave pentagon
+  [6, 6, 1, 1, 1],           // rounded hexagon
+  [12, 12, 1, 1, 1],         // rippled disc
+  [16, 16, 1.2, 1, 1],       // fine ripple ring
+  // ── soft-armed stars ──
+  [2, 2, 1, 4, 8],           // teardrop
+  [3, 3, 2, 13, 3],          // three-lobe teardrop
+  [4, 4, 1.8, 9, 9],         // four-arm cross
+  [5, 5, 2, 13, 3],          // soft-armed starfish
+  [5, 5, 1.7, 8, 8],         // thin five-arm starfish
+  [6, 6, 2, 7, 7],           // six-arm starfish
+  [8, 8, 2.2, 6, 6],         // eight-arm starfish
+  // ── ruffled ──
+  [7, 7, 3, 4, 17],          // ruffled flower
+  [6, 6, 3, 14, 4],          // six-arm ruffle
+  // ── asymmetric folds, m1 != m2 ──
+  [2, 6, 1, 1, 1],           // dart
+  [8, 4, 0.5, 1.3, 1.3],     // lopsided cross
+  [4, 6, 1, 1, 1],           // arrowhead
 ];
 
-/** Gielis superformula radius at `theta`, with a = b = 1. */
-function superRadius(theta: number, m: number, n1: number, n2: number, n3: number): number {
-  const t = (m * theta) / 4;
-  const a = Math.pow(Math.abs(Math.cos(t)), n2);
-  const b = Math.pow(Math.abs(Math.sin(t)), n3);
+/** Gielis superformula radius at `theta`, with a = b = 1.
+ *
+ *  m1 and m2 are separate so the two terms can carry different fold counts;
+ *  with them equal this is the ordinary symmetric form. */
+function superRadius(
+  theta: number,
+  m1: number,
+  m2: number,
+  n1: number,
+  n2: number,
+  n3: number,
+): number {
+  const a = Math.pow(Math.abs(Math.cos((m1 * theta) / 4)), n2);
+  const b = Math.pow(Math.abs(Math.sin((m2 * theta) / 4)), n3);
   const d = a + b;
   return d < 1e-9 ? 0 : Math.pow(d, -1 / n1);
 }
@@ -2234,9 +2277,11 @@ function drawCrystal(
   prevPeak: number,
   tick: number,
   layers: number,
-  m: number,
+  m1: number,
+  m2: number,
   nParams: Float32Array,
   density: number,
+  echoes: { path: Path2D; born: number }[],
 ): number {
   const cx = w * 0.5;
   const cy = h * 0.5;
@@ -2299,7 +2344,7 @@ function drawCrystal(
     const side = (ss / win / 256) * gain;
 
     const rr =
-      superRadius(th, m, n1, n2, n3) * (1 + mid * CRYSTAL_MID_DEPTH) +
+      superRadius(th, m1, m2, n1, n2, n3) * (1 + mid * CRYSTAL_MID_DEPTH) +
       side * CRYSTAL_SIDE_DEPTH;
     const clamped = rr > 0 ? rr : 0;
     px[j] = Math.cos(th) * clamped;
@@ -2364,6 +2409,31 @@ function drawCrystal(
     grads.push(scopeGradient(ctx, radius, palette, (c / lay) * SCOPE_HUE_ARC, c > 0));
   }
 
+  const foldBasis = Math.max(1, Math.min(m1, m2));
+
+  // ── Footprint ──
+  // A decimated copy of the outline with every layer's rotation and shrink
+  // baked in, kept for a second and redrawn each frame at an age-derived
+  // alpha. One Path2D covers all the layers, so the history costs one stroke
+  // per captured frame rather than one per layer.
+  if (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= SCOPE_ECHO_EVERY) {
+    const step = Math.max(1, Math.floor(count / SCOPE_ECHO_POINTS));
+    const single = new Path2D();
+    single.moveTo(px[0], py[0]);
+    for (let i = step; i < count; i += step) single.lineTo(px[i], py[i]);
+    single.closePath();
+    const baked = new Path2D();
+    for (let c = 0; c < lay; c++) {
+      const a = angle + (c * Math.PI * 2) / (foldBasis * lay);
+      const shrink = 1 - c * 0.24;
+      const cos = Math.cos(a) * shrink;
+      const sin = Math.sin(a) * shrink;
+      baked.addPath(single, new DOMMatrix([cos, sin, -sin, cos, 0, 0]));
+    }
+    echoes.push({ path: baked, born: tick });
+  }
+  while (echoes.length > 0 && tick - echoes[0].born > SCOPE_ECHO_LIFE) echoes.shift();
+
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -2376,28 +2446,57 @@ function drawCrystal(
 
   ctx.save();
   ctx.translate(cx, cy);
+
+  // History first, so the live outline lands on top. Stroked with the palette
+  // gradient rather than a flat grey: the radial colour ramp is most of what
+  // gives the figure its colour, and a grey trail would wash it out.
+  ctx.strokeStyle = grads[0];
+  ctx.lineWidth = baseW * 0.85;
+  for (let e = 0; e < echoes.length; e++) {
+    const age = (tick - echoes[e].born) / SCOPE_ECHO_LIFE;
+    if (age >= 1) continue;
+    // Squared falloff: linear keeps old outlines legible too long and the
+    // stage fills up again.
+    const k = 1 - age;
+    ctx.globalAlpha = k * k * SCOPE_ECHO_ALPHA;
+    ctx.stroke(echoes[e].path);
+  }
+
   for (let c = 0; c < lay; c++) {
     ctx.save();
     // Layers are offset by a fraction of the shape's OWN fold angle. Rotating
     // by an arbitrary 2π/copies instead — what Scope does, correctly, for an
-    // unstructured trace — would beat the outline's m-fold periodicity
-    // against an unrelated one, and that interference is precisely what reads
-    // as clutter. Aligning to m means the layers interlock.
-    ctx.rotate(angle + (c * Math.PI * 2) / (Math.max(1, m) * lay));
+    // unstructured trace — would beat the outline's fold periodicity against
+    // an unrelated one, and that interference is precisely what reads as
+    // clutter. Aligning to the fold count means the layers interlock.
+    //
+    // The coarser of the two terms is the one to align to. For the asymmetric
+    // entries the form has no rotational symmetry to speak of, so there is no
+    // exactly right answer; the smaller fold count gives the widest offset,
+    // which keeps the layers from piling up on each other.
+    ctx.rotate(angle + (c * Math.PI * 2) / (foldBasis * lay));
     const shrink = 1 - c * 0.24;
     ctx.scale(shrink, shrink);
     const copyAlpha = c === 0 ? 1 : 0.5;
     ctx.strokeStyle = grads[c];
 
-    // Per-frame alpha is deliberately tiny. With persistence doing the work,
-    // a bright per-frame stroke would saturate instantly and there would be
-    // nothing left to build.
-    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 0.45;
+    // Recalibrated for clear-and-redraw. These were tuned when the canvas
+    // accumulated across roughly a dozen frames, where a per-frame stroke
+    // this bright would have saturated instantly; now one frame's stroke is
+    // the whole of what is seen, so they carry the image outright. The factor
+    // is not the accumulation count — alpha compositing saturates, so it
+    // stacks as 1-(1-a)^n rather than n*a — and was chosen by looking at
+    // rendered candidates, because there was no previous number to match to:
+    // the old behaviour never settled. Measured, its coverage ratcheted from
+    // 10% of the stage to 56% between wipes and its ink swung 0.36 to 7.55,
+    // so any single sample of it was a point on a sawtooth. What these were
+    // checked for instead is that they hold still: 2-6% drift over 15 s.
+    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 1.3;
     ctx.lineWidth = bloomW;
     ctx.stroke(whole);
 
     for (let lvl = 0; lvl < LEVELS; lvl++) {
-      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 0.38;
+      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 1.05;
       ctx.lineWidth = baseW * (0.75 + (lvl / (LEVELS - 1)) * 0.6);
       ctx.stroke(paths[lvl]);
     }

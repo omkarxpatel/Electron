@@ -441,7 +441,9 @@ function tick() {
       if (r) {
         r.textContent =
           cell.style === 'crystal'
-            ? `m=${cell.state.crystalM} layers=${cell.state.crystalLayers}`
+            ? `m=${cell.state.crystalM1}${
+              cell.state.crystalM2 !== cell.state.crystalM1 ? '/' + cell.state.crystalM2 : ''
+            } layers=${cell.state.crystalLayers}`
             : `sym ${cell.state.scopeSymmetry} · ratio ${cell.state.scopeRatio.toFixed(2)}` +
             ` · lattice ${cell.state.scopeLattice} · ${GRID_NAMES[cell.state.scopeGridKind]}`;
       }

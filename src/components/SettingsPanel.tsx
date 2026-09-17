@@ -134,7 +134,7 @@ export function SettingsPanel({
             {/* Immersive only, because the effect is: four corner glows have
                 nowhere to go across a 110px strip, so the banner profile
                 never draws them and a slider here would be inert. */}
-            {settings.waveformStyle === 'lissajous' && settings.immersive && (
+            {settings.immersive && (
               <Slider
                 label="Ambience"
                 value={settings.scopeAmbience}
