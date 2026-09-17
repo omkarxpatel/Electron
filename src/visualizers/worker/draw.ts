@@ -149,8 +149,10 @@ export interface DrawState {
   /** Recent Scope traces with the tick each was drawn on, oldest first.
    *  Redrawn every frame at an age-derived alpha. */
   scopeEchoes: { path: Path2D; born: number }[];
-  /** Polar-lattice strength, 0 = off. Re-rolled on onsets. */
+  /** Lattice strength, 0 = off. Re-rolled on onsets. */
   scopeLattice: number;
+  /** Which grid geometry the lattice snaps to — see SCOPE_GRID_*. */
+  scopeGridKind: number;
   /** Smoothed tonality of the signal, plus the slow bounds it is normalized
    *  against. See coherenceOf. */
   scopeCoherence: number;
@@ -204,6 +206,9 @@ export function createDrawState(): DrawState {
     scopeWipeFor: 0,
     scopeEchoes: [],
     scopeLattice: 1,
+    // Module consts are initialised before any call to this, so the forward
+    // reference is safe and reads better than a bare 0.
+    scopeGridKind: SCOPE_GRID_POLAR,
     scopeCoherence: 0.5,
     scopeCohLo: 0.3,
     scopeCohHi: 0.7,
@@ -481,6 +486,12 @@ export function drawFrame(
             // the default any more.
             const r = Math.random();
             state.scopeLattice = r < 0.7 ? 1 : r < 0.82 ? 2 : r < 0.9 ? 3 : 0;
+            // Change the grid's geometry only some of the time, so a given
+            // cell shape gets to be explored at several coarsenesses before
+            // it is swapped out.
+            if (Math.random() < 0.45) {
+              state.scopeGridKind = Math.floor(Math.random() * SCOPE_GRID_COUNT);
+            }
           }
         }
       }
@@ -494,7 +505,8 @@ export function drawFrame(
         ctx, width, height, time, timeL, timeR, palette, gain,
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
         state.scopePeak, state.tick, state.scopeSymmetry, state.scopeRatio,
-        s.scopeDensity, state.scopeLattice, state.scopeEchoes,
+        s.scopeDensity, state.scopeLattice, state.scopeGridKind,
+        state.scopeEchoes,
       );
       break;
     }
@@ -1283,6 +1295,20 @@ const SCOPE_WIPE_FRAMES = 34;
 /** Ticks a trace stays visible — one second at 60 Hz. */
 const SCOPE_ECHO_LIFE = 60;
 
+/* ── Grid geometries ───────────────────────────────────────────────────────
+ *
+ * The lattice snaps each point onto a grid; these are the grids it can snap
+ * to. Only the polar one existed at first, which meant every gridded figure
+ * was built from spokes and rings. The rest give the same construction a
+ * different underlying cell — square, diamond, triangular — and the shapes
+ * that grow outward from them differ accordingly.
+ * ─────────────────────────────────────────────────────────────────────── */
+const SCOPE_GRID_POLAR = 0;
+const SCOPE_GRID_SQUARE = 1;
+const SCOPE_GRID_DIAMOND = 2;
+const SCOPE_GRID_TRIANGLE = 3;
+const SCOPE_GRID_COUNT = 4;
+
 /** Longest a single figure may hold before a re-roll is forced, regardless of
  *  what the onset detector thinks. Ambient material can genuinely contain no
  *  onsets at all, and the visualizer still has to go somewhere. */
@@ -1518,8 +1544,10 @@ function drawLissajous(
   symmetry: number,
   ratio: number,
   density: number,
-  /** 0 = smooth trace; 1..3 snap the trace onto a polar grid. */
+  /** 0 = smooth trace; 1..3 snap the trace onto a grid, coarse to fine. */
   lattice: number,
+  /** Which grid geometry to snap to — see SCOPE_GRID_*. */
+  gridKind: number,
   echoes: { path: Path2D; born: number }[],
 ): number {
   const cx = w * 0.5;
@@ -1594,15 +1622,44 @@ function drawLissajous(
   // Applied after scaling, so the grid sits in screen space and holds still
   // while the trace moves through it.
   if (lattice > 0) {
-    const sectors = 6 + lattice * 6;
-    const rings = 3 + lattice * 3;
-    const dA = (Math.PI * 2) / sectors;
-    const dR = (radius * SCOPE_FILL) / rings;
-    for (let i = 0; i < count; i++) {
-      const a = Math.round(Math.atan2(py[i], px[i]) / dA) * dA;
-      const r = Math.round(Math.hypot(px[i], py[i]) / dR) * dR;
-      px[i] = Math.cos(a) * r;
-      py[i] = Math.sin(a) * r;
+    const steps = 3 + lattice * 3;
+    const cell = (radius * SCOPE_FILL) / steps;
+    if (gridKind === SCOPE_GRID_SQUARE) {
+      // Axis-aligned. Rotated by each symmetry copy, overlapping square grids
+      // are what produce the interlocking quadrilaterals.
+      for (let i = 0; i < count; i++) {
+        px[i] = Math.round(px[i] / cell) * cell;
+        py[i] = Math.round(py[i] / cell) * cell;
+      }
+    } else if (gridKind === SCOPE_GRID_DIAMOND) {
+      // The square grid in a basis rotated 45°, so cells meet point-to-point.
+      const c = Math.SQRT1_2;
+      for (let i = 0; i < count; i++) {
+        const u = Math.round(((px[i] + py[i]) * c) / cell) * cell;
+        const v = Math.round(((py[i] - px[i]) * c) / cell) * cell;
+        px[i] = (u - v) * c;
+        py[i] = (u + v) * c;
+      }
+    } else if (gridKind === SCOPE_GRID_TRIANGLE) {
+      // Basis vectors at 0° and 60°: the triangular/hexagonal lattice. Snap in
+      // lattice coordinates, then map back.
+      const h = Math.sqrt(3) / 2;
+      for (let i = 0; i < count; i++) {
+        const b = Math.round(py[i] / (cell * h));
+        const a = Math.round((px[i] - b * cell * 0.5) / cell);
+        px[i] = a * cell + b * cell * 0.5;
+        py[i] = b * cell * h;
+      }
+    } else {
+      // Polar: spokes and rings.
+      const sectors = 6 + lattice * 6;
+      const dA = (Math.PI * 2) / sectors;
+      for (let i = 0; i < count; i++) {
+        const a = Math.round(Math.atan2(py[i], px[i]) / dA) * dA;
+        const r = Math.round(Math.hypot(px[i], py[i]) / cell) * cell;
+        px[i] = Math.cos(a) * r;
+        py[i] = Math.sin(a) * r;
+      }
     }
   }
 

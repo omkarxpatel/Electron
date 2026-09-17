@@ -33,7 +33,7 @@ interface Cell {
   state: DrawState;
   /** Applied before every frame. Undefined entries are left to the engine,
    *  which is how the "live" cell shows the real re-roll behaviour. */
-  pin?: { symmetry?: number; ratio?: number; lattice?: number };
+  pin?: { symmetry?: number; ratio?: number; lattice?: number; gridKind?: number };
   style: WaveformStyle;
 }
 
@@ -142,10 +142,34 @@ interface Section {
   specs: Spec[];
 }
 
+const GRID_NAMES = ['polar', 'square', 'diamond', 'triangle'];
+
 // Ratios are the set the engine actually draws from.
 const RATIOS = [0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 5 / 3, 2, 2.5, 3, 4];
 
 const SECTIONS: Section[] = [
+  {
+    heading: '0 · Grid geometry — what the cells are',
+    blurb:
+      'The lattice snaps points onto a grid; this is the shape of that grid. ' +
+      'Each symmetry copy snaps to the same one, so overlapping rotated ' +
+      'copies of a square grid give interlocking quadrilaterals, a triangular ' +
+      'grid gives hexagonal rosettes, and so on. Shown at lattice 1, the ' +
+      'coarsest setting.',
+    // Shown at two symmetries on purpose. Each copy is rotated before it is
+    // drawn, so N copies superimpose N differently-oriented grids and the cell
+    // shape washes out — the geometry is most legible at low symmetry.
+    specs: [0, 1, 2, 3].flatMap((kind) =>
+      [2, 5].map((symmetry) => ({
+        title: `${GRID_NAMES[kind]} · symmetry ${symmetry}`,
+        note:
+          symmetry === 2
+            ? ['Spokes and rings.', 'Axis-aligned cells.', 'Cells meeting point-to-point.', 'Hexagonal packing.'][kind]
+            : 'Same grid, 5 copies — cell shape largely washed out.',
+        pin: { gridKind: kind, lattice: 1, symmetry, ratio: 1.5 },
+      })),
+    ),
+  },
   {
     heading: '1 · Lattice — what the centre is made of',
     blurb:
@@ -157,22 +181,22 @@ const SECTIONS: Section[] = [
       {
         title: 'Lattice 0 — free curve',
         note: 'No grid. The raw stereo trace: flowing loops and ribbons, curved everywhere.',
-        pin: { lattice: 0, symmetry: 5, ratio: 1.5 },
+        pin: { lattice: 0, symmetry: 5, ratio: 1.5, gridKind: 0 },
       },
       {
         title: 'Lattice 1 — coarse grid (12 spokes, 6 rings)',
         note: 'Big straight chords and long spokes. Most open of the three; reads as a star or polygon web.',
-        pin: { lattice: 1, symmetry: 5, ratio: 1.5 },
+        pin: { lattice: 1, symmetry: 5, ratio: 1.5, gridKind: 0 },
       },
       {
         title: 'Lattice 2 — medium grid (18 spokes, 9 rings)',
         note: 'Finer nodes, more crossings. Dense rosette with a clear radial skeleton.',
-        pin: { lattice: 2, symmetry: 5, ratio: 1.5 },
+        pin: { lattice: 2, symmetry: 5, ratio: 1.5, gridKind: 0 },
       },
       {
         title: 'Lattice 3 — fine grid (24 spokes, 12 rings)',
         note: 'Tightest mesh. Structure is there but crowded — this is where it tips into clutter.',
-        pin: { lattice: 3, symmetry: 5, ratio: 1.5 },
+        pin: { lattice: 3, symmetry: 5, ratio: 1.5, gridKind: 0 },
       },
     ],
   },
@@ -185,7 +209,7 @@ const SECTIONS: Section[] = [
     specs: [2, 3, 4, 5, 6, 7, 8].map((n) => ({
       title: `Symmetry ${n}`,
       note: `${n} rotated copies, ${n} hues.`,
-      pin: { symmetry: n, lattice: 1, ratio: 1.5 },
+      pin: { symmetry: n, lattice: 1, ratio: 1.5, gridKind: 0 },
     })),
   },
   {
@@ -198,7 +222,7 @@ const SECTIONS: Section[] = [
     specs: RATIOS.map((r) => ({
       title: `Ratio ${r === 2 / 3 ? '2/3' : r === 5 / 3 ? '5/3' : r}`,
       note: '',
-      pin: { ratio: r, lattice: 0, symmetry: 4 },
+      pin: { ratio: r, lattice: 0, symmetry: 4, gridKind: 0 },
     })),
   },
   {
@@ -210,7 +234,7 @@ const SECTIONS: Section[] = [
     specs: RATIOS.map((r) => ({
       title: `Ratio ${r === 2 / 3 ? '2/3' : r === 5 / 3 ? '5/3' : r} · lattice 1`,
       note: '',
-      pin: { ratio: r, lattice: 1, symmetry: 4 },
+      pin: { ratio: r, lattice: 1, symmetry: 4, gridKind: 0 },
     })),
   },
   {
@@ -391,6 +415,7 @@ function tick() {
       if (cell.pin.symmetry !== undefined) cell.state.scopeSymmetry = cell.pin.symmetry;
       if (cell.pin.ratio !== undefined) cell.state.scopeRatio = cell.pin.ratio;
       if (cell.pin.lattice !== undefined) cell.state.scopeLattice = cell.pin.lattice;
+      if (cell.pin.gridKind !== undefined) cell.state.scopeGridKind = cell.pin.gridKind;
     }
 
     drawFrame(
@@ -413,7 +438,8 @@ function tick() {
         r.textContent =
           cell.style === 'crystal'
             ? `m=${cell.state.crystalM} layers=${cell.state.crystalLayers}`
-            : `sym ${cell.state.scopeSymmetry} · ratio ${cell.state.scopeRatio.toFixed(2)} · lattice ${cell.state.scopeLattice}`;
+            : `sym ${cell.state.scopeSymmetry} · ratio ${cell.state.scopeRatio.toFixed(2)}` +
+            ` · lattice ${cell.state.scopeLattice} · ${GRID_NAMES[cell.state.scopeGridKind]}`;
       }
     }
   }
