@@ -6,7 +6,10 @@ export interface PaletteStop {
 }
 
 export interface Palette {
-  id: PaletteId;
+  // Static palettes use a PaletteId literal; synthesized palettes (album-art
+  // extraction) use a hash-like string so the gradient cache keys uniquely
+  // per derived color set.
+  id: PaletteId | string;
   label: string;
   stops: PaletteStop[];
   glowColor: string;
@@ -141,7 +144,105 @@ export const PALETTES: Record<PaletteId, Palette> = {
     glowColor: '#ff61c5',
     ambient: 'rgba(255, 97, 197, 0.16)',
   },
+  ice: {
+    id: 'ice',
+    label: 'Ice',
+    stops: [
+      { pos: 0, color: '#e0f2fe' },
+      { pos: 0.5, color: '#7dd3fc' },
+      { pos: 1, color: '#0284c7' },
+    ],
+    glowColor: '#7dd3fc',
+    ambient: 'rgba(125, 211, 252, 0.16)',
+  },
+  ember: {
+    id: 'ember',
+    label: 'Ember',
+    stops: [
+      { pos: 0, color: '#fbbf24' },
+      { pos: 0.45, color: '#dc2626' },
+      { pos: 1, color: '#450a0a' },
+    ],
+    glowColor: '#f87171',
+    ambient: 'rgba(220, 38, 38, 0.16)',
+  },
+  forest: {
+    id: 'forest',
+    label: 'Forest',
+    stops: [
+      { pos: 0, color: '#bef264' },
+      { pos: 0.5, color: '#16a34a' },
+      { pos: 1, color: '#052e16' },
+    ],
+    glowColor: '#4ade80',
+    ambient: 'rgba(22, 163, 74, 0.16)',
+  },
+  candy: {
+    id: 'candy',
+    label: 'Candy',
+    stops: [
+      { pos: 0, color: '#fda4af' },
+      { pos: 0.5, color: '#c084fc' },
+      { pos: 1, color: '#38bdf8' },
+    ],
+    glowColor: '#c084fc',
+    ambient: 'rgba(192, 132, 252, 0.16)',
+  },
+  mono2: {
+    id: 'mono2',
+    label: 'Bone',
+    stops: [
+      { pos: 0, color: '#fafaf9' },
+      { pos: 0.5, color: '#a8a29e' },
+      { pos: 1, color: '#44403c' },
+    ],
+    glowColor: '#d6d3d1',
+    ambient: 'rgba(214, 211, 209, 0.12)',
+  },
+  // Placeholder so the Record<PaletteId, Palette> stays total. The real
+  // custom palette is synthesized per-render from settings.customColors —
+  // see buildCustomPalette(). Reading PALETTES.custom directly gives the
+  // defaults, which is the right fallback if settings are unavailable.
+  custom: {
+    id: 'custom',
+    label: 'Custom',
+    stops: [
+      { pos: 0, color: '#7c3aed' },
+      { pos: 0.5, color: '#ec4899' },
+      { pos: 1, color: '#f59e0b' },
+    ],
+    glowColor: '#ec4899',
+    ambient: 'rgba(236, 72, 153, 0.16)',
+  },
 };
+
+/** Build the live 'custom' palette from the user's three chosen stops.
+ *  `id` embeds the colors so the gradient cache (keyed by palette id) gets a
+ *  fresh entry whenever the user picks a new color — otherwise the canvas
+ *  would keep drawing the previous gradient. */
+export function buildCustomPalette(colors: readonly [string, string, string]): Palette {
+  const [low, mid, high] = colors;
+  return {
+    id: `custom:${low}${mid}${high}`,
+    label: 'Custom',
+    stops: [
+      { pos: 0, color: low },
+      { pos: 0.5, color: mid },
+      { pos: 1, color: high },
+    ],
+    glowColor: mid,
+    ambient: hexToAmbient(mid),
+  };
+}
+
+/** Hex -> low-alpha rgba for the stage ambient wash. Falls back to a neutral
+ *  tint if the string isn't a 6-digit hex (e.g. a named color from a paste). */
+function hexToAmbient(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return 'rgba(255, 255, 255, 0.12)';
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, 0.16)`;
+}
 
 /* ─── Gradient cache ─────────────────────────────────────────────────────
  * Every per-frame draw style was allocating fresh CanvasGradient objects by
@@ -164,9 +265,17 @@ export const PALETTES: Record<PaletteId, Palette> = {
  *  canvas color string). For canvas use, prefer the cached gradient helpers
  *  below since they let the GPU do the interpolation. */
 export function sampleAt(palette: Palette, t: number): string {
+  const [r, g, b] = sampleRgbAt(palette, t);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/** Same interpolation as `sampleAt`, returned as a numeric triplet so callers
+ *  that need to do further color math (the Scope's per-copy hue fan) don't
+ *  have to parse a string back apart. */
+export function sampleRgbAt(palette: Palette, t: number): [number, number, number] {
   const stops = palette.stops;
-  if (stops.length === 0) return '#1ed760';
-  if (stops.length === 1) return stops[0].color;
+  if (stops.length === 0) return [29, 215, 96];
+  if (stops.length === 1) return hexToRgbTriplet(stops[0].color);
   const clamped = Math.max(0, Math.min(1, t));
   // Find the bracketing pair. Stops are stored in increasing pos order, so a
   // linear scan is fast enough for the typical 2-4 stop palettes.
@@ -183,10 +292,11 @@ export function sampleAt(palette: Palette, t: number): string {
   const local = span <= 0 ? 0 : (clamped - lo.pos) / span;
   const [lr, lg, lb] = hexToRgbTriplet(lo.color);
   const [hr, hg, hb] = hexToRgbTriplet(hi.color);
-  const r = Math.round(lr + (hr - lr) * local);
-  const g = Math.round(lg + (hg - lg) * local);
-  const b = Math.round(lb + (hb - lb) * local);
-  return `rgb(${r}, ${g}, ${b})`;
+  return [
+    Math.round(lr + (hr - lr) * local),
+    Math.round(lg + (hg - lg) * local),
+    Math.round(lb + (hb - lb) * local),
+  ];
 }
 
 function hexToRgbTriplet(hex: string): [number, number, number] {

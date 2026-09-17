@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Album-art palette extraction — test harness</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; background: #1a1a1f; color: #eee; padding: 24px; max-width: 900px; margin: 0 auto; }
+    h1 { margin: 0 0 16px; }
+    .input-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    input[type=text] { flex: 1; padding: 8px; background: #2a2a30; color: #eee; border: 1px solid #444; border-radius: 4px; font: inherit; }
+    button { padding: 8px 16px; background: #1ED760; color: #000; border: 0; border-radius: 4px; font: inherit; cursor: pointer; }
+    button:hover { filter: brightness(1.1); }
+    .preset { padding: 4px 10px; background: #2a2a30; color: #aaa; border: 1px solid #444; border-radius: 4px; font-size: 12px; cursor: pointer; }
+    .preset:hover { background: #333; color: #eee; }
+    .preset-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .result { background: #232328; padding: 16px; border-radius: 6px; margin-top: 16px; }
+    .result-grid { display: grid; grid-template-columns: 160px 1fr; gap: 12px; align-items: flex-start; }
+    .album-img { width: 160px; height: 160px; border-radius: 4px; object-fit: cover; background: #444; }
+    .palette-strip { width: 100%; height: 60px; border-radius: 4px; margin-bottom: 12px; }
+    .swatches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .swatch { padding: 12px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 11px; color: rgba(255,255,255,0.9); }
+    .swatch .label { font-size: 10px; opacity: 0.7; margin-bottom: 4px; }
+    .meta { font-family: ui-monospace, monospace; font-size: 12px; color: #888; margin-top: 12px; }
+    .log { font-family: ui-monospace, monospace; font-size: 11px; color: #888; margin-top: 16px; white-space: pre-wrap; background: #18181c; padding: 12px; border-radius: 4px; max-height: 200px; overflow: auto; }
+    .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <h1>Album-art palette extraction</h1>
+  <p>Tests the canvas-based palette extraction from <code>src/visualizers/extractPalette.ts</code> against a real image. Validates CORS, sampling quality, and the synthesized Palette shape.</p>
+
+  <div class="input-row">
+    <input type="text" id="url" placeholder="Image URL (Spotify i.scdn.co or any CORS-friendly host)" value="" />
+    <button id="extract">Extract</button>
+  </div>
+
+  <div class="preset-row" id="presets"></div>
+
+  <div id="result"></div>
+  <div class="log" id="log"></div>
+
+  <script type="module">
+    /* ─── Inlined from src/visualizers/extractPalette.ts ─── */
+
+    const TARGET_SIZE = 64;
+    const MIN_SATURATION = 0.22;
+    const MIN_LIGHTNESS = 0.18;
+    const MAX_LIGHTNESS = 0.88;
+    const HUE_BUCKETS = 18;
+    const SAT_BUCKETS = 4;
+    const LIGHT_BUCKETS = 4;
+    const MIN_HUE_SEPARATION = 60 / 360;
+
+    async function extractPaletteFromUrl(url) {
+      const img = await loadImage(url);
+      return extractPaletteFromImage(img);
+    }
+
+    function loadImage(url) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = (e) => reject(new Error('image load failed'));
+        img.src = url;
+      });
+    }
+
+    function extractPaletteFromImage(img) {
+      const canvas = document.createElement('canvas');
+      canvas.width = TARGET_SIZE;
+      canvas.height = TARGET_SIZE;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0, TARGET_SIZE, TARGET_SIZE);
+      const data = ctx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE).data;
+      const buckets = new Map();
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+        if (a < 128) continue;
+        const [h, s, l] = rgbToHsl(r, g, b);
+        if (l < MIN_LIGHTNESS || l > MAX_LIGHTNESS) continue;
+        if (s < MIN_SATURATION) continue;
+        const hBucket = Math.min(HUE_BUCKETS-1, Math.floor(h * HUE_BUCKETS));
+        const sBucket = Math.min(SAT_BUCKETS-1, Math.floor(s * SAT_BUCKETS));
+        const lBucket = Math.min(LIGHT_BUCKETS-1, Math.floor(l * LIGHT_BUCKETS));
+        const key = hBucket * SAT_BUCKETS * LIGHT_BUCKETS + sBucket * LIGHT_BUCKETS + lBucket;
+        const lightnessFactor = 1 - Math.abs(l - 0.55) * 2;
+        const weight = s * (0.35 + Math.max(0, lightnessFactor) * 0.65);
+        let bucket = buckets.get(key);
+        if (!bucket) { bucket = { rSum:0,gSum:0,bSum:0,hSum:0,sSum:0,lSum:0,weight:0 }; buckets.set(key, bucket); }
+        bucket.rSum += r * weight;
+        bucket.gSum += g * weight;
+        bucket.bSum += b * weight;
+        bucket.hSum += h * weight;
+        bucket.sSum += s * weight;
+        bucket.lSum += l * weight;
+        bucket.weight += weight;
+      }
+      if (buckets.size === 0) return null;
+      const ranked = [];
+      for (const acc of buckets.values()) {
+        if (acc.weight <= 0) continue;
+        ranked.push({
+          r: clamp255(Math.round(acc.rSum / acc.weight)),
+          g: clamp255(Math.round(acc.gSum / acc.weight)),
+          b: clamp255(Math.round(acc.bSum / acc.weight)),
+          hue: acc.hSum / acc.weight,
+          sat: acc.sSum / acc.weight,
+          light: acc.lSum / acc.weight,
+          score: acc.weight,
+        });
+      }
+      ranked.sort((a, b) => b.score - a.score);
+      if (ranked.length === 0) return null;
+      const primary = ranked[0];
+      let secondary = ranked[1] ?? primary;
+      for (let i = 1; i < ranked.length; i++) {
+        if (hueDelta(ranked[i].hue, primary.hue) >= MIN_HUE_SEPARATION) { secondary = ranked[i]; break; }
+      }
+      const primaryHex = rgbToHex(primary.r, primary.g, primary.b);
+      const secondaryHex = rgbToHex(secondary.r, secondary.g, secondary.b);
+      const [dr,dg,db] = [Math.round(primary.r*0.55), Math.round(primary.g*0.55), Math.round(primary.b*0.55)];
+      const darkHex = rgbToHex(dr, dg, db);
+      return {
+        id: `auto-${primaryHex}-${secondaryHex}`,
+        label: 'Album',
+        stops: [
+          { pos: 0, color: secondaryHex },
+          { pos: 0.55, color: primaryHex },
+          { pos: 1, color: darkHex },
+        ],
+        glowColor: primaryHex,
+        ambient: `rgba(${primary.r}, ${primary.g}, ${primary.b}, 0.18)`,
+        _meta: { bucketCount: buckets.size, candidateCount: ranked.length },
+      };
+    }
+
+    function rgbToHsl(r,g,b) {
+      const rn=r/255, gn=g/255, bn=b/255;
+      const max=Math.max(rn,gn,bn), min=Math.min(rn,gn,bn);
+      const l=(max+min)/2;
+      if (max===min) return [0,0,l];
+      const d=max-min;
+      const s=l>0.5?d/(2-max-min):d/(max+min);
+      let h;
+      if (max===rn) h=(gn-bn)/d+(gn<bn?6:0);
+      else if (max===gn) h=(bn-rn)/d+2;
+      else h=(rn-gn)/d+4;
+      return [h/6,s,l];
+    }
+    function hueDelta(a,b) { const d=Math.abs(a-b); return d>0.5?1-d:d; }
+    function rgbToHex(r,g,b) { return `#${toHex(r)}${toHex(g)}${toHex(b)}`; }
+    function toHex(n) { const h=clamp255(n).toString(16); return h.length===1?`0${h}`:h; }
+    function clamp255(n) { return n<0?0:n>255?255:n; }
+
+    /* ─── UI ─── */
+
+    /* Synthetic test images — no network, deterministic. Each renders a known
+     * gradient to a data URL so we can verify the extractor picks the
+     * dominant color correctly. */
+    function makeSyntheticDataUrl(stops) {
+      const c = document.createElement('canvas');
+      c.width = 256; c.height = 256;
+      const ctx = c.getContext('2d');
+      const grad = ctx.createLinearGradient(0, 0, 256, 256);
+      for (const [pos, color] of stops) grad.addColorStop(pos, color);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 256, 256);
+      return c.toDataURL('image/png');
+    }
+
+    const PRESETS = [
+      { label: 'Synth · orange→red', url: makeSyntheticDataUrl([[0, '#ff8800'], [1, '#cc0000']]) },
+      { label: 'Synth · cyan→navy', url: makeSyntheticDataUrl([[0, '#00d4ff'], [1, '#001f60']]) },
+      { label: 'Synth · magenta→purple', url: makeSyntheticDataUrl([[0, '#ff00aa'], [1, '#440088']]) },
+      { label: 'Synth · 3-stop rainbow', url: makeSyntheticDataUrl([[0, '#ff0040'], [0.5, '#10c060'], [1, '#0040ff']]) },
+      { label: 'Synth · near-monochrome', url: makeSyntheticDataUrl([[0, '#ddd'], [1, '#111']]) },
+    ];
+
+    const $url = document.getElementById('url');
+    const $extract = document.getElementById('extract');
+    const $result = document.getElementById('result');
+    const $log = document.getElementById('log');
+    const $presets = document.getElementById('presets');
+
+    for (const p of PRESETS) {
+      const btn = document.createElement('button');
+      btn.className = 'preset';
+      btn.textContent = p.label;
+      btn.onclick = () => { $url.value = p.url; run(); };
+      $presets.appendChild(btn);
+    }
+
+    function log(s, err=false) {
+      const span = document.createElement('span');
+      if (err) span.className = 'err';
+      span.textContent = s + '\n';
+      $log.appendChild(span);
+      $log.scrollTop = $log.scrollHeight;
+    }
+
+    async function run() {
+      const url = $url.value.trim();
+      if (!url) return;
+      $result.innerHTML = '';
+      log(`Loading ${url} ...`);
+      const t0 = performance.now();
+      let palette;
+      try {
+        palette = await extractPaletteFromUrl(url);
+      } catch (err) {
+        log('FAILED: ' + (err?.message ?? err), true);
+        return;
+      }
+      const elapsed = performance.now() - t0;
+      if (!palette) {
+        log('FAILED: extraction returned null', true);
+        return;
+      }
+      log(`OK · ${elapsed.toFixed(0)}ms · ${palette._meta.bucketCount} buckets · ${palette._meta.candidateCount} candidates`);
+      renderResult(url, palette);
+    }
+
+    function renderResult(url, palette) {
+      const gradientCss = `linear-gradient(90deg, ${palette.stops.map(s => `${s.color} ${s.pos*100}%`).join(', ')})`;
+      $result.innerHTML = `
+        <div class="result">
+          <div class="result-grid">
+            <img class="album-img" src="${url}" alt="" />
+            <div>
+              <div class="palette-strip" style="background: ${gradientCss}"></div>
+              <div class="swatches">
+                <div class="swatch" style="background: ${palette.stops[0].color}">
+                  <div class="label">STOP 0 (secondary)</div>
+                  <div>${palette.stops[0].color}</div>
+                </div>
+                <div class="swatch" style="background: ${palette.stops[1].color}">
+                  <div class="label">STOP 0.55 (primary / glow)</div>
+                  <div>${palette.stops[1].color}</div>
+                </div>
+                <div class="swatch" style="background: ${palette.stops[2].color}">
+                  <div class="label">STOP 1 (dark)</div>
+                  <div>${palette.stops[2].color}</div>
+                </div>
+              </div>
+              <div class="meta">id: ${palette.id}</div>
+              <div class="meta">ambient: ${palette.ambient}</div>
+              <div class="meta">glow: ${palette.glowColor}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    $extract.onclick = run;
+    $url.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+  </script>
+</body>
+</html>

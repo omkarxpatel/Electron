@@ -21,9 +21,9 @@
  */
 
 import { createDrawState, drawFrame, type DrawState } from './draw';
-import { clearGradientCache } from '../palettes';
+import { clearGradientCache, type Palette } from '../palettes';
 import { setupOffscreenCanvas } from '../canvasUtils';
-import type { Settings } from '../../state/settings';
+import type { ResolvedSettings } from '../../state/settings';
 
 type InboundMessage =
   | {
@@ -35,10 +35,20 @@ type InboundMessage =
       dpr: number;
       cssWidth: number;
       cssHeight: number;
-      settings: Settings;
+      settings: ResolvedSettings;
+      paletteOverride: Palette | null;
     }
-  | { type: 'FRAME'; time: Uint8Array; freq: Uint8Array; seq: number }
-  | { type: 'SETTINGS'; settings: Settings }
+  | {
+      type: 'FRAME';
+      time: Uint8Array;
+      freq: Uint8Array;
+      /** Present only for stereo styles — see WaveformVisualizer's tick. */
+      timeL?: Uint8Array;
+      timeR?: Uint8Array;
+      seq: number;
+    }
+  | { type: 'SETTINGS'; settings: ResolvedSettings }
+  | { type: 'PALETTE_OVERRIDE'; palette: Palette | null }
   | { type: 'RESIZE'; dpr: number; cssWidth: number; cssHeight: number }
   | { type: 'PAUSE' }
   | { type: 'RESUME' }
@@ -49,7 +59,8 @@ interface ReadyMessage { type: 'READY'; seq: number }
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let sampleRate = 48000;
-let settings: Settings | null = null;
+let settings: ResolvedSettings | null = null;
+let paletteOverride: Palette | null = null;
 let drawState: DrawState = createDrawState();
 let cssWidth = 0;
 let cssHeight = 0;
@@ -86,7 +97,7 @@ self.addEventListener('message', (event: MessageEvent<InboundMessage>) => {
       }
       drawing = true;
       try {
-        drawFrame(ctx, cssWidth, cssHeight, msg.time, msg.freq, sampleRate, settings, drawState);
+        drawFrame(ctx, cssWidth, cssHeight, msg.time, msg.freq, sampleRate, settings, drawState, paletteOverride, msg.timeL, msg.timeR);
       } finally {
         drawing = false;
         ack(msg.seq);
@@ -94,6 +105,12 @@ self.addEventListener('message', (event: MessageEvent<InboundMessage>) => {
       break;
     case 'SETTINGS':
       settings = msg.settings;
+      break;
+    case 'PALETTE_OVERRIDE':
+      paletteOverride = msg.palette;
+      // Override changes invalidate any cached gradients keyed on the old
+      // palette id — clear so the next frame rebuilds with the new colors.
+      if (ctx) clearGradientCache(ctx);
       break;
     case 'RESIZE':
       dpr = msg.dpr;
@@ -141,6 +158,7 @@ function handleInit(msg: Extract<InboundMessage, { type: 'INIT' }>): void {
   ctx = got;
   sampleRate = msg.sampleRate;
   settings = msg.settings;
+  paletteOverride = msg.paletteOverride;
   dpr = msg.dpr;
   cssWidth = msg.cssWidth;
   cssHeight = msg.cssHeight;

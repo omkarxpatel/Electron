@@ -1,4 +1,4 @@
-import type { Settings } from '../state/settings';
+import type { ResolvedSettings } from '../state/settings';
 import type { AnyCanvasCtx } from './palettes';
 
 /**
@@ -27,7 +27,7 @@ export function applyTrails(
  * Translate the glow setting into pixel blur radius. shadowBlur is in CSS
  * pixels here because we've already scaled the ctx by dpr.
  */
-export function glowBlur(settings: Settings): number {
+export function glowBlur(settings: ResolvedSettings): number {
   return settings.glow * 32; // 0..32 px
 }
 

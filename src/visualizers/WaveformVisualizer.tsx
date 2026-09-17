@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef } from 'react';
 import { useRenderCount } from '../perf';
-import type { Settings } from '../state/settings';
+import type { ResolvedSettings } from '../state/settings';
 import type { VisualizerProps } from './types';
 
 /**
@@ -39,7 +39,14 @@ interface WorkerBundle {
 const canvasBundles = new WeakMap<HTMLCanvasElement, WorkerBundle>();
 const STRICTMODE_GRACE_MS = 500;
 
-function WaveformVisualizerImpl({ analyser, settings, active = true }: VisualizerProps) {
+function WaveformVisualizerImpl({
+  analyser,
+  analyserL = null,
+  analyserR = null,
+  settings,
+  active = true,
+  paletteOverride = null,
+}: VisualizerProps) {
   useRenderCount('WaveformVisualizer');
   // Bumps when the *analyser* changes (which means we need a fresh sample
   // rate / fft size, plus a fresh canvas because transferControlToOffscreen
@@ -60,6 +67,13 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
   const workerRef = useRef<Worker | null>(null);
   const scratchTimeRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const scratchFreqRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  // Stereo scratch is owned here rather than in the per-canvas bundle: only
+  // one style needs it, and allocating lazily keeps it off every other path.
+  const scratchLRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const scratchRRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const needsStereoRef = useRef<boolean>(false);
+  needsStereoRef.current =
+    settings.waveformStyle === 'lissajous' || settings.waveformStyle === 'crystal';
   const initedRef = useRef<boolean>(false);
 
   useEffect(() => {
@@ -101,6 +115,7 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
         cssHeight: rect.height,
       });
       bundle.worker.postMessage({ type: 'SETTINGS', settings });
+      bundle.worker.postMessage({ type: 'PALETTE_OVERRIDE', palette: paletteOverride });
       bundle.worker.postMessage({ type: 'RESUME' });
       initedRef.current = true;
     } else {
@@ -148,6 +163,7 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
           cssWidth: rect.width,
           cssHeight: rect.height,
           settings,
+          paletteOverride,
         },
         [offscreen],
       );
@@ -210,6 +226,15 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
     workerRef.current?.postMessage({ type: 'SETTINGS', settings } satisfies SettingsMsg);
   }, [settings]);
 
+  // Forward palette override (album-art derived) to the worker independently
+  // from settings — it changes once per song, not on every slider drag, so a
+  // separate effect keeps the SETTINGS post out of the per-track path and
+  // vice versa.
+  useEffect(() => {
+    if (!initedRef.current) return;
+    workerRef.current?.postMessage({ type: 'PALETTE_OVERRIDE', palette: paletteOverride });
+  }, [paletteOverride]);
+
   // Main-thread RAF — read analyser bytes, postMessage FRAME to worker.
   // Backpressure: skip a frame if the worker hasn't acked the previous one
   // yet. Prevents postMessage queue buildup under main-thread stress (CPU
@@ -238,11 +263,29 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
       analyser.getByteFrequencyData(scratchF);
       const seq = bundle.lastSentSeq + 1;
       bundle.lastSentSeq = seq;
+      // Stereo payload only for styles that plot L against R — sending two
+      // extra arrays every frame for the other nine styles would double the
+      // structured-clone cost for nothing.
+      if (needsStereoRef.current && analyserL && analyserR) {
+        const n = analyserL.fftSize;
+        if (!scratchLRef.current || scratchLRef.current.length !== n) {
+          scratchLRef.current = new Uint8Array(n);
+          scratchRRef.current = new Uint8Array(n);
+        }
+        const sL = scratchLRef.current;
+        const sR = scratchRRef.current;
+        if (sL && sR) {
+          analyserL.getByteTimeDomainData(sL);
+          analyserR.getByteTimeDomainData(sR);
+          worker.postMessage({ type: 'FRAME', time: scratchT, freq: scratchF, timeL: sL, timeR: sR, seq });
+          return;
+        }
+      }
       worker.postMessage({ type: 'FRAME', time: scratchT, freq: scratchF, seq });
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [analyser, active]);
+  }, [analyser, analyserL, analyserR, active]);
 
   return (
     <canvas
@@ -257,5 +300,5 @@ function WaveformVisualizerImpl({ analyser, settings, active = true }: Visualize
 // protocol — keeps a stale message shape from silently slipping through.
 interface SettingsMsg {
   type: 'SETTINGS';
-  settings: Settings;
+  settings: ResolvedSettings;
 }

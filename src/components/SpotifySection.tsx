@@ -35,9 +35,12 @@ interface Props {
   /** Window-visibility flag — RAF-driven children gate on it to suspend
    *  while the window is hidden. */
   active: boolean;
+  /** When false the lyrics pane is not mounted at all, so its lazy chunk is
+   *  never fetched and the track list reclaims the vertical space. */
+  showLyrics: boolean;
 }
 
-export function SpotifySection({ active }: Props) {
+export function SpotifySection({ active, showLyrics }: Props) {
   const library = useLibrary();
   const playback = usePlayback();
   const currentlyPlayingId = useMemo(
@@ -136,9 +139,11 @@ export function SpotifySection({ active }: Props) {
           hasMore={library.tracksNextOffset !== null}
         />
 
-        <Suspense fallback={null}>
-          <LyricsPane playback={playback.playback} active={active} />
-        </Suspense>
+        {showLyrics && (
+          <Suspense fallback={null}>
+            <LyricsPane playback={playback.playback} active={active} />
+          </Suspense>
+        )}
       </div>
 
       <HoverOverlayPanel

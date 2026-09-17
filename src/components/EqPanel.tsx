@@ -14,6 +14,7 @@ import { EqResponseCurve } from './EqResponseCurve';
 import { EnhancerPanel } from './EnhancerPanel';
 import type { EnhancerState } from '../state/enhancer';
 import type { PaletteId } from '../state/settings';
+import type { Palette } from '../visualizers/palettes';
 
 interface Props {
   state: EQState;
@@ -48,7 +49,11 @@ interface Props {
   /** Active visualizer palette — threaded down so the EQ band activity bars
    *  render with a per-band gradient matching the visualizer below. */
   paletteId: PaletteId;
+  /** Album-art derived palette override; takes precedence over paletteId. */
+  paletteOverride: Palette | null;
   analyser: AnalyserNode | null;
+  limiter: DynamicsCompressorNode | null;
+  autoTrimDb: number;
 }
 
 const BAND_COUNTS: ReadonlyArray<BandCount> = [10, 15, 31];
@@ -81,7 +86,10 @@ function EqPanelImpl({
   resetEnhancer,
   accent,
   paletteId,
+  paletteOverride,
   analyser,
+  limiter,
+  autoTrimDb,
 }: Props) {
   const freqs = frequenciesFor(state.bandCount);
   useRenderCount('EqPanel');
@@ -294,6 +302,7 @@ function EqPanelImpl({
             bandFreqs={freqs}
             bands={effectiveBands}
             paletteId={paletteId}
+            paletteOverride={paletteOverride}
             active={active}
           />
           {state.bands.map((value, i) => (
@@ -352,6 +361,10 @@ function EqPanelImpl({
         setBalance={setBalance}
         toggleBypass={toggleEnhancerBypass}
         reset={resetEnhancer}
+        limiter={limiter}
+        analyser={analyser}
+        autoTrimDb={autoTrimDb}
+        active={active !== false}
       />
     </aside>
   );

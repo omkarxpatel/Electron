@@ -5,10 +5,11 @@
  * the context type was loosened to AnyCanvasCtx via the palettes module.
  */
 
-import type { Settings } from '../../state/settings';
+import type { ResolvedSettings } from '../../state/settings';
 import {
   PALETTES,
   horizontalGradient,
+  sampleRgbAt,
   verticalGradient,
   type AnyCanvasCtx,
   type Palette,
@@ -130,6 +131,44 @@ export interface DrawState {
   particles: Particle[] | null;
   tick: number;
   prevBassEnergy: number;
+  ripples: Ripple[];
+  /** Smoothed scope points, centre-relative so the whole trace can be
+   *  rotated by the canvas transform rather than recomputed per copy. */
+  scopeX: Float32Array | null;
+  scopeY: Float32Array | null;
+  /** Continuously advancing plot rotation. */
+  scopeAngle: number;
+  /** Slow-following peak magnitude, used to auto-range the plot so it fills
+   *  the stage regardless of how hot the source is. */
+  scopePeak: number;
+  /** Tick of the last footprint clear — see the quantization note below. */
+  scopeClearedAt: number;
+  /** Frames left in a footprint fade-out. Counts down; 0 means idle. */
+  scopeWipeFor: number;
+  /** Polar-lattice strength, 0 = off. Re-rolled on onsets. */
+  scopeLattice: number;
+  /** Smoothed tonality of the signal, plus the slow bounds it is normalized
+   *  against. See coherenceOf. */
+  scopeCoherence: number;
+  scopeCohLo: number;
+  scopeCohHi: number;
+  /** Rotational symmetry, re-rolled on strong onsets. */
+  scopeSymmetry: number;
+  /** Signed spin rate multiplier; flips direction on some onsets. Shared by
+   *  both radial styles. */
+  scopeSpin: number;
+  /** Frequency ratio applied to the R axis, re-rolled on onsets. Integer-ish
+   *  ratios are what turn a Lissajous figure into a closed geometric form. */
+  scopeRatio: number;
+  /** Crystal: nested copies of the figure, 1..3. */
+  crystalLayers: number;
+  /** Crystal: superformula fold count. Snapped on change, never interpolated
+   *  — a fractional m leaves the curve open where it should close. */
+  crystalM: number;
+  /** Crystal: superformula exponents [n1, n2, n3], eased toward crystalNTo so
+   *  a shape change morphs instead of cutting. */
+  crystalN: Float32Array;
+  crystalNTo: Float32Array;
   onsetEnv: number;
   spectralBands: Float32Array;
   /** Wall-clock timestamp of the previous draw, used to derive a frame-rate-
@@ -147,6 +186,24 @@ export function createDrawState(): DrawState {
     particles: null,
     tick: 0,
     prevBassEnergy: 0,
+    ripples: [],
+    scopeX: null,
+    scopeY: null,
+    scopeAngle: 0,
+    scopePeak: 0.5,
+    scopeClearedAt: 0,
+    scopeWipeFor: 0,
+    scopeLattice: 0,
+    scopeCoherence: 0.5,
+    scopeCohLo: 0.3,
+    scopeCohHi: 0.7,
+    scopeSymmetry: 3,
+    scopeSpin: 1,
+    scopeRatio: 1,
+    crystalLayers: 2,
+    crystalM: 6,
+    crystalN: new Float32Array([0.6, 1.4, 1.4]),
+    crystalNTo: new Float32Array([0.6, 1.4, 1.4]),
     onsetEnv: 0,
     spectralBands: new Float32Array(64),
     lastDrawTimeMs: 0,
@@ -164,8 +221,13 @@ export function drawFrame(
   time: Uint8Array,
   freq: Uint8Array,
   sampleRate: number,
-  settings: Settings,
+  settings: ResolvedSettings,
   state: DrawState,
+  paletteOverride: Palette | null = null,
+  /** Per-channel time domain. Only supplied for stereo styles; undefined
+   *  otherwise, in which case those styles fall back to mono. */
+  timeL?: Uint8Array,
+  timeR?: Uint8Array,
 ): void {
   const s = settings;
   const isSpectrum = s.waveformStyle === 'spectrum';
@@ -195,9 +257,48 @@ export function drawFrame(
   if (framePeak > state.envelope) state.envelope = framePeak;
   else state.envelope = state.envelope * (1 - RELEASE) + framePeak * RELEASE;
 
-  applyTrails(ctx, width, height, s.trail);
+  // Scope is a phosphor accumulator rather than a redraw: each frame lays down
+  // a faint trace and the figure BUILDS over time, then decays. The global
+  // trail range (0..0.6) wipes a frame in about five frames, far too fast for
+  // anything to accumulate, so it is remapped into a persistence range while
+  // the slider still controls relative length.
+  // Coherence decides how long a pattern is allowed to stand, never how
+  // bright it is. Driving brightness from it made the whole stage pulse in
+  // and out with the music, which reads as the visualizer flickering rather
+  // than as a pattern resolving. coherenceOf carries smoothing state — call
+  // it exactly once per frame, and it has to happen here because applyTrails
+  // runs before the style switch.
+  const scopeInk =
+    s.waveformStyle === 'lissajous'
+      ? Math.pow(coherenceOf(freq, sampleRate, state, dt60), 2)
+      : 0;
 
-  const palette = PALETTES[s.palette];
+  // Capped below 0.94: past that the quantization floor (see
+  // scopeOnsetAndWipe) leaves residue bright enough to read as a grey
+  // footprint over the whole stage.
+  let effTrail =
+    s.waveformStyle === 'lissajous' || s.waveformStyle === 'crystal'
+      ? 0.88 + Math.min(0.6, s.trail) * 0.085
+      : s.trail;
+
+  // ── Footprint fade-out ──
+  // This used to be a clearRect, which emptied the stage between one frame
+  // and the next — the footprint wasn't decaying, it was being deleted.
+  // Ramping the decay down dissolves it over about half a second instead.
+  // The floor has to dip below 0.5 to achieve anything: above that,
+  // `round(1 * trail) === 1` and the faintest residue rounds back to itself
+  // forever, which is the whole reason a periodic clear was needed at all.
+  if (state.scopeWipeFor > 0) {
+    const t = state.scopeWipeFor / SCOPE_WIPE_FRAMES;
+    effTrail = 0.44 + (effTrail - 0.44) * t;
+    state.scopeWipeFor = Math.max(0, state.scopeWipeFor - dt60);
+  }
+  applyTrails(ctx, width, height, effTrail);
+
+  // Album-art tint overrides the static palette when present. The worker
+  // receives null when "Auto-tint from album art" is off or no track is
+  // playing — fall back to the user's selection in ResolvedSettings.
+  const palette = paletteOverride ?? PALETTES[s.palette];
   ctx.shadowBlur = glowBlur(s);
   ctx.shadowColor = palette.glowColor;
   ctx.lineCap = 'round';
@@ -230,12 +331,24 @@ export function drawFrame(
     case 'spectrum':
       state.smoothed = ensureBarBuffer(state.smoothed, getSpectrumBarCount(width, s.barWidth, s.barGap));
       break;
-    case 'particles':
+    case 'particles': {
       state.smoothedSamples = ensureSampleBuffer(state.smoothedSamples, width);
-      if (!state.particles) state.particles = createParticles(PARTICLE_COUNT);
+      // Density, not a fixed count — 320 particles look right in the banner
+      // and vanishingly sparse over a fullscreen stage.
+      // `s` is already resolved against this stage's profile by the main
+      // thread, so density is simply the active stage's value.
+      const want = particleCountFor(width, height, s.particleDensity);
+      if (!state.particles || state.particles.length !== want) {
+        state.particles = createParticles(want);
+      }
       break;
+    }
     case 'silk':
       state.smoothedSamples = ensureSampleBuffer(state.smoothedSamples, width);
+      break;
+    case 'lissajous':
+    case 'crystal':
+    case 'ripples':
       break;
   }
 
@@ -287,7 +400,136 @@ export function drawFrame(
       drawParticles(
         ctx, width, height, time, palette, state.smoothedSamples, release, gain,
         state.particles!, state.tick, bassEnergy, vocalEnergy, state.onsetEnv, s.sensitivity, spectral, dt60,
+        s.particleSize,
       );
+      break;
+    }
+    case 'lissajous': {
+      state.tick += dt60;
+      const n = Math.min((timeL ?? time).length, (timeR ?? time).length);
+      if (!state.scopeX || state.scopeX.length !== n) {
+        state.scopeX = new Float32Array(n);
+        state.scopeY = new Float32Array(n);
+      }
+      // ── Spend the ink on the coherent frames ──
+      // scopeInk was measured above, before applyTrails.
+      // Most of the time this style is plotting noise, and only occasionally
+      // does the signal line up into a closed figure. Rather than average the
+      // two together — which is what produced a permanent wash of slop with
+      // the good moments buried in it — measure which one is happening and
+      // spend accordingly: coherent frames draw bright, hold still and are
+      // left alone to accumulate; incoherent ones barely mark the canvas.
+      // What survives on screen after a few seconds is the geometry.
+      const ink = scopeInk;
+      const hold = ink > 0.45;
+      {
+        const bDelta = scopeOnsetAndWipe(
+          freq, sampleRate, state, hold ? 500 : 280, hold ? 1100 : 800,
+        );
+        // Re-rolling symmetry, spin, ratio and lattice on bass hits is what
+        // makes the figure evolve instead of being one shape forever.
+        // Coherence biases this rather than blocking it: a hard gate held the
+        // shape frozen through every tonal passage, which traded away all the
+        // variety to buy stability. A probability keeps a good pattern
+        // standing most of the time while still letting it surprise you.
+        if (bDelta > 0.055 && Math.random() > ink * 0.6) {
+          const roll = Math.random();
+          if (roll < 0.34) {
+            state.scopeSymmetry = 2 + Math.floor(Math.random() * 7); // 2..8
+          } else if (roll < 0.5) {
+            state.scopeSpin = -state.scopeSpin;
+          } else if (roll < 0.74) {
+            // Small rational ratios give closed, knot-like figures; anything
+            // far from one just smears. A wider set than before, since this
+            // is the main source of shape variety.
+            const RATIOS = [0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 5 / 3, 2, 2.5, 3, 4];
+            state.scopeRatio = RATIOS[Math.floor(Math.random() * RATIOS.length)];
+          } else {
+            // Off roughly half the time — the lattice is a strong effect, and
+            // constant faceting is as monotonous as never faceting. Weighted
+            // toward the looser grids, since the tightest one packs enough
+            // chords in to read as clutter rather than as structure.
+            state.scopeLattice =
+              Math.random() < 0.5 ? 0 : 1 + Math.floor(Math.random() * 2.4);
+          }
+        }
+      }
+      // Half the old rate, and slower still while a pattern is resolving. A
+      // figure that holds its angle superimposes on itself frame after frame
+      // and sharpens; one that keeps turning smears its own detail away.
+      state.scopeAngle +=
+        (0.0004 + Math.min(0.001, state.envelope * 0.0015)) *
+        (1 - 0.35 * ink) * state.scopeSpin * dt60;
+      state.scopePeak = drawLissajous(
+        ctx, width, height, time, timeL, timeR, palette, gain,
+        state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
+        state.scopePeak, state.tick, state.scopeSymmetry, state.scopeRatio,
+        s.scopeDensity, state.scopeLattice,
+      );
+      break;
+    }
+    case 'crystal': {
+      state.tick += dt60;
+      const n = Math.min((timeL ?? time).length, (timeR ?? time).length);
+      if (!state.scopeX || state.scopeX.length !== n) {
+        state.scopeX = new Float32Array(n);
+        state.scopeY = new Float32Array(n);
+      }
+      // Picking a new shape on strong bass hits is what makes the figure
+      // evolve instead of being one form forever. Long persistence means the
+      // old outline is still fading as the new one draws, so a change reads
+      // as a morph rather than a cut.
+      {
+        const bDelta = scopeOnsetAndWipe(freq, sampleRate, state);
+        if (bDelta > 0.055) {
+          const roll = Math.random();
+          if (roll < 0.58) {
+            const pick = CRYSTAL_SHAPES[Math.floor(Math.random() * CRYSTAL_SHAPES.length)];
+            state.crystalM = pick[0];
+            state.crystalNTo[0] = pick[1];
+            state.crystalNTo[1] = pick[2];
+            state.crystalNTo[2] = pick[3];
+          } else if (roll < 0.8) {
+            state.scopeSpin = -state.scopeSpin;
+          } else {
+            state.crystalLayers = 1 + Math.floor(Math.random() * 3); // 1..3
+          }
+        }
+      }
+      // Ease the exponents toward the target. Both endpoints come from the
+      // curated table, so the path between them stays in the part of the
+      // parameter space that looks like something.
+      {
+        const k = 1 - Math.pow(0.94, dt60);
+        for (let i = 0; i < 3; i++) {
+          state.crystalN[i] += (state.crystalNTo[i] - state.crystalN[i]) * k;
+        }
+      }
+      state.scopeAngle +=
+        (0.0008 + Math.min(0.002, state.envelope * 0.003)) * state.scopeSpin * dt60;
+      state.scopePeak = drawCrystal(
+        ctx, width, height, time, timeL, timeR, palette, gain,
+        state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
+        state.scopePeak, state.tick, state.crystalLayers, state.crystalM,
+        state.crystalN, s.scopeDensity,
+      );
+      break;
+    }
+    case 'ripples': {
+      state.tick += dt60;
+      const nyq = sampleRate / 2;
+      const bEnd = Math.max(2, Math.floor((200 / nyq) * freq.length));
+      let bSum = 0;
+      for (let i = 1; i < bEnd; i++) bSum += freq[i];
+      const bEnergy = bSum / Math.max(1, bEnd - 1) / 255;
+      const bDelta = bEnergy - state.prevBassEnergy;
+      state.prevBassEnergy = bEnergy;
+      if (bDelta > 0.035) {
+        state.ripples.push({ r: 0, born: state.tick, strength: Math.min(1, bDelta * 5) });
+        // Cap so a noisy onset detector can't grow this without bound.
+        if (state.ripples.length > 28) state.ripples.shift();
+      }
+      drawRipples(ctx, width, height, palette, state.ripples, state.tick, dt60, gain, state.envelope);
       break;
     }
   }
@@ -649,9 +891,69 @@ interface Particle {
   size: number;
   vx: number;
   seed: number;
+  /** 0 = far, 1 = near. Only used on large stages, where it drives parallax
+   *  drift, radius and alpha so the field reads as depth instead of a flat
+   *  sheet of identical specks. */
+  depth: number;
+}
+
+/* ── Stage scale ───────────────────────────────────────────────────────
+ * Every vertical term in these draw styles is expressed as a fraction of
+ * canvas height, which is correct for size but wrong for *motion*. The
+ * banner is ~110px; immersive is ~900px. A shake written as `h * 0.10` goes
+ * from an 11px shimmer to an 89px convulsion while its oscillation rate
+ * stays put, which is why fullscreen particles read as vibration rather
+ * than movement.
+ *
+ * `stageScale` is height relative to the banner. Amplitudes that represent
+ * MOTION get damped by `motionDamp` so they grow with sqrt(height) instead
+ * of height — big stages move further in absolute pixels, but far less than
+ * proportionally, so the perceived tempo stays put. Amplitudes that
+ * represent LAYOUT (waveform height, scatter spread) keep scaling linearly,
+ * because those should fill the stage.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+const BANNER_H = 110;
+
+/** Height relative to the reference banner. 1 in the strip, ~8 fullscreen. */
+function stageScaleOf(h: number): number {
+  return Math.max(1, h / BANNER_H);
+}
+
+/** Motion damping: 1 at banner size, ~0.35 at 8x. Multiply any oscillating
+ *  amplitude by this so its absolute travel grows sub-linearly. */
+function motionDampOf(scale: number): number {
+  return 1 / Math.sqrt(scale);
+}
+
+/** Gentler damping for SLOW oscillations. A 0.5 Hz sway can afford to grow
+ *  most of the way with the stage — it reads as majesty, not jitter. Only
+ *  fast terms (particles' ~10 Hz shake) need the full sqrt damp. */
+function slowDampOf(damp: number): number {
+  return 0.55 + 0.45 * damp;
+}
+
+/** Immersive gets extra detail the strip has no room for. */
+function isLargeStage(scale: number): boolean {
+  return scale >= 3;
 }
 
 const PARTICLE_COUNT = 320;
+/** Particles per 100k css px^2, used to hold density constant as area grows.
+ *  Capped so a 4K stage doesn't quietly become a 5000-particle loop. */
+const PARTICLE_DENSITY = 320 / (1280 * BANNER_H / 100000);
+const PARTICLE_MAX = 1400;
+
+/** Floor is low enough to be genuinely sparse — at density 0.15 on a banner
+ *  you want a scattering, not a crowd — but never zero, which would read as
+ *  the style being broken rather than dialled down. */
+const PARTICLE_MIN = 24;
+
+function particleCountFor(w: number, h: number, density: number): number {
+  const area = (w * h) / 100000;
+  const base = Math.max(PARTICLE_COUNT, area * PARTICLE_DENSITY);
+  return Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(base * density)));
+}
 
 function createParticles(n: number): Particle[] {
   const out: Particle[] = new Array(n);
@@ -661,6 +963,7 @@ function createParticles(n: number): Particle[] {
       x: Math.random(),
       yBias: u * u * u,
       size: 0.4 + Math.random() * 2.0,
+      depth: Math.random(),
       vx: -0.0006 - Math.random() * 0.0012,
       seed: Math.random() * Math.PI * 2,
     };
@@ -685,9 +988,16 @@ function drawParticles(
   sensitivity: number,
   spectral: Float32Array | null,
   dt60: number,
+  sizeMul: number,
 ): void {
   const reactivity = Math.min(1.4, Math.max(0.3, sensitivity));
+  const scale = stageScaleOf(h);
+  const damp = motionDampOf(scale);
+  const large = isLargeStage(scale);
+  const slowDamp = slowDampOf(damp);
   const midY = h * 0.5;
+  // Layout terms stay proportional — the field should fill whatever stage
+  // it's given. Only the oscillating terms below get damped.
   const amp = h * 0.26;
   const scatterRange = h * 0.30;
   const n = smoothedSamples.length || 1;
@@ -717,7 +1027,8 @@ function drawParticles(
     const dist = Math.abs(k - center);
     const distNorm = dist / center;
     const phaseShift = Math.round((k - center) * phaseStep);
-    const bobAmp = h * (0.04 + dist * 0.06) * (1 + onsetEnv * 0.25) * (0.6 + reactivity * 0.4);
+    const bobAmp =
+      h * (0.04 + dist * 0.06) * (1 + onsetEnv * 0.25) * (0.6 + reactivity * 0.4) * slowDamp;
     const yBob = Math.sin(tick * 0.0085 + k * 0.73) * bobAmp;
     const ampScale = 0.9 + distNorm * 0.7;
     const audioWeight = 1 - distNorm * 0.45;
@@ -759,41 +1070,56 @@ function drawParticles(
   ctx.stroke();
 
   ctx.fillStyle = grad;
-  const onsetShake = onsetEnv * (h * 0.10) * reactivity;
-  const bassShake = bassEnergy * (h * 0.025) * reactivity;
+  // Damped: these are oscillations, not layout. Undamped they scaled 8x into
+  // fullscreen at unchanged frequency, which is the "vibration" problem.
+  const onsetShake = onsetEnv * (h * 0.10) * reactivity * damp;
+  const bassShake = bassEnergy * (h * 0.025) * reactivity * damp;
+  // Radius has to grow with the stage or particles stay 0.4-2.4px specks on
+  // a 900px canvas. sqrt keeps them from becoming blobs.
+  const sizeScale = Math.sqrt(scale) * sizeMul;
 
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];
 
-    p.x += p.vx * dt60;
+    // Depth only registers on a large stage; in the strip there isn't enough
+    // vertical room for parallax to read as anything but noise.
+    const depth = large ? 0.45 + p.depth * 0.55 : 1;
+
+    p.x += p.vx * dt60 * depth;
     if (p.x < 0) p.x += 1;
     else if (p.x >= 1) p.x -= 1;
 
     const idx = Math.min(n - 1, Math.floor(p.x * n));
     const sample = smoothedSamples[idx];
     const localEnergy = Math.min(1, Math.abs(sample));
-    const waveY = midY + sample * amp;
+    const waveY = midY + sample * amp * depth;
 
-    const wobble = Math.sin(tick * 0.018 + p.seed) * (h * 0.018);
+    const wobble = Math.sin(tick * 0.018 + p.seed) * (h * 0.018) * damp;
 
     const scatter = p.yBias * scatterRange * (0.55 + (localEnergy * 0.55 + bassEnergy * 0.2) * reactivity);
 
-    const shake = Math.sin(p.seed * 17.3 + tick * 1.1) * onsetShake
-                + Math.sin(p.seed * 9.7 + tick * 0.5) * bassShake;
+    const shake = (Math.sin(p.seed * 17.3 + tick * 1.1) * onsetShake
+                + Math.sin(p.seed * 9.7 + tick * 0.5) * bassShake) * depth;
 
     const localBand = spectralAt(spectral, p.x);
     const bandDir = p.yBias >= 0 ? 1 : -1;
-    const bandBloom = bandDir * localBand * (h * 0.12) * reactivity;
-    const bandDrift = Math.sin(tick * 0.045 + p.seed * 3.1) * localBand * (h * 0.025) * reactivity;
+    const bandBloom = bandDir * localBand * (h * 0.12) * reactivity * depth;
+    const bandDrift = Math.sin(tick * 0.045 + p.seed * 3.1) * localBand * (h * 0.025) * reactivity * damp;
 
     const flicker = 0.5 + 0.5 * Math.sin(p.seed * 6.2 + tick * 0.14);
     const vocalBoost = vocalEnergy * flicker;
 
     const y = waveY + scatter + wobble + shake + bandBloom + bandDrift;
     const x = p.x * w;
-    const r = p.size * (1.1 + localEnergy * 1.2 + vocalBoost * 0.9 + onsetEnv * 0.6 + localBand * 0.4);
+    const r = p.size * sizeScale * depth
+      * (1.1 + localEnergy * 1.2 + vocalBoost * 0.9 + onsetEnv * 0.6 + localBand * 0.4);
 
-    ctx.globalAlpha = Math.min(1, 0.6 + localEnergy * 0.4 + vocalBoost * 0.25 + onsetEnv * 0.3 + localBand * 0.15);
+    // Fade with depth so the far layer recedes instead of every particle
+    // competing at full strength — this is most of what makes the large
+    // stage read as a field rather than static.
+    ctx.globalAlpha =
+      Math.min(1, 0.6 + localEnergy * 0.4 + vocalBoost * 0.25 + onsetEnv * 0.3 + localBand * 0.15)
+      * (large ? 0.35 + depth * 0.65 : 1);
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
@@ -820,6 +1146,7 @@ function drawSilk(
   spectral: Float32Array | null,
 ): void {
   const midY = h * 0.5;
+  const slowDamp = slowDampOf(motionDampOf(stageScaleOf(h)));
   const baseAmp = h * 0.42;
   const n = smoothedSamples.length || 1;
 
@@ -851,7 +1178,7 @@ function drawSilk(
     const phaseShift = Math.round(dist * (n * 0.04));
     const ampScale = 1 - absDist * 0.22;
     const yOffset = dist * (h * 0.20);
-    const wobble = Math.sin(tick * 0.006 + k * 0.41) * (h * 0.06);
+    const wobble = Math.sin(tick * 0.006 + k * 0.41) * (h * 0.06) * slowDamp;
 
     ctx.globalAlpha = (1 - absDist * absDist * 0.85) * 0.13;
     ctx.lineWidth = 0.7;
@@ -884,4 +1211,746 @@ function drawSilk(
 
   ctx.globalAlpha = 1;
   ctx.shadowBlur = prevShadow;
+}
+
+
+/* ── Scope (stereo goniometer) ─────────────────────────────────────────── */
+
+/**
+ * Plots left channel against right as an XY scope — the classic studio
+ * goniometer, rotated 45 degrees so mono sits vertical.
+ *
+ * Reading it: a mono signal puts L === R, which collapses to a single
+ * vertical line. Widening the stereo image opens that line into a blob or
+ * loop. Out-of-phase content swings toward horizontal. So the shape IS the
+ * stereo image, which is why this is worth having next to an EQ.
+ *
+ * Falls back to a diagonal mono trace when per-channel data is absent (the
+ * graph hasn't built its splitter yet), rather than rendering nothing.
+ */
+/** Fraction of the available radius the auto-range aims to fill. */
+const SCOPE_FILL = 0.92;
+
+/** Frames a footprint fade-out runs for — long enough to read as the trace
+ *  dissolving rather than being cut away. Crystal only. */
+const SCOPE_WIPE_FRAMES = 34;
+
+/* ── Scope colour ──────────────────────────────────────────────────────────
+ *
+ * Two things make the middle of the figure illegible, and they compound.
+ * Every symmetry copy is rotated about the origin, so near r = 0 they all
+ * coincide and lay down N times the ink the rim gets. And a palette's first
+ * stop — its brightest — sits at pos 0, which is exactly there. The result
+ * saturates to a featureless white mass while the interesting geometry is
+ * out at the edges.
+ *
+ * So: fan the copies apart by hue, and fade the core out.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/** Degrees of hue the copies are spread across. Wide enough to separate them
+ *  at a glance, short of a full wheel so the figure still reads as one
+ *  object rather than a pile of unrelated shapes. */
+const SCOPE_HUE_ARC = 210;
+/** Saturation floor and lightness ceiling forced on the offset copies.
+ *  Rotating the hue of a monochrome palette (Mono, Bone, a greyscale album
+ *  tint) does nothing, and a near-white stop swallows whatever saturation you
+ *  hand it — so the spread would vanish on exactly the palettes that need it
+ *  most. Copy 0 is exempt from both: the trace the eye locks onto is still
+ *  the color the user picked. */
+const SCOPE_COPY_SAT = 0.5;
+const SCOPE_COPY_LIGHT = 0.66;
+/** Fraction of the radius the stroke fades up over, from fully transparent
+ *  at the centre. This is the de-cluttering half of the change — it costs
+ *  nothing per stroke because it rides along in the gradient that was
+ *  already being used as the stroke style. */
+const SCOPE_CORE_FADE = 0.34;
+
+/** Build the stroke gradient for one symmetry copy: the palette, hue-rotated
+ *  by `hueShift` degrees, ramped from transparent at the centre. */
+function scopeGradient(
+  ctx: AnyCanvasCtx,
+  radius: number,
+  palette: Palette,
+  hueShift: number,
+  recolor: boolean,
+): CanvasGradient {
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+  // The palette's own stops, plus three inside the fade zone — palettes
+  // rarely place anything down there and the alpha ramp needs the resolution.
+  const positions = new Set<number>([0, SCOPE_CORE_FADE * 0.4, SCOPE_CORE_FADE]);
+  for (const s of palette.stops) positions.add(Math.min(1, Math.max(0, s.pos)));
+  for (const pos of [...positions].sort((a, b) => a - b)) {
+    // Squared-ish ramp rather than linear: a straight fade still leaves the
+    // centre bright enough to pile up, since the overlap there is severe.
+    const alpha = Math.pow(Math.min(1, pos / SCOPE_CORE_FADE), 1.7);
+    const [r, gr, b] = sampleRgbAt(palette, pos);
+    if (!recolor && hueShift === 0) {
+      g.addColorStop(pos, `rgba(${r}, ${gr}, ${b}, ${alpha.toFixed(3)})`);
+      continue;
+    }
+    let [hh, ss, ll] = rgbToHsl(r, gr, b);
+    hh = (((hh + hueShift / 360) % 1) + 1) % 1;
+    if (recolor) {
+      ss = Math.max(ss, SCOPE_COPY_SAT);
+      ll = Math.min(ll, SCOPE_COPY_LIGHT);
+    }
+    const [cr, cg, cb] = hslToRgb(hh, ss, ll);
+    g.addColorStop(pos, `rgba(${cr}, ${cg}, ${cb}, ${alpha.toFixed(3)})`);
+  }
+  return g;
+}
+
+/** 0..255 channels in, h/s/l in 0..1 out. */
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return [0, 0, l];
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h: number;
+  if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6;
+  else if (max === gn) h = ((bn - rn) / d + 2) / 6;
+  else h = ((rn - gn) / d + 4) / 6;
+  return [h, s, l];
+}
+
+/** Inverse of rgbToHsl. */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return [v, v, v];
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const chan = (t: number) => {
+    let x = t;
+    if (x < 0) x += 1;
+    if (x > 1) x -= 1;
+    if (x < 1 / 6) return p + (q - p) * 6 * x;
+    if (x < 1 / 2) return q;
+    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+    return p;
+  };
+  return [
+    Math.round(chan(h + 1 / 3) * 255),
+    Math.round(chan(h) * 255),
+    Math.round(chan(h - 1 / 3) * 255),
+  ];
+}
+
+/** Bass-onset detection plus the periodic hard wipe, shared by both radial
+ *  styles since both build their image up over many frames.
+ *
+ *  The wipe is not optional. Alpha decay is multiplicative and canvas alpha
+ *  is 8-bit, so once a pixel reaches 1/255, `1 * 0.9` rounds straight back to
+ *  1: faint geometry stalls just above zero and accumulates into a permanent
+ *  grey footprint that decay can never clear. Scheduling a hard fade-out on a
+ *  strong onset hides the reset behind the burst of new energy that
+ *  immediately repaints the figure.
+ *
+ *  Returns the frame's bass delta so the caller can drive its own geometry
+ *  changes from the same onset. */
+function scopeOnsetAndWipe(
+  freq: Uint8Array,
+  sampleRate: number,
+  state: DrawState,
+  minFrames = 170,
+  maxFrames = 620,
+): number {
+  const nyq = sampleRate / 2;
+  const bEnd = Math.max(2, Math.floor((200 / nyq) * freq.length));
+  let bSum = 0;
+  for (let i = 1; i < bEnd; i++) bSum += freq[i];
+  const bEnergy = bSum / Math.max(1, bEnd - 1) / 255;
+  const bDelta = bEnergy - state.prevBassEnergy;
+  state.prevBassEnergy = bEnergy;
+
+  const sinceClear = state.tick - state.scopeClearedAt;
+  if ((bDelta > 0.05 && sinceClear > minFrames) || sinceClear > maxFrames) {
+    state.scopeWipeFor = SCOPE_WIPE_FRAMES;
+    state.scopeClearedAt = state.tick;
+  }
+  return bDelta;
+}
+
+/**
+ * How tonal this frame is, 0..1 — in effect, "is the Scope about to look
+ * good?"
+ *
+ * Spectral flatness (geometric mean over arithmetic mean) sits near 0 when a
+ * few partials dominate and near 1 for broadband noise. That maps directly
+ * onto whether the goniometer will close, because a Lissajous figure only
+ * closes when both axes are driven by a few harmonically related tones. The
+ * detector and the thing being detected are the same property.
+ *
+ * The result is normalized against slowly tracked bounds rather than an
+ * absolute threshold. Raw flatness on a dense trap mix never approaches what
+ * a solo piano hits, so a fixed cutoff would leave the effect permanently off
+ * for some music and permanently on for other music. Bracketing the last ~30
+ * seconds instead means "coherent for this song" always spans the full range.
+ */
+function coherenceOf(
+  freq: Uint8Array,
+  sampleRate: number,
+  state: DrawState,
+  dt60: number,
+): number {
+  const nyq = sampleRate / 2;
+  const lo = Math.max(1, Math.floor((60 / nyq) * freq.length));
+  const hi = Math.min(freq.length - 1, Math.floor((5000 / nyq) * freq.length));
+  if (hi <= lo) return 0;
+  let logSum = 0;
+  let sum = 0;
+  for (let i = lo; i <= hi; i++) {
+    // The epsilon keeps log() finite on empty bins and sets how much a silent
+    // band counts as "tonal"; without it a near-silent frame reads as pure
+    // tone and the figure flares during gaps.
+    const v = freq[i] / 255 + 0.004;
+    logSum += Math.log(v);
+    sum += v;
+  }
+  const count = hi - lo + 1;
+  const flatness = Math.exp(logSum / count) / (sum / count);
+  const tonal = 1 - Math.min(1, flatness);
+
+  const k = 1 - Math.pow(0.88, dt60);
+  state.scopeCoherence += (tonal - state.scopeCoherence) * k;
+  const c = state.scopeCoherence;
+
+  // Each bound snaps outward immediately and relaxes back toward the signal
+  // slowly, so the pair brackets recent material instead of latching onto the
+  // loudest moment of the session.
+  const relax = Math.pow(0.9995, dt60);
+  state.scopeCohLo = c < state.scopeCohLo ? c : state.scopeCohLo * relax + c * (1 - relax);
+  state.scopeCohHi = c > state.scopeCohHi ? c : state.scopeCohHi * relax + c * (1 - relax);
+
+  const span = Math.max(0.02, state.scopeCohHi - state.scopeCohLo);
+  return Math.min(1, Math.max(0, (c - state.scopeCohLo) / span));
+}
+
+/** Returns the updated peak tracker. */
+function drawLissajous(
+  ctx: AnyCanvasCtx,
+  w: number,
+  h: number,
+  time: Uint8Array,
+  timeL: Uint8Array | undefined,
+  timeR: Uint8Array | undefined,
+  palette: Palette,
+  gain: number,
+  px: Float32Array,
+  py: Float32Array,
+  glow: number,
+  smoothing: number,
+  angle: number,
+  prevPeak: number,
+  tick: number,
+  symmetry: number,
+  ratio: number,
+  density: number,
+  /** 0 = smooth trace; 1..3 snap the trace onto a polar grid. */
+  lattice: number,
+): number {
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const baseR = Math.min(w, h) * 0.46;
+  const L = timeL ?? time;
+  const R = timeR ?? time;
+  const n = Math.min(L.length, R.length, px.length);
+  if (n < 2) return prevPeak;
+
+  const breathe = 1 + Math.sin(tick * 0.008) * 0.07;
+  const radius = baseR * breathe;
+
+  // ── Spatial smoothing, NOT temporal ──
+  // Averaging a point against the same index in the previous frame collapses
+  // the figure: the analyser buffer isn't phase-locked, so index i sits at a
+  // different phase each frame and blending averages random phases toward
+  // zero. Averaging along the trace instead is a low-pass on the waveform —
+  // it removes the high-frequency chatter that read as violence while leaving
+  // the large excursions, and therefore the size, intact.
+  const win = 1 + Math.round(Math.min(0.95, smoothing) * 7);
+
+  // ── Decimation ──
+  // The analyser hands over 2048 points; drawing every one produces a hairball
+  // where nothing is legible. Stride after the smoothing window (not before)
+  // so thinning the trace low-passes it rather than aliasing it — skipping raw
+  // samples would fold high frequencies back in as fake structure.
+  const stride = Math.max(1, Math.round(1 / Math.max(0.05, Math.min(1, density))));
+  const count = Math.max(24, Math.floor(n / stride));
+
+  let peak = 1e-4;
+  for (let j = 0; j < count; j++) {
+    const i = j * stride;
+    let sl = 0;
+    let sr = 0;
+    for (let k = 0; k < win; k++) {
+      const q = (i + k) % n;
+      sl += L[q] - 128;
+      sr += R[q] - 128;
+    }
+    const l = (sl / win / 128) * gain;
+    const r = (sr / win / 128) * gain;
+    px[j] = l;
+    // Ratio warps one axis against the other. At 1 this is a plain scope; at
+    // small rational values the trace closes into knots and rosettes, which
+    // is where the geometric look comes from.
+    py[j] = -r * Math.cos(ratio * Math.PI * (j / count)) - r * 0.35;
+    const m = Math.abs(l) > Math.abs(r) ? Math.abs(l) : Math.abs(r);
+    if (m > peak) peak = m;
+  }
+
+  // ── Auto-range ──
+  // Rises fast so a transient never clips outside the stage, falls slowly so
+  // quiet passages bloom back up instead of pumping. Without this the figure
+  // is at the mercy of how hot the source happens to be.
+  const nextPeak = peak > prevPeak ? peak : prevPeak * 0.985 + peak * 0.015;
+  const scale = (radius * SCOPE_FILL) / Math.max(0.05, nextPeak);
+  for (let i = 0; i < count; i++) {
+    px[i] *= scale;
+    py[i] *= scale;
+  }
+
+  // ── Shape mode ──
+  // px/py currently hold the auto-ranged goniometer trace. Every mode other
+  // than TRACE overwrites it in place and reports a new point count.
+  // ── Polar lattice ──
+  // Snapping each point onto a coarse grid of angles and radii replaces the
+  // smooth trace with straight chords between lattice nodes — that is what
+  // produces the angular, faceted forms. Because every symmetry copy snaps to
+  // the same grid, the overlaps land on shared nodes and build a visible mesh
+  // with figures growing around it, rather than blurring into one another.
+  // Applied after scaling, so the grid sits in screen space and holds still
+  // while the trace moves through it.
+  if (lattice > 0) {
+    const sectors = 6 + lattice * 6;
+    const rings = 3 + lattice * 3;
+    const dA = (Math.PI * 2) / sectors;
+    const dR = (radius * SCOPE_FILL) / rings;
+    for (let i = 0; i < count; i++) {
+      const a = Math.round(Math.atan2(py[i], px[i]) / dA) * dA;
+      const r = Math.round(Math.hypot(px[i], py[i]) / dR) * dR;
+      px[i] = Math.cos(a) * r;
+      py[i] = Math.sin(a) * r;
+    }
+  }
+
+  // Beam dwell: a CRT burns brighter where the beam lingers. One Path2D per
+  // intensity level keeps this to a handful of strokes per copy.
+  const LEVELS = 5;
+  let total = 0;
+  for (let i = 1; i < count; i++) {
+    total += Math.abs(px[i] - px[i - 1]) + Math.abs(py[i] - py[i - 1]);
+  }
+  const meanLen = Math.max(1e-3, total / Math.max(1, count - 1));
+
+  const paths: Path2D[] = [];
+  for (let lvl = 0; lvl < LEVELS; lvl++) {
+    const loT = lvl / LEVELS;
+    const hiT = (lvl + 1) / LEVELS;
+    const path = new Path2D();
+    let open = false;
+    for (let i = 1; i < count; i++) {
+      const len = Math.abs(px[i] - px[i - 1]) + Math.abs(py[i] - py[i - 1]);
+      const dwell = 1 / (1 + len / meanLen);
+      if (dwell < loT || dwell >= hiT) {
+        open = false;
+        continue;
+      }
+      if (!open) {
+        path.moveTo(px[i - 1], py[i - 1]);
+        open = true;
+      }
+      path.lineTo(px[i], py[i]);
+    }
+    paths.push(path);
+  }
+
+  const whole = new Path2D();
+  whole.moveTo(px[0], py[0]);
+  for (let i = 1; i < count; i++) whole.lineTo(px[i], py[i]);
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // Width stays independent of density on purpose. Thickening the line to
+  // compensate for fewer strokes destroys the thing that makes this look
+  // good — the figure reads as fine wire, and heavier strokes turn it into
+  // a blunt scribble. Fewer lines, same weight.
+  const baseW = Math.max(0.7, Math.min(2.4, baseR * 0.006));
+  // Tight rather than broad. A wide soft bloom is what made the decaying
+  // footprint look like a thick grey cloud sitting beside hairline strokes:
+  // the residue of a 17px stroke reads as haze, the residue of a 7px one
+  // still reads as a line. Light output is width times alpha, so cutting the
+  // width this far has to be paid back in alpha below or the whole figure
+  // just goes dim — the glow gets concentrated, not removed.
+  const bloomW = Math.max(1.5, baseR * 0.019 * (0.4 + glow));
+
+  const sym = Math.max(1, Math.min(8, symmetry));
+  // Same geometry, different hue per copy. Built once per frame rather than
+  // per stroke — there are at most eight of them and they all share a radius.
+  const grads: CanvasGradient[] = [];
+  for (let c = 0; c < sym; c++) {
+    grads.push(scopeGradient(ctx, radius, palette, (c / sym) * SCOPE_HUE_ARC, c > 0));
+  }
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  for (let c = 0; c < sym; c++) {
+    ctx.save();
+    ctx.rotate(angle + (c * Math.PI * 2) / sym);
+    const copyAlpha = c === 0 ? 1 : 0.4;
+    ctx.strokeStyle = grads[c];
+
+    // Per-frame alpha is deliberately small. With persistence doing the work,
+    // a bright per-frame stroke would saturate instantly and there would be
+    // nothing left to build.
+    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 0.75;
+    ctx.lineWidth = bloomW;
+    ctx.stroke(whole);
+
+    for (let lvl = 0; lvl < LEVELS; lvl++) {
+      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 0.55;
+      ctx.lineWidth = baseW * (0.75 + (lvl / (LEVELS - 1)) * 0.6);
+      ctx.stroke(paths[lvl]);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  return nextPeak;
+}
+
+/* ── Crystal (geometric figure) ───────────────────────────────────────── */
+
+/**
+ * An m-fold closed figure whose outline the audio ripples.
+ *
+ * The curved counterpart to Scope. Scope is the angular one — straight
+ * chords, lattice grids, stars — so this one takes the organic half of the
+ * space: lobes, petals, rosettes, rippled discs. Between them they cover
+ * both halves without competing for the same look.
+ *
+ * It is also the inverse of Scope's bargain. Scope plots the signal
+ * directly, so its geometry is real but intermittent: a Lissajous figure
+ * only closes into a shape when both axes are near-periodic, and on a dense
+ * mix they are broadband noise and the trace collapses into a hairball. The
+ * shapes there aren't produced, they're handed over by the music, which is
+ * why they come and go.
+ *
+ * Here the shape is the substrate and the audio decorates it. A Gielis
+ * superformula supplies the outline — triangle, square, pentagram,
+ * hexagonal snowflake — and the waveform displaces its edge. Every frame is
+ * a clean closed curve by construction, whatever is playing.
+ *
+ * It stays a stereo instrument by working in mid/side rather than L/R: the
+ * mid signal breathes the outline in and out, the side signal (the width)
+ * grows the fine frills. A mono source draws a clean shape; a wide one
+ * crystallizes detail onto it. What it does not do is read phase — for that,
+ * use Scope.
+ */
+
+/** Curated [m, n1, n2, n3] parameter sets.
+ *
+ *  Most of the superformula's parameter space is ugly, and the few regions
+ *  that aren't are what people mean by "geometric". Randomizing the
+ *  exponents lands in the ugly part most of the time. A fixed table cannot.
+ *  Interpolating between two entries stays near the good region, so morphing
+ *  between them is safe where a random walk was not.
+ *
+ *  These are all chosen from the curved side of that space: n1 below 1 with
+ *  low n2/n3 gives smooth lobes, where the large exponents that produce
+ *  hard-edged polygons and cusped stars belong to Scope. */
+const CRYSTAL_SHAPES: readonly [number, number, number, number][] = [
+  [3, 0.5, 1.5, 1.5],  // trefoil — three smooth lobes
+  [4, 0.5, 1.5, 1.5],  // quatrefoil
+  [5, 0.4, 1.6, 1.6],  // five-petal rose
+  [6, 0.6, 1.4, 1.4],  // six-petal bloom
+  [8, 0.5, 1.3, 1.3],  // eight-lobe rosette
+  [2, 1, 4, 8],        // teardrop
+  [7, 3, 4, 17],       // ruffled flower
+  [5, 2, 13, 3],       // soft-armed starfish
+  [3, 1, 1, 1],        // rounded triangle
+  [6, 1, 1, 1],        // rounded hexagon
+  [12, 1, 1, 1],       // rippled disc
+  [16, 1.2, 1, 1],     // fine ripple ring
+];
+
+/** Gielis superformula radius at `theta`, with a = b = 1. */
+function superRadius(theta: number, m: number, n1: number, n2: number, n3: number): number {
+  const t = (m * theta) / 4;
+  const a = Math.pow(Math.abs(Math.cos(t)), n2);
+  const b = Math.pow(Math.abs(Math.sin(t)), n3);
+  const d = a + b;
+  return d < 1e-9 ? 0 : Math.pow(d, -1 / n1);
+}
+
+/** How far the mid signal displaces the outline, as a fraction of radius. */
+const CRYSTAL_MID_DEPTH = 0.34;
+/** Side-signal frill depth. Smaller — it is detail, not structure. */
+const CRYSTAL_SIDE_DEPTH = 0.16;
+/** Returns the updated peak tracker. */
+function drawCrystal(
+  ctx: AnyCanvasCtx,
+  w: number,
+  h: number,
+  time: Uint8Array,
+  timeL: Uint8Array | undefined,
+  timeR: Uint8Array | undefined,
+  palette: Palette,
+  gain: number,
+  px: Float32Array,
+  py: Float32Array,
+  glow: number,
+  smoothing: number,
+  angle: number,
+  prevPeak: number,
+  tick: number,
+  layers: number,
+  m: number,
+  nParams: Float32Array,
+  density: number,
+): number {
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const baseR = Math.min(w, h) * 0.46;
+  const L = timeL ?? time;
+  const R = timeR ?? time;
+  const n = Math.min(L.length, R.length);
+  if (n < 2) return prevPeak;
+
+  const breathe = 1 + Math.sin(tick * 0.008) * 0.07;
+  const radius = baseR * breathe;
+
+  // Density reads as resolution here, not as a line count — the figure is one
+  // closed curve either way. Low gives a faceted polygon, high a smooth one.
+  const dens = Math.min(1, Math.max(0.05, density));
+  const count = Math.min(px.length, Math.max(48, Math.round(120 + dens * 600)));
+
+  // Spatial low-pass before the waveform touches the outline. Same reasoning
+  // as in Scope: raw buffer chatter reads as noise on the edge, not detail.
+  const win = 1 + Math.round(Math.min(0.95, smoothing) * 10);
+
+  // Overall level, so the figure pumps with the music. The outline itself is
+  // deterministic, so without this the whole thing would sit at one size no
+  // matter what was playing.
+  let sq = 0;
+  for (let i = 0; i < n; i++) {
+    const v = (time[i] - 128) / 128;
+    sq += v * v;
+  }
+  const level = Math.min(1, Math.sqrt(sq / n) * gain * 2.4);
+  const sizeMul = 0.58 + level * 0.42;
+
+  const n1 = Math.max(0.15, nParams[0]);
+  const n2 = Math.max(0.15, nParams[1]);
+  const n3 = Math.max(0.15, nParams[2]);
+  const half = count / 2;
+
+  let peak = 1e-4;
+  for (let j = 0; j < count; j++) {
+    const th = (j / count) * Math.PI * 2;
+
+    // The waveform is mirrored around the figure rather than wrapped. Walking
+    // the buffer linearly leaves r(2π) ≠ r(0), and the curve shows a radial
+    // seam where it closes. Mirroring makes the modulation periodic by
+    // construction — and the bilateral symmetry that falls out is a good part
+    // of what makes these read as snowflakes rather than as scribbles.
+    const u = j < half ? j / half : (count - j) / half;
+    const i0 = Math.min(n - 1, Math.floor(u * (n - 1)));
+
+    let sm = 0;
+    let ss = 0;
+    for (let k = 0; k < win; k++) {
+      const q = (i0 + k) % n;
+      const l = L[q] - 128;
+      const r = R[q] - 128;
+      sm += l + r;
+      ss += l - r;
+    }
+    const mid = (sm / win / 256) * gain;
+    const side = (ss / win / 256) * gain;
+
+    const rr =
+      superRadius(th, m, n1, n2, n3) * (1 + mid * CRYSTAL_MID_DEPTH) +
+      side * CRYSTAL_SIDE_DEPTH;
+    const clamped = rr > 0 ? rr : 0;
+    px[j] = Math.cos(th) * clamped;
+    py[j] = Math.sin(th) * clamped;
+    if (clamped > peak) peak = clamped;
+  }
+
+  // ── Auto-range ──
+  // Normalizes each shape to its own extent: the star presets overshoot a
+  // unit circle by a wide margin, so without this a pentagram and a hexagon
+  // would be wildly different sizes on screen. Eased, so that a morph
+  // resizes smoothly rather than stepping.
+  const nextPeak = prevPeak * 0.9 + peak * 0.1;
+  const scale = (radius * SCOPE_FILL * sizeMul) / Math.max(0.05, nextPeak);
+  for (let i = 0; i < count; i++) {
+    px[i] *= scale;
+    py[i] *= scale;
+  }
+
+  // Beam dwell: a CRT burns brighter where the beam lingers. One Path2D per
+  // intensity level keeps this to a handful of strokes per layer. Indices
+  // wrap, since the curve is closed.
+  const LEVELS = 5;
+  let total = 0;
+  for (let i = 1; i <= count; i++) {
+    const a = i % count;
+    total += Math.abs(px[a] - px[i - 1]) + Math.abs(py[a] - py[i - 1]);
+  }
+  const meanLen = Math.max(1e-3, total / count);
+
+  const paths: Path2D[] = [];
+  for (let lvl = 0; lvl < LEVELS; lvl++) {
+    const loT = lvl / LEVELS;
+    const hiT = (lvl + 1) / LEVELS;
+    const path = new Path2D();
+    let open = false;
+    for (let i = 1; i <= count; i++) {
+      const a = i % count;
+      const len = Math.abs(px[a] - px[i - 1]) + Math.abs(py[a] - py[i - 1]);
+      const dwell = 1 / (1 + len / meanLen);
+      if (dwell < loT || dwell >= hiT) {
+        open = false;
+        continue;
+      }
+      if (!open) {
+        path.moveTo(px[i - 1], py[i - 1]);
+        open = true;
+      }
+      path.lineTo(px[a], py[a]);
+    }
+    paths.push(path);
+  }
+
+  const whole = new Path2D();
+  whole.moveTo(px[0], py[0]);
+  for (let i = 1; i < count; i++) whole.lineTo(px[i], py[i]);
+  whole.closePath();
+
+  const lay = Math.max(1, Math.min(3, layers));
+  const grads: CanvasGradient[] = [];
+  for (let c = 0; c < lay; c++) {
+    grads.push(scopeGradient(ctx, radius, palette, (c / lay) * SCOPE_HUE_ARC, c > 0));
+  }
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // Width stays independent of density on purpose. Thickening the line to
+  // compensate for fewer strokes destroys the thing that makes this look
+  // good — the figure reads as fine wire, and heavier strokes turn it into
+  // a blunt scribble. Fewer lines, same weight.
+  const baseW = Math.max(0.7, Math.min(2.4, baseR * 0.006));
+  const bloomW = Math.max(3, baseR * 0.045 * (0.4 + glow));
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  for (let c = 0; c < lay; c++) {
+    ctx.save();
+    // Layers are offset by a fraction of the shape's OWN fold angle. Rotating
+    // by an arbitrary 2π/copies instead — what Scope does, correctly, for an
+    // unstructured trace — would beat the outline's m-fold periodicity
+    // against an unrelated one, and that interference is precisely what reads
+    // as clutter. Aligning to m means the layers interlock.
+    ctx.rotate(angle + (c * Math.PI * 2) / (Math.max(1, m) * lay));
+    const shrink = 1 - c * 0.24;
+    ctx.scale(shrink, shrink);
+    const copyAlpha = c === 0 ? 1 : 0.5;
+    ctx.strokeStyle = grads[c];
+
+    // Per-frame alpha is deliberately tiny. With persistence doing the work,
+    // a bright per-frame stroke would saturate instantly and there would be
+    // nothing left to build.
+    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 0.45;
+    ctx.lineWidth = bloomW;
+    ctx.stroke(whole);
+
+    for (let lvl = 0; lvl < LEVELS; lvl++) {
+      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 0.38;
+      ctx.lineWidth = baseW * (0.75 + (lvl / (LEVELS - 1)) * 0.6);
+      ctx.stroke(paths[lvl]);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  return nextPeak;
+}
+
+/* ── Ripples ───────────────────────────────────────────────────────────── */
+
+interface Ripple {
+  /** Current radius as a fraction of max — grows toward 1, then retires. */
+  r: number;
+  born: number;
+  strength: number;
+}
+
+/**
+ * Concentric rings emitted on bass onsets, expanding and fading.
+ *
+ * Chosen for large stages specifically: ring radius wants room, so this gets
+ * better as the canvas grows rather than needing the motion damping the
+ * pixel-displacement styles do. Expansion is in normalized units and scaled
+ * to the canvas at draw time, so it is resolution-independent by
+ * construction.
+ */
+function drawRipples(
+  ctx: AnyCanvasCtx,
+  w: number,
+  h: number,
+  palette: Palette,
+  ripples: Ripple[],
+  tick: number,
+  dt60: number,
+  gain: number,
+  envelope: number,
+): void {
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const maxR = Math.hypot(w, h) * 0.5;
+
+  // Advance and retire in one pass, writing survivors back in place so the
+  // array never reallocates per frame.
+  let write = 0;
+  for (let i = 0; i < ripples.length; i++) {
+    const rp = ripples[i];
+    rp.r += 0.006 * dt60 * (0.7 + rp.strength * 0.6);
+    if (rp.r < 1) ripples[write++] = rp;
+  }
+  ripples.length = write;
+
+  const grad = verticalGradient(ctx, palette, cy - maxR, cy + maxR);
+  ctx.strokeStyle = grad;
+
+  for (let i = 0; i < ripples.length; i++) {
+    const rp = ripples[i];
+    // Fade out over the ring's life, weighted by how hard the onset hit.
+    const fade = (1 - rp.r) * (1 - rp.r);
+    ctx.globalAlpha = Math.min(0.85, fade * (0.35 + rp.strength * 0.65));
+    ctx.lineWidth = Math.max(0.5, (1 - rp.r) * 4 * (0.5 + rp.strength));
+    ctx.beginPath();
+    ctx.arc(cx, cy, rp.r * maxR, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Breathing core so the centre isn't dead between onsets.
+  const pulse = Math.min(1, envelope * gain);
+  const coreR = Math.min(w, h) * (0.03 + pulse * 0.05) * (1 + Math.sin(tick * 0.03) * 0.06);
+  ctx.globalAlpha = 0.16 + pulse * 0.3;
+  ctx.fillStyle = palette.glowColor;
+  ctx.beginPath();
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
 }

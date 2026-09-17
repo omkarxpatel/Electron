@@ -6,6 +6,7 @@ import { NowPlayingBar } from './components/NowPlayingBar';
 import { SpotifySection } from './components/SpotifySection';
 import { UpdateBanner } from './components/UpdateBanner';
 import { VisualizerBanner } from './components/VisualizerBanner';
+import { ImmersiveLyrics } from './components/ImmersiveLyrics';
 import { EqSection } from './components/EqSection';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
@@ -14,10 +15,12 @@ import { useAutoSelectDevices } from './audio/useAutoSelectDevices';
 import { useVisibility } from './hooks/useVisibility';
 import { PerfOverlay, useRenderCount } from './perf';
 import { useSettings } from './state/settings';
-import { SpotifyProvider, useLibrary } from './spotify/SpotifyProvider';
+import { SpotifyProvider, useLibrary, usePlayback } from './spotify/SpotifyProvider';
 import { useEQ } from './state/eq';
 import { useEnhancer } from './state/enhancer';
-import { PALETTES } from './visualizers/palettes';
+import { PALETTES, buildCustomPalette } from './visualizers/palettes';
+import { useAlbumPalette } from './visualizers/useAlbumPalette';
+import { pickMediumImage } from './shared/image';
 import { hexToRgba } from './shared/color';
 import './App.css';
 
@@ -37,7 +40,8 @@ function AppContent() {
   const [playthrough, setPlaythrough] = useState<boolean>(
     () => localStorage.getItem(PLAYTHROUGH_KEY) === 'true',
   );
-  const { settings, update, reset } = useSettings();
+  const { settings, resolved, update, updateVisual, reset, resetActiveProfile } =
+    useSettings();
   const eq = useEQ();
   const enhancer = useEnhancer();
   const audioSource = useAudioSource();
@@ -51,34 +55,20 @@ function AppContent() {
   // gate on this and fully suspend, so the app uses no rendering CPU/GPU
   // while it's not on screen. Audio playback is unaffected.
   const isActive = useVisibility(2500);
-  // BlackHole compensation — virtual driver routes audio at ~6 dB lower
-  // than direct system capture, so we apply +6 dB pre-EQ when the user's
-  // active input is a BlackHole channel. Auto-detected from the device label.
-  const [inputCompensationDb, setInputCompensationDb] = useState<number>(0);
-  useEffect(() => {
-    if (audioSource.mode !== 'device' || !audioSource.deviceId) {
-      setInputCompensationDb(0);
-      return;
-    }
-    let cancelled = false;
-    navigator.mediaDevices
-      .enumerateDevices()
-      .then((devs) => {
-        if (cancelled) return;
-        const dev = devs.find((d) => d.deviceId === audioSource.deviceId);
-        const isBlackHole = !!dev && /blackhole/i.test(dev.label);
-        // Full +6 dB to match perceived parity with direct system capture.
-        // The post-master limiter (now at -1 dBFS) catches the resulting peaks
-        // without crushing average loudness.
-        setInputCompensationDb(isBlackHole ? 6 : 0);
-      })
-      .catch(() => {
-        if (!cancelled) setInputCompensationDb(0);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [audioSource.mode, audioSource.deviceId]);
+  // NOTE: there used to be an automatic +6 dB "BlackHole compensation" here.
+  // It was removed — it sat at inputGain, UPSTREAM of the -1 dBFS / ratio-20
+  // limiter, so the limiter clawed it straight back on anything loud:
+  //   peak -30 dBFS → +6.00 dB delivered
+  //   peak   0 dBFS → +0.30 dB delivered
+  // i.e. it did nothing for max loudness (the actual complaint) while acting
+  // as an unintended ~6:1 compressor — 6.65 dB of gain reduction on peaks with
+  // a 2 ms attack, which is audible pumping on transients. BlackHole is a
+  // bit-transparent loopback; it does not attenuate, so there was no input
+  // deficit to compensate for in the first place. Perceived quietness in the
+  // BlackHole path comes from the OUTPUT side: with system output pointed at
+  // BlackHole, the macOS volume slider no longer reaches the built-in
+  // speakers, so they stay at whatever hardware level they were left at.
+  // That is fixed in Audio MIDI Setup, not with digital gain.
   // Shared per-band AI delta buffer — written by useAiEnhancer, read each
   // tick by useAudioEngine to add on top of the user's baseline EQ values.
   const aiDeltaRef = useRef<number[]>(new Array(eq.state.bandCount).fill(0));
@@ -86,7 +76,8 @@ function AppContent() {
   // each tick without re-running its effect on every slider move.
   const baselineRef = useRef<number[]>(eq.state.bands);
   baselineRef.current = eq.state.bands;
-  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR } = useAudioEngine(
+  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, limiter, autoTrimDb } =
+    useAudioEngine(
     audioSource.stream,
     eq.state,
     enhancer.state,
@@ -95,9 +86,19 @@ function AppContent() {
     aiDeltaRef,
     eq.state.aiEnhance,
     0.08,
-    inputCompensationDb,
   );
   const library = useLibrary();
+  // Subscribing to playback re-renders AppContent on each 1.5s poll, but
+  // App's heavy children are memoized and the only prop that flows from
+  // playback (`albumPalette`) only changes when the album image URL changes —
+  // i.e. once per song. The Settings toggle gates the whole hook so users
+  // who don't opt in pay only a context subscription cost.
+  const playback = usePlayback();
+  const albumImageUrl = useMemo(
+    () => pickMediumImage(playback.playback?.item?.album?.images) ?? null,
+    [playback.playback?.item?.album?.images],
+  );
+  const albumPalette = useAlbumPalette(albumImageUrl, settings.autoTintFromAlbumArt);
   const hasSource = audioSource.stream !== null;
 
   useEffect(() => {
@@ -144,26 +145,57 @@ function AppContent() {
   const needsOnboarding = !library.clientId || !library.authed;
   const showPlayerBar = library.authed;
 
-  // Drive the whole app's accent color off the active visualizer palette.
-  // Every component that highlights with green now uses var(--accent),
-  // so switching palette in Settings re-themes the whole UI.
+  // Drive the whole app's accent color off the effective palette — either a
+  // synthesized one extracted from the current album art (when "Auto-tint
+  // from album art" is on AND a Spotify track is playing) or the user's
+  // chosen static palette from Settings. Every component that highlights
+  // with green uses var(--accent), so switching either source re-themes the
+  // whole UI.
   // Memoized so the root <div> doesn't get a new style object identity on
   // every parent render (which would force descendants to reconcile).
+  // 'custom' is synthesized from the user's three stops rather than looked
+  // up, so edits take effect without a palette-table entry per color combo.
+  const basePalette = useMemo(
+    () =>
+      settings.palette === 'custom'
+        ? buildCustomPalette(settings.customColors)
+        : PALETTES[settings.palette],
+    [settings.palette, settings.customColors],
+  );
+  const effectivePalette = albumPalette ?? basePalette;
   const { accent, themeStyle } = useMemo(() => {
-    const palette = PALETTES[settings.palette];
-    const accentColor = palette.glowColor;
-    const accentBright = palette.stops[0]?.color ?? accentColor;
+    const accentColor = effectivePalette.glowColor;
+    const accentBright = effectivePalette.stops[0]?.color ?? accentColor;
     const style: CSSProperties = {
       ['--accent' as string]: accentColor,
       ['--accent-bright' as string]: accentBright,
-      ['--accent-bg' as string]: palette.ambient,
+      ['--accent-bg' as string]: effectivePalette.ambient,
       ['--accent-border' as string]: hexToRgba(accentColor, 0.5),
       ['--accent-soft-bg' as string]: hexToRgba(accentColor, 0.15),
       ['--accent-glow' as string]: hexToRgba(accentColor, 0.4),
     };
     return { accent: accentColor, themeStyle: style };
-  }, [settings.palette]);
+  }, [effectivePalette]);
 
+  // Esc leaves visuals-only mode. Registered only while immersive so we
+  // don't add a global key listener for a mode that is usually off, and so
+  // Esc keeps its normal meaning (closing the settings panel) otherwise.
+  useEffect(() => {
+    if (!settings.immersive) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      // One Esc should undo one thing. With the drawer open, Esc closes it
+      // and stays immersive; a second Esc leaves immersive.
+      if (panelOpen) setPanelOpen(false);
+      else update('immersive', false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [settings.immersive, panelOpen, update]);
+
+  const handleEnterImmersive = useCallback((): void => {
+    update('immersive', true);
+  }, [update]);
   const handleTogglePanel = useCallback((): void => {
     setPanelOpen((v) => !v);
   }, []);
@@ -172,7 +204,14 @@ function AppContent() {
   }, []);
 
   return (
-    <div className="app" style={themeStyle}>
+    <div className="app" data-immersive={settings.immersive ? 'true' : 'false'} style={themeStyle}>
+      {settings.albumArtBackdrop && albumImageUrl && (
+        // key forces a fresh element per track so the fade-in replays instead
+        // of the browser swapping src on a already-opaque image.
+        <div className="album-backdrop" key={albumImageUrl} aria-hidden>
+          <img src={albumImageUrl} alt="" />
+        </div>
+      )}
       <UpdateBanner />
       <ChromeBar
         sourceMode={audioSource.mode}
@@ -186,6 +225,7 @@ function AppContent() {
         onSelectOutput={audioOutput.setOutputDevice}
         panelOpen={panelOpen}
         onTogglePanel={handleTogglePanel}
+        onEnterImmersive={handleEnterImmersive}
       />
 
       <main className={`main-area ${showPlayerBar ? 'has-player-bar' : ''}`}>
@@ -196,6 +236,7 @@ function AppContent() {
             authing={library.authing}
             authError={library.authError}
             saveClientId={library.saveClientId}
+            resetClientId={library.resetClientId}
             connect={library.connect}
           />
         ) : (
@@ -214,9 +255,12 @@ function AppContent() {
               hasSource={hasSource}
               accent={accent}
               paletteId={settings.palette}
+              paletteOverride={albumPalette}
+              limiter={limiter}
+              autoTrimDb={autoTrimDb}
             />
 
-            <SpotifySection active={isActive} />
+            <SpotifySection active={isActive} showLyrics={settings.showLyrics} />
           </div>
         )}
       </main>
@@ -226,8 +270,9 @@ function AppContent() {
           analyser={analyser}
           analyserL={analyserL}
           analyserR={analyserR}
-          settings={settings}
+          settings={resolved}
           active={isActive}
+          paletteOverride={albumPalette}
         />
       )}
 
@@ -236,13 +281,37 @@ function AppContent() {
       <SettingsPanel
         open={panelOpen}
         onClose={() => setPanelOpen(false)}
-        settings={settings}
+        settings={resolved}
         update={update}
+        updateVisual={updateVisual}
+        resetActiveProfile={resetActiveProfile}
         reset={reset}
         spotifyAuthed={library.authed}
         onReconnectSpotify={library.connect}
         onSignOutSpotify={library.signOut}
       />
+
+      {settings.immersive && settings.showLyrics && <ImmersiveLyrics active={isActive} />}
+
+      {settings.immersive && (
+        <div className="immersive-controls">
+          <button
+            className="immersive-chip"
+            onClick={handleTogglePanel}
+            aria-pressed={panelOpen}
+            title="Visual settings"
+          >
+            Settings
+          </button>
+          <button
+            className="immersive-chip"
+            onClick={() => update('immersive', false)}
+            title="Exit visuals-only mode (Esc)"
+          >
+            Exit visuals
+          </button>
+        </div>
+      )}
 
       <PerfOverlay />
     </div>

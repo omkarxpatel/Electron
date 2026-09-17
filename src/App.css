@@ -126,6 +126,9 @@
   flex-direction: column;
   height: 100%;
   position: relative;
+  /* Contains .album-backdrop's negative z-index — without this it would
+     paint behind the #root background and be invisible. */
+  isolation: isolate;
   overflow: hidden;
 
   /* Theme fallbacks. React overrides these on .app via inline styles
@@ -143,7 +146,12 @@
   flex: 0 0 110px;
   height: 110px;
   position: relative;
-  background: #050507;
+  /* Was a flat #050507, which read as a hard black bar cutting across the
+     stage tint and the album backdrop. Translucent + blurred keeps the
+     contrast the visualizer needs while carrying the wash through. */
+  background: rgba(5, 5, 7, 0.55);
+  backdrop-filter: blur(24px) saturate(1.15);
+  -webkit-backdrop-filter: blur(24px) saturate(1.15);
   border-top: 1px solid rgba(255, 255, 255, 0.05);
   overflow: hidden;
 }
@@ -431,7 +439,25 @@
 }
 
 .panel-section {
-  margin-bottom: 22px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.panel-section:last-of-type {
+  border-bottom: none;
+}
+
+.panel-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 11px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
 }
 
 .panel-section h3 {
@@ -440,7 +466,55 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.4);
-  margin-bottom: 10px;
+  margin: 0;
+  transition: color 140ms ease;
+}
+
+.panel-section-header:hover h3,
+.panel-section.is-open h3 {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.panel-section-chevron {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.3);
+  transform: rotate(-90deg);
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease;
+}
+
+.panel-section.is-open .panel-section-chevron {
+  transform: rotate(0deg);
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* 0fr -> 1fr animates to intrinsic height; max-height would need a guessed
+   ceiling that clips tall sections or lags short ones. */
+.panel-section-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.panel-section.is-open .panel-section-body {
+  grid-template-rows: 1fr;
+}
+
+.panel-section-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Breathing room under the content, only while open — a closed section has
+   to collapse to exactly zero or the panel keeps phantom gaps. */
+.panel-section.is-open .panel-section-inner {
+  padding-bottom: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-section-body,
+  .panel-section-chevron {
+    transition: none;
+  }
 }
 
 /* ============================================================
@@ -511,6 +585,49 @@
   justify-content: space-between;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.7);
+}
+
+/* Standalone on/off row. Distinct from .slider-row: that one is a vertical
+   stack sized for a label + value caption above a range input, so reusing it
+   for a bare toggle left the button crowding the label with no vertical
+   centering. This is a single centered row with real separation. */
+.setting-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 32px;
+  padding: 6px 0;
+  margin-bottom: 6px;
+}
+
+.setting-toggle-row + .setting-toggle-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.setting-toggle-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setting-toggle-title {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.86);
+  line-height: 1.3;
+}
+
+.setting-toggle-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  line-height: 1.3;
+}
+
+.setting-toggle-row .segmented-button {
+  flex: 0 0 auto;
+  min-width: 46px;
+  text-align: center;
 }
 
 .slider-value {
@@ -3144,8 +3261,11 @@
   display: flex;
   flex-direction: row;
   align-items: center;
-  justify-content: space-around;
-  gap: 36px;
+  /* space-between + a real element in the middle (the headroom meter) instead
+     of space-around + a 36px gap. Five small knobs under space-around smeared
+     across the full panel width and read as an empty strip. */
+  justify-content: space-between;
+  gap: 20px;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -3386,9 +3506,13 @@
 .sp-track-table thead th {
   position: sticky;
   top: 0;
-  background: rgba(10, 10, 10, 0.96);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  /* 0.96 alpha made this an opaque slab and left the blur doing nothing —
+     nothing was showing through to blur. Lower alpha + a stronger blur keeps
+     scrolled rows an illegible smear (which is all the sticky header needs)
+     while the backdrop still reads through. */
+  background: rgba(10, 10, 10, 0.45);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
   z-index: 2;
 }
 
@@ -3838,4 +3962,381 @@
 
 .settings-about-update-error .settings-about-update-text strong {
   color: #fbbf24;
+}
+
+
+/* ── Headroom / gain-staging meter (Enhancer strip) ───────────────────── */
+
+.headroom-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 auto;
+  min-width: 104px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-variant-numeric: tabular-nums;
+}
+
+.headroom-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.headroom-key {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.35);
+  width: 30px;
+  flex: 0 0 auto;
+}
+
+.headroom-val {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  margin-left: auto;
+}
+
+.headroom-unit {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.headroom-bar {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  margin-top: 1px;
+}
+
+.headroom-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  border-radius: 2px;
+  background: var(--accent, #1db954);
+  transition: width 80ms linear;
+}
+
+.headroom-clip {
+  margin-top: 2px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.03);
+  transition: background 90ms linear, color 90ms linear;
+}
+
+.headroom-meter.is-clipping .headroom-clip {
+  color: #fff;
+  background: #e5484d;
+}
+
+.enhancer-panel[data-bypass='true'] .headroom-meter {
+  opacity: 0.4;
+}
+
+
+/* ── Custom palette color pickers ─────────────────────────────────────── */
+
+.custom-palette-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+
+.custom-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+}
+
+/* Native color inputs render an inset swatch with a border on macOS; strip
+   the chrome so they read as flat tiles matching the palette grid above. */
+.custom-swatch input[type='color'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.custom-swatch input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.custom-swatch input[type='color']::-webkit-color-swatch {
+  border: none;
+  border-radius: 5px;
+}
+
+
+/* ── Album-art backdrop ───────────────────────────────────────────────── */
+
+.album-backdrop {
+  position: absolute;
+  inset: 0;
+  /* Negative z-index paints behind all of .app's content. Safe because .app
+     sets `isolation: isolate`, so this cannot escape behind the page
+     background — and it avoids force-positioning every sibling, which would
+     have clobbered position: fixed on the settings drawer. */
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  animation: album-backdrop-in 700ms ease-out;
+}
+
+.album-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Heavy blur + dim so it reads as an ambient wash, never as content
+     competing with the EQ curve or the visualizer. scale() hides the soft
+     transparent edge blur() leaves at the bounds. */
+  filter: blur(72px) saturate(1.5) brightness(0.42);
+  transform: scale(1.25);
+}
+
+@keyframes album-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Immersive (visuals-only) mode ────────────────────────────────────── */
+
+.app[data-immersive='true'] .topbar,
+.app[data-immersive='true'] .main-area {
+  display: none;
+}
+
+/* The banner is a fixed 110px strip in normal layout; in immersive it takes
+   the whole column. */
+.app[data-immersive='true'] .viz-banner {
+  flex: 1 1 auto;
+  height: auto;
+  border-top: none;
+}
+
+/* In immersive the stats would sit under .immersive-exit (both pinned
+   top-right), so move them to the opposite corner. Normal layout keeps them
+   top-right, where there is no exit button to collide with. */
+.app[data-immersive='true'] .audio-stats {
+  top: auto;
+  right: auto;
+  bottom: 14px;
+  left: 16px;
+  opacity: 0.4;
+  transition: opacity 160ms ease;
+}
+
+.app[data-immersive='true'] .audio-stats:hover {
+  opacity: 1;
+}
+
+.immersive-controls {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  display: flex;
+  gap: 8px;
+  /* Below .settings-panel (z-index 10) on purpose: when the drawer slides
+     out it should cover these rather than have them floating on top of it. */
+  z-index: 9;
+  opacity: 0.18;
+  transition: opacity 160ms ease;
+  -webkit-app-region: no-drag;
+}
+
+/* Reveal on approach — hovering anywhere in the window is the cue, since the
+   chips are too faint to aim at otherwise. */
+.app[data-immersive='true']:hover .immersive-controls {
+  opacity: 1;
+}
+
+.immersive-chip {
+  padding: 6px 12px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.62);
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.immersive-chip:hover {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+  border-color: var(--accent-border, rgba(255, 255, 255, 0.3));
+}
+
+.immersive-chip[aria-pressed='true'] {
+  color: #fff;
+  border-color: var(--accent, #1db954);
+}
+
+
+/* ── Immersive lyrics ─────────────────────────────────────────────────── */
+
+.immersive-lyrics {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 132px;
+  z-index: 8;
+  max-width: min(60ch, 74vw);
+  padding: 0 24px;
+  text-align: center;
+  pointer-events: none;
+  /* Resting opacity for a settled line. Kept as a variable so the keyframes
+     below can land on it: with animation-fill-mode `both`, the final keyframe
+     value wins over any `opacity` set on the element itself. */
+  --lyric-rest: 0.34;
+  /* Both lines occupy the same grid cell so they cross-fade in place. Absolute
+     positioning would need a hardcoded height; grid sizes to the taller line
+     on its own and keeps the block centred. */
+  display: grid;
+  justify-items: center;
+}
+
+.immersive-lyrics > span {
+  grid-area: 1 / 1;
+}
+
+.immersive-lyrics span {
+  display: inline-block;
+  /* Same system sans as the rest of the app, deliberately. A characterful
+     face carries genre with it — the italic serif this replaced read as
+     ballad and would have looked absurd over rap or techno. Separation from
+     UI chrome comes from weight, tracking and color instead, which stays
+     neutral across everything. This is also what Apple Music and Spotify
+     both settled on for lyrics. */
+  font-size: clamp(15px, 1.5vw, 22px);
+  font-weight: 600;
+  line-height: 1.4;
+  /* Slightly tight — at display weight, default tracking reads loose. */
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+  /* Near-white with only a trace of palette. Heavier tinting picked up the
+     genre problem from the other direction — a strongly colored lyric reads
+     as styling applied TO the song rather than as the song's own words. The
+     old flat grey looked washed out because low alpha was doing the
+     legibility work; that job belongs to the shadows below. */
+  color: color-mix(in oklab, var(--accent-bright, #ffffff) 8%, #f2f2f3);
+  /* A tight dark shadow for legibility over bright particles, plus a wide
+     accent bloom tying the text into the stage lighting. */
+  /* Bloom pulled right back — at full strength it was lifting the whole line
+     off the stage and reading as a caption burned into the picture. Kept only
+     enough dark shadow to stay legible over bright particle clusters. */
+  text-shadow:
+    0 1px 10px rgba(0, 0, 0, 0.92),
+    0 0 26px rgba(0, 0, 0, 0.5);
+  animation: immersive-lyric-in 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Leaves the way it arrived, mirrored: drifts up and blurs out rather than
+   cutting. Slightly faster than the entrance so the incoming line is never
+   fighting the outgoing one for attention. */
+.immersive-lyrics span.is-leaving {
+  animation: immersive-lyric-out 420ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@keyframes immersive-lyric-out {
+  from {
+    opacity: var(--lyric-rest, 0.34);
+    transform: translateY(0);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+    filter: blur(5px);
+  }
+}
+
+@keyframes immersive-lyric-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: var(--lyric-rest, 0.34);
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* Recede further while the settings drawer is open — you're adjusting, not
+   reading. Multiplies with --lyric-rest rather than replacing it. */
+.settings-panel.is-open ~ .immersive-lyrics {
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .immersive-lyrics span {
+    animation: none;
+  }
+}
+
+/* ── Settings: which stage am I editing ───────────────────────────────── */
+
+.stage-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--accent-soft-bg, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--accent-border, rgba(255, 255, 255, 0.12));
+}
+
+.stage-notice-text {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.stage-notice-text strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+.stage-notice-reset {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.stage-notice-reset:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
 }

@@ -26,6 +26,8 @@ interface Props {
   // Settings drawer
   panelOpen: boolean;
   onTogglePanel: () => void;
+  // Visuals-only mode
+  onEnterImmersive: () => void;
 }
 
 export const ChromeBar = memo(ChromeBarImpl);
@@ -42,6 +44,7 @@ function ChromeBarImpl({
   onSelectOutput,
   panelOpen,
   onTogglePanel,
+  onEnterImmersive,
 }: Props) {
   return (
     <header className="topbar">
@@ -64,6 +67,14 @@ function ChromeBarImpl({
           onSelect={onSelectOutput}
         />
         <button
+          className="icon-button"
+          onClick={onEnterImmersive}
+          aria-label="Visuals only"
+          title="Visuals-only mode — hides the EQ and panels (Esc to exit)"
+        >
+          <ExpandIcon />
+        </button>
+        <button
           className="icon-button gear-button"
           onClick={onTogglePanel}
           aria-label="Settings"
@@ -73,6 +84,20 @@ function ChromeBarImpl({
         </button>
       </div>
     </header>
+  );
+}
+
+function ExpandIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M6 1.5H1.5V6M10 1.5H14.5V6M10 14.5H14.5V10M6 14.5H1.5V10"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

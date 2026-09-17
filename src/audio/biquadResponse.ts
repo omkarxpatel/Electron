@@ -143,6 +143,7 @@ export interface BandCoefSet {
   bandCoefs: BandCoefEntry[];
   bassEnhCoefs: BandCoefEntry | null;
   trebleEnhCoefs: BandCoefEntry | null;
+  midEnhCoefs: BandCoefEntry | null;
   preampDb: number;
 }
 
@@ -158,6 +159,10 @@ export function buildBandCoefs(
   preampDb: number,
   enhancerBassDb = 0,
   enhancerTrebleDb = 0,
+  /** Enhancer mid knob — peaking, 1 kHz, Q 1. Defaults to 0 so the existing
+   *  curve-display caller is unaffected; the audio-engine auto-trim passes
+   *  it so all three enhancer knobs are accounted for. */
+  enhancerMidDb = 0,
   sampleRate: number = DEFAULT_SAMPLE_RATE,
 ): BandCoefSet {
   const bandCoefs: BandCoefEntry[] = new Array(bands.length);
@@ -183,7 +188,11 @@ export function buildBandCoefs(
     enhancerTrebleDb !== 0
       ? { coefs: highShelfCoefs(10000, enhancerTrebleDb, sampleRate), nonZero: true }
       : null;
-  return { bandCoefs, bassEnhCoefs, trebleEnhCoefs, preampDb };
+  const midEnhCoefs =
+    enhancerMidDb !== 0
+      ? { coefs: peakingCoefs(1000, 1, enhancerMidDb, sampleRate), nonZero: true }
+      : null;
+  return { bandCoefs, bassEnhCoefs, trebleEnhCoefs, midEnhCoefs, preampDb };
 }
 
 /** Evaluate the response curve at one sample frequency using a precomputed
@@ -202,6 +211,7 @@ export function responseCurveDb(
   }
   if (set.bassEnhCoefs) total += magnitudeDb(set.bassEnhCoefs.coefs, freq, sampleRate);
   if (set.trebleEnhCoefs) total += magnitudeDb(set.trebleEnhCoefs.coefs, freq, sampleRate);
+  if (set.midEnhCoefs) total += magnitudeDb(set.midEnhCoefs.coefs, freq, sampleRate);
   return total;
 }
 

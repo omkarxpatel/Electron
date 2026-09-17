@@ -12,7 +12,11 @@ const KEY_ACCESS_TOKEN = 'av.spotify.accessToken';
 const KEY_TOKEN_EXPIRY = 'av.spotify.tokenExpiry';
 
 export function getClientId(): string | null {
-  return localStorage.getItem(KEY_CLIENT_ID);
+  // Normalize empty/whitespace to null. A stored '' would otherwise read as
+  // "set" to the onboarding gate but falsy to connect(), stranding the user on
+  // the authorize screen with no way back to the Client ID input.
+  const id = localStorage.getItem(KEY_CLIENT_ID)?.trim();
+  return id ? id : null;
 }
 
 export function setClientId(id: string): void {

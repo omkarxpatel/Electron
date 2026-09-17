@@ -1,5 +1,10 @@
-import { useCallback } from 'react';
-import type { Settings } from '../state/settings';
+import { useCallback, useState } from 'react';
+import type {
+  ResolvedSettings,
+  SharedSettings,
+  VisualProfile,
+  WaveformStyle,
+} from '../state/settings';
 import { PALETTES } from '../visualizers/palettes';
 import {
   checkForUpdate,
@@ -11,11 +16,35 @@ import {
 } from '../lib/updateService';
 import type { UpdateState } from '../types/api';
 
+/** Everything from Style through Motion writes to ONE stage's profile. Without
+ *  saying so, adjusting glow in fullscreen and seeing the banner unchanged
+ *  reads as a bug rather than as the feature working. */
+function StageNotice({ immersive, onReset }: { immersive: boolean; onReset: () => void }) {
+  return (
+    <div className="stage-notice">
+      <span className="stage-notice-text">
+        Editing <strong>{immersive ? 'fullscreen' : 'banner'}</strong> visuals
+      </span>
+      <button type="button" className="stage-notice-reset" onClick={onReset}>
+        Reset
+      </button>
+    </div>
+  );
+}
+
+const BAR_STYLES = new Set<WaveformStyle>(['bars', 'mirror', 'dots', 'spectrum']);
+
 interface Props {
   open: boolean;
   onClose: () => void;
-  settings: Settings;
-  update: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  /** Shared settings flattened with the ACTIVE stage's visual profile, so
+   *  every control below reads the values for the stage you're looking at. */
+  settings: ResolvedSettings;
+  update: <K extends keyof SharedSettings>(key: K, value: SharedSettings[K]) => void;
+  /** Writes to the active stage's profile — see useSettings.updateVisual. */
+  updateVisual: <K extends keyof VisualProfile>(key: K, value: VisualProfile[K]) => void;
+  /** Resets only the stage currently being edited. */
+  resetActiveProfile: () => void;
   reset: () => void;
   spotifyAuthed: boolean;
   onReconnectSpotify: () => void;
@@ -27,6 +56,8 @@ export function SettingsPanel({
   onClose,
   settings,
   update,
+  updateVisual,
+  resetActiveProfile,
   reset,
   spotifyAuthed,
   onReconnectSpotify,
@@ -42,34 +73,98 @@ export function SettingsPanel({
       </header>
 
       <div className="panel-body">
-        <Section title="Palette">
-          <div className="palette-grid">
-            {Object.values(PALETTES).map((p) => (
-              <button
-                key={p.id}
-                className={`palette-swatch ${settings.palette === p.id ? 'is-active' : ''}`}
-                onClick={() => update('palette', p.id)}
-                aria-label={p.label}
-                style={{
-                  background: `linear-gradient(135deg, ${p.stops
-                    .map((s) => `${s.color} ${s.pos * 100}%`)
-                    .join(', ')})`,
-                }}
-              >
-                <span className="palette-label">{p.label}</span>
-              </button>
-            ))}
-          </div>
+        <StageNotice immersive={settings.immersive} onReset={resetActiveProfile} />
+
+        <Section title="Style" defaultOpen>
+          <Segmented
+            value={settings.waveformStyle}
+            options={[
+              { id: 'spectrum', label: 'Spectrum' },
+              { id: 'ribbon', label: 'Ribbon' },
+              { id: 'radial', label: 'Radial' },
+              { id: 'mirror', label: 'Mirror' },
+              { id: 'bars', label: 'Bars' },
+              { id: 'line', label: 'Line' },
+              { id: 'filled', label: 'Filled' },
+              { id: 'particles', label: 'Particles' },
+              { id: 'silk', label: 'Silk' },
+              { id: 'lissajous', label: 'Scope' },
+              { id: 'crystal', label: 'Bloom' },
+              { id: 'ripples', label: 'Ripples' },
+            ]}
+            onChange={(v) => updateVisual('waveformStyle', v as VisualProfile['waveformStyle'])}
+          />
         </Section>
 
-        <Section title="Glow & motion">
+        {settings.waveformStyle === 'particles' && (
+          <Section title="Particles" defaultOpen>
+            <Slider
+              label="Density"
+              value={settings.particleDensity}
+              min={0.15}
+              max={2}
+              step={0.05}
+              onChange={(v) => updateVisual('particleDensity', v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+            <Slider
+              label="Size"
+              value={settings.particleSize}
+              min={0.3}
+              max={2.5}
+              step={0.05}
+              onChange={(v) => updateVisual('particleSize', v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+          </Section>
+        )}
+
+        {(settings.waveformStyle === 'lissajous' || settings.waveformStyle === 'crystal') && (
+          <Section title={settings.waveformStyle === 'crystal' ? 'Crystal' : 'Scope'} defaultOpen>
+            {/* One stored value, two meanings — see scopeDensity in settings.ts. */}
+            <Slider
+              label={settings.waveformStyle === 'crystal' ? 'Resolution' : 'Density'}
+              value={settings.scopeDensity}
+              min={0.05}
+              max={1}
+              step={0.01}
+              onChange={(v) => updateVisual('scopeDensity', v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+          </Section>
+        )}
+
+        {BAR_STYLES.has(settings.waveformStyle) && (
+          <Section title="Bar shape" defaultOpen>
+            <Slider
+              label="Width"
+              value={settings.barWidth}
+              min={1}
+              max={12}
+              step={1}
+              onChange={(v) => updateVisual('barWidth', v)}
+              format={(v) => `${v.toFixed(0)} px`}
+            />
+            <Slider
+              label="Gap"
+              value={settings.barGap}
+              min={0}
+              max={6}
+              step={1}
+              onChange={(v) => updateVisual('barGap', v)}
+              format={(v) => `${v.toFixed(0)} px`}
+            />
+          </Section>
+        )}
+
+        <Section title="Motion">
           <Slider
             label="Glow"
             value={settings.glow}
             min={0}
             max={1}
             step={0.01}
-            onChange={(v) => update('glow', v)}
+            onChange={(v) => updateVisual('glow', v)}
           />
           <Slider
             label="Motion trail"
@@ -77,7 +172,7 @@ export function SettingsPanel({
             min={0}
             max={0.6}
             step={0.01}
-            onChange={(v) => update('trail', v)}
+            onChange={(v) => updateVisual('trail', v)}
           />
           <Slider
             label={settings.autoGain ? 'Sensitivity (trim)' : 'Sensitivity'}
@@ -85,13 +180,13 @@ export function SettingsPanel({
             min={0.5}
             max={10}
             step={0.05}
-            onChange={(v) => update('sensitivity', v)}
+            onChange={(v) => updateVisual('sensitivity', v)}
             format={(v) => `${v.toFixed(2)}×`}
             trailing={
               <button
                 type="button"
                 className={`segmented-button ${settings.autoGain ? 'is-active' : ''}`}
-                onClick={() => update('autoGain', !settings.autoGain)}
+                onClick={() => updateVisual('autoGain', !settings.autoGain)}
                 title="Auto level: normalizes loudness across songs so quiet tracks don't disappear and loud ones don't clip"
               >
                 Auto
@@ -104,60 +199,79 @@ export function SettingsPanel({
             min={0}
             max={.95}
             step={0.01}
-            onChange={(v) => update('smoothing', v)}
+            onChange={(v) => updateVisual('smoothing', v)}
           />
-          <label className="slider-row">
-            <div className="slider-labels">
-              <span>Spatial spectrum</span>
+          <ToggleRow
+            title="Spatial spectrum"
+            hint="Lows drive the left, highs drive the right"
+            value={settings.spectralPosition}
+            onToggle={() => updateVisual('spectralPosition', !settings.spectralPosition)}
+            tooltip="Low frequencies drive the left side, highs drive the right — each part of the visual reacts to the audio at its position."
+          />
+        </Section>
+
+        <Section title="Palette">
+          <div className="palette-grid">
+            {Object.values(PALETTES).map((p) => (
               <button
-                type="button"
-                className={`segmented-button ${settings.spectralPosition ? 'is-active' : ''}`}
-                onClick={() => update('spectralPosition', !settings.spectralPosition)}
-                title="Low frequencies drive the left side, highs drive the right — each part of the visual reacts to the audio at its position."
+                key={p.id}
+                className={`palette-swatch ${settings.palette === p.id ? 'is-active' : ''}`}
+                onClick={() => update('palette', p.id as SharedSettings['palette'])}
+                aria-label={p.label}
+                style={{
+                  background: `linear-gradient(135deg, ${(p.id === 'custom'
+                    ? settings.customColors.map((c, i) => ({ color: c, pos: i / 2 }))
+                    : p.stops
+                  )
+                    .map((s) => `${s.color} ${s.pos * 100}%`)
+                    .join(', ')})`,
+                }}
               >
-                {settings.spectralPosition ? 'On' : 'Off'}
+                <span className="palette-label">{p.label}</span>
               </button>
+            ))}
+          </div>
+          <ToggleRow
+            title="Auto-tint from album art"
+            hint="Overrides the palette above with colors from the current track"
+            value={settings.autoTintFromAlbumArt}
+            onToggle={() => update('autoTintFromAlbumArt', !settings.autoTintFromAlbumArt)}
+            tooltip={"When on, colors are extracted from the currently-playing Spotify track's album art and override the palette above. When off, the palette above is used literally."}
+          />
+          {settings.palette === 'custom' && (
+            <div className="custom-palette-row">
+              {(['Low', 'Mid', 'High'] as const).map((label, i) => (
+                <label className="custom-swatch" key={label}>
+                  <input
+                    type="color"
+                    value={settings.customColors[i]}
+                    onChange={(e) => {
+                      const next = [...settings.customColors] as [string, string, string];
+                      next[i] = e.target.value;
+                      update('customColors', next);
+                    }}
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
             </div>
-          </label>
+          )}
         </Section>
 
-        <Section title="Bars">
-          <Slider
-            label="Width"
-            value={settings.barWidth}
-            min={1}
-            max={12}
-            step={1}
-            onChange={(v) => update('barWidth', v)}
-            format={(v) => `${v.toFixed(0)} px`}
+        <Section title="Display">
+          <ToggleRow
+            title="Album art backdrop"
+            hint="Blurred cover art behind the visualizer"
+            value={settings.albumArtBackdrop}
+            onToggle={() => update('albumArtBackdrop', !settings.albumArtBackdrop)}
+            tooltip="Renders the current track's album art, blurred and dimmed, behind the visualizer stage."
           />
-          <Slider
-            label="Gap"
-            value={settings.barGap}
-            min={0}
-            max={6}
-            step={1}
-            onChange={(v) => update('barGap', v)}
-            format={(v) => `${v.toFixed(0)} px`}
-          />
-        </Section>
-
-        <Section title="Waveform style">
-          <Segmented
-            value={settings.waveformStyle}
-            options={[
-              { id: 'spectrum', label: 'Spectrum' },
-              { id: 'ribbon', label: 'Ribbon' },
-              { id: 'radial', label: 'Radial' },
-              { id: 'dots', label: 'Dots' },
-              { id: 'mirror', label: 'Mirror' },
-              { id: 'bars', label: 'Bars' },
-              { id: 'line', label: 'Line' },
-              { id: 'filled', label: 'Filled' },
-              { id: 'particles', label: 'Particles' },
-              { id: 'silk', label: 'Silk' },
-            ]}
-            onChange={(v) => update('waveformStyle', v as Settings['waveformStyle'])}
+          <ToggleRow
+            title="Lyrics pane"
+            hint="Show synced lyrics in the Spotify column"
+            value={settings.showLyrics}
+            onToggle={() => update('showLyrics', !settings.showLyrics)}
+            tooltip="Hide to reclaim the vertical space for the track list."
           />
         </Section>
 
@@ -400,11 +514,72 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+const SECTION_OPEN_KEY = 'av.settings.sectionsOpen';
+
+function readOpenMap(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SECTION_OPEN_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Collapsible settings group. Open/closed is persisted per title so the panel
+ * reopens the way you left it — with a dozen visual controls plus Spotify and
+ * About, an always-expanded panel is a scrolling exercise.
+ *
+ * `defaultOpen` only applies the first time a section is seen; after that the
+ * stored value wins, including an explicit `false`.
+ */
+function Section({
+  title,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState<boolean>(() => readOpenMap()[title] ?? defaultOpen);
+
+  const toggle = useCallback(() => {
+    setOpen((prev) => {
+      const next = !prev;
+      // Merge on write — each Section owns one key and they all mount at once.
+      try {
+        localStorage.setItem(
+          SECTION_OPEN_KEY,
+          JSON.stringify({ ...readOpenMap(), [title]: next }),
+        );
+      } catch {
+        // Storage unavailable — the toggle still works for this session.
+      }
+      return next;
+    });
+  }, [title]);
+
   return (
-    <section className="panel-section">
-      <h3>{title}</h3>
-      {children}
+    <section className={`panel-section ${open ? 'is-open' : ''}`}>
+      <button type="button" className="panel-section-header" onClick={toggle} aria-expanded={open}>
+        <h3>{title}</h3>
+        <svg className="panel-section-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+          <path
+            d="M2.5 4L5 6.5L7.5 4"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+          />
+        </svg>
+      </button>
+      {/* grid-template-rows 0fr -> 1fr animates to auto height, which a plain
+          max-height transition cannot do without a hardcoded guess. */}
+      <div className="panel-section-body">
+        <div className="panel-section-inner">{children}</div>
+      </div>
     </section>
   );
 }
@@ -418,6 +593,43 @@ interface SliderProps {
   onChange: (v: number) => void;
   format?: (v: number) => string;
   trailing?: React.ReactNode;
+}
+
+/** Standalone on/off setting. Own layout rather than borrowing `.slider-row`,
+ *  which is shaped for a range input and left toggles cramped against their
+ *  label. Renders a <div>, not a <label> — a <label> wrapping a <button> is
+ *  invalid and made the whole row a confusing double click target. */
+function ToggleRow({
+  title,
+  hint,
+  value,
+  onToggle,
+  tooltip,
+}: {
+  title: string;
+  hint?: string;
+  value: boolean;
+  onToggle: () => void;
+  tooltip?: string;
+}) {
+  return (
+    <div className="setting-toggle-row">
+      <span className="setting-toggle-label">
+        <span className="setting-toggle-title">{title}</span>
+        {hint && <span className="setting-toggle-hint">{hint}</span>}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={value}
+        className={`segmented-button ${value ? 'is-active' : ''}`}
+        onClick={onToggle}
+        title={tooltip}
+      >
+        {value ? 'On' : 'Off'}
+      </button>
+    </div>
+  );
 }
 
 function Slider({ label, value, min, max, step, onChange, format, trailing }: SliderProps) {

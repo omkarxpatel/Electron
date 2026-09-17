@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import type { EnhancerState } from '../state/enhancer';
 import { Knob } from './Knob';
+import { HeadroomMeter } from './HeadroomMeter';
 
 interface Props {
   state: EnhancerState;
@@ -11,6 +12,10 @@ interface Props {
   setBalance: (v: number) => void;
   toggleBypass: () => void;
   reset: () => void;
+  limiter: DynamicsCompressorNode | null;
+  analyser: AnalyserNode | null;
+  autoTrimDb: number;
+  active: boolean;
 }
 
 const KNOB_SIZE = 58;
@@ -26,6 +31,10 @@ function EnhancerPanelImpl({
   setBalance,
   toggleBypass,
   reset,
+  limiter,
+  analyser,
+  autoTrimDb,
+  active,
 }: Props) {
   return (
     <div className="enhancer-panel" data-bypass={state.bypass ? 'true' : 'false'}>
@@ -78,6 +87,14 @@ function EnhancerPanelImpl({
           size={KNOB_SIZE}
           format={formatDb}
           onChange={setTreble}
+        />
+        <div className="knob-stack-divider" aria-hidden />
+        <HeadroomMeter
+          limiter={limiter}
+          analyser={analyser}
+          volume={state.volume}
+          autoTrimDb={autoTrimDb}
+          active={active}
         />
         <div className="knob-stack-divider" aria-hidden />
         <Knob

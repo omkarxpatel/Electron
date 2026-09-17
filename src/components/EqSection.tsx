@@ -4,6 +4,7 @@ import { useAiEnhancer } from '../audio/useAiEnhancer';
 import { frequenciesFor, type UseEQReturn } from '../state/eq';
 import type { UseEnhancerReturn } from '../state/enhancer';
 import type { PaletteId } from '../state/settings';
+import type { Palette } from '../visualizers/palettes';
 
 /**
  * Owns the AI-Enhancer plumbing (useAiEnhancer + the threshold-diff onTick
@@ -31,6 +32,10 @@ interface Props {
   preEqAnalyserR: AnalyserNode | null;
   /** Post-EQ analyser — drives the response-curve halo + per-band activity. */
   analyser: AnalyserNode | null;
+  /** Peak catcher, for the Enhancer's live gain-reduction readout. */
+  limiter: DynamicsCompressorNode | null;
+  /** Headroom the EQ auto-trim is giving back, dB. */
+  autoTrimDb: number;
   /** Shared per-band AI delta ref. The audio engine reads it each tick to
    *  add on top of the user's baseline; useAiEnhancer writes to it. */
   aiDeltaRef: { current: number[] };
@@ -45,6 +50,9 @@ interface Props {
   hasSource: boolean;
   accent: string;
   paletteId: PaletteId;
+  /** Album-art derived palette. When non-null, overrides the static palette
+   *  lookup for the EQ band-activity ombre. */
+  paletteOverride: Palette | null;
 }
 
 const AI_DELTA_THRESHOLD_DB = 0.05;
@@ -55,6 +63,8 @@ export function EqSection({
   preEqAnalyserL,
   preEqAnalyserR,
   analyser,
+  limiter,
+  autoTrimDb,
   aiDeltaRef,
   baselineRef,
   active,
@@ -63,6 +73,7 @@ export function EqSection({
   hasSource,
   accent,
   paletteId,
+  paletteOverride,
 }: Props) {
   // Per-band AI delta mirrored from the engine's ref into React state so
   // the slider thumbs visually follow the AI's adjustments. Updated 10×/sec
@@ -190,7 +201,10 @@ export function EqSection({
       resetEnhancer={enhancer.reset}
       accent={accent}
       paletteId={paletteId}
+      paletteOverride={paletteOverride}
       analyser={analyser}
+      limiter={limiter}
+      autoTrimDb={autoTrimDb}
     />
   );
 }
