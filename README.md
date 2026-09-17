@@ -144,14 +144,17 @@ You only do this once per Mac.
 **Audio engine**
 - 10 / 15 / 31-band parametric EQ (±12 dB per band) with switchable presets — Flat, Bass, Vocal, Loudness, Rock.
 - Bass / Mid / Treble enhancer shelves + global volume + L/R balance.
+- **Output meters** — per-channel LED ladder in dBFS with peak hold. The top segments turn white past 0 dBFS, which is the point where macOS starts clipping your output.
+- **Scrolling waveform** of the last few seconds, coloured by frequency content: the accent colour on bass-led moments running to white on cymbals and transients.
 - ±12 dB preamp.
 - Bypass + reset for both EQ and enhancer.
 - **AI Enhance** — adapts the EQ in real time to whatever music is playing. Lock any band to keep your manual value fixed.
 - Output device picker — route processed audio to any speaker / headphone independent of macOS default.
 
 **Visualization**
-- 10 styles: spectrum, ribbon, radial, dots, mirror, bars, line, filled, particles, silk.
-- 11 colour palettes that re-theme the whole UI.
+- 13 styles: spectrum, ribbon, radial, dots, mirror, bars, line, filled, particles, silk, Scope, Bloom, Ripples.
+- 16 colour palettes plus a custom picker, all re-theming the whole UI.
+- **Auto-tint from album art** — the palette is sampled from the current cover and crossfades as tracks change. Toggle it in Settings.
 - Glow, motion trail, sensitivity, smoothing.
 - Pan-able EQ response curve — drag to pan horizontally + vertically, double-click to reset.
 - Live FFT energy bars behind each EQ slider, showing current vs. unmodified signal level.
@@ -169,9 +172,17 @@ You only do this once per Mac.
 **Spotify**
 - PKCE OAuth (no client secret needed).
 - Playlist browser + paginated track list + saved-albums view.
+- **Play** on the playlist header starts the playlist — from a random track when the player has shuffle on, rather than always from track 1.
+- The last playlist you opened is reopened on the next launch.
 - Persistent player bar with transport, scrubber, volume.
 - Live lyrics (synced when available, plain otherwise).
 - Reconnect / sign out from Settings.
+
+**Updates**
+- Checks for a new version on launch, then hourly.
+- When one is found it asks first: install now, install when you quit, or skip this version. Nothing downloads until you answer, and a skipped version stays skipped across launches.
+- "Install when you quit" needs nothing further from you — the update is applied the next time you close the app.
+- Because the app is unsigned, the swap can occasionally fail on recent macOS. If that happens the app says so and points you at the release page for a manual download.
 
 ---
 
