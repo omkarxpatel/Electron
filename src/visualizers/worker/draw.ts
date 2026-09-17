@@ -165,9 +165,16 @@ export interface DrawState {
   scopeLastRoll: number;
   /** Rotational symmetry, re-rolled on strong onsets. */
   scopeSymmetry: number;
-  /** Signed spin rate multiplier; flips direction on some onsets. Shared by
-   *  both radial styles. */
+  /** Spin direction, +1 or -1. Flips on some onsets. Shared by both radial
+   *  styles. */
   scopeSpin: number;
+  /** Rotation-rate multiplier: the value being eased toward, and the eased
+   *  value actually applied. Separate so a rate change glides instead of
+   *  stepping. */
+  scopeSpinTarget: number;
+  scopeSpinCur: number;
+  /** Transient boost added by bass onsets, decaying back to zero. */
+  scopeSpinKick: number;
   /** Frequency ratio applied to the R axis, re-rolled on onsets. Integer-ish
    *  ratios are what turn a Lissajous figure into a closed geometric form. */
   scopeRatio: number;
@@ -216,6 +223,9 @@ export function createDrawState(): DrawState {
     scopeLastRoll: 0,
     scopeSymmetry: 3,
     scopeSpin: 1,
+    scopeSpinTarget: 1,
+    scopeSpinCur: 1,
+    scopeSpinKick: 0,
     scopeRatio: 1,
     crystalLayers: 2,
     crystalM: 6,
@@ -473,6 +483,13 @@ export function drawFrame(
         // absolute level that half of all material never reaches.
         state.scopeDeltaPeak = Math.max(bDelta, state.scopeDeltaPeak * 0.999);
         const onsetThresh = Math.max(0.012, state.scopeDeltaPeak * 0.45);
+
+        // Each onset shoves the rotation and the shove bleeds off, so hits
+        // land as a visible lurch on top of whatever the steady rate is.
+        if (bDelta > onsetThresh) {
+          state.scopeSpinKick = Math.min(2.5, state.scopeSpinKick + bDelta * 5);
+        }
+        state.scopeSpinKick *= Math.pow(0.93, dt60);
         const stale = state.tick - state.scopeLastRoll > SCOPE_MAX_DWELL;
 
         if ((bDelta > onsetThresh || stale) && Math.random() > ink * 0.6) {
@@ -481,7 +498,17 @@ export function drawFrame(
           if (roll < 0.34) {
             state.scopeSymmetry = 2 + Math.floor(Math.random() * 7); // 2..8
           } else if (roll < 0.5) {
-            state.scopeSpin = -state.scopeSpin;
+            // Direction and rate together. Flipping direction alone always
+            // looked the same, because the rate never changed — the figure
+            // wheeled at one speed forever and only ever reversed. Re-rolling
+            // the multiplier is what makes the motion read as phrased rather
+            // than as a metronome. 0 is in the set not to stop the figure —
+            // measured, it is never still, because the onset kick keeps
+            // feeding it — but to drop the steady rate away so that between
+            // hits it drifts and on each hit it lurches.
+            if (Math.random() < 0.55) state.scopeSpin = -state.scopeSpin;
+            const RATES = [0, 0.3, 0.7, 1, 1.6, 2.6, 4];
+            state.scopeSpinTarget = RATES[Math.floor(Math.random() * RATES.length)];
           } else if (roll < 0.74) {
             // Small rational ratios give closed, knot-like figures; anything
             // far from one just smears. A wider set than before, since this
@@ -506,12 +533,18 @@ export function drawFrame(
           }
         }
       }
-      // Half the old rate, and slower still while a pattern is resolving. A
-      // figure that holds its angle superimposes on itself frame after frame
-      // and sharpens; one that keeps turning smears its own detail away.
+      // Eased toward the target so a rate change glides rather than steps —
+      // an instant jump in angular velocity reads as a glitch.
+      state.scopeSpinCur +=
+        (state.scopeSpinTarget - state.scopeSpinCur) * (1 - Math.pow(0.97, dt60));
+      // Slower while a pattern is resolving: a figure that holds its angle
+      // superimposes on itself frame after frame and sharpens, where one that
+      // keeps turning smears its own detail away.
       state.scopeAngle +=
         (0.0004 + Math.min(0.001, state.envelope * 0.0015)) *
-        (1 - 0.35 * ink) * state.scopeSpin * dt60;
+        (1 - 0.35 * ink) *
+        (state.scopeSpinCur + state.scopeSpinKick) *
+        state.scopeSpin * dt60;
       state.scopePeak = drawLissajous(
         ctx, width, height, time, timeL, timeR, palette, gain,
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
