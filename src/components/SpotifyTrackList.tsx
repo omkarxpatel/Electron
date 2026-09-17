@@ -14,6 +14,8 @@ interface Props {
   onPlay: (track: SpotifyTrack, contextUri: string) => void;
   onLoadMore: () => void;
   hasMore: boolean;
+  /** Player shuffle state. Decides where the header Play button starts. */
+  shuffle: boolean;
 }
 
 interface MenuState {
@@ -32,6 +34,7 @@ function SpotifyTrackListImpl({
   onPlay,
   onLoadMore,
   hasMore,
+  shuffle,
 }: Props) {
   useRenderCount('SpotifyTrackList');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -84,6 +87,20 @@ function SpotifyTrackListImpl({
     },
     [onPlay, contextUri],
   );
+
+  // With shuffle on, start somewhere random rather than on track 1. Handing
+  // Spotify no offset at all and letting its own shuffle choose would be
+  // tidier, but it isn't dependable — a shuffled context still tends to open
+  // on the first track, which is the thing this is meant to avoid.
+  // The draw is over the tracks loaded so far, so on a long playlist it
+  // favours the earlier pages until you've scrolled further in.
+  const handlePlayPlaylist = useCallback(() => {
+    if (!contextUri || tracks.length === 0) return;
+    const start = shuffle
+      ? tracks[Math.floor(Math.random() * tracks.length)]
+      : tracks[0];
+    onPlay(start, contextUri);
+  }, [onPlay, contextUri, tracks, shuffle]);
 
   // Right-click → context menu state lives here so closing the menu doesn't
   // re-render every row. Stable handler factory pattern same as handleRowClick.
@@ -155,6 +172,18 @@ function SpotifyTrackListImpl({
             {playlist.owner.display_name ?? playlist.owner.id} ·{' '}
             {playlist.tracks.total} tracks
           </div>
+          {tracks.length > 0 && (
+            <button
+              type="button"
+              className="sp-track-header-play"
+              onClick={handlePlayPlaylist}
+              title={shuffle ? 'Play playlist from a random track' : 'Play playlist'}
+              aria-label={`Play ${playlist.name}`}
+            >
+              <IconPlay />
+              Play
+            </button>
+          )}
         </div>
       </header>
 
@@ -204,6 +233,14 @@ function SpotifyTrackListImpl({
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />
       )}
     </div>
+  );
+}
+
+function IconPlay() {
+  return (
+    <svg width="11" height="12" viewBox="0 0 11 12" aria-hidden="true">
+      <path d="M1 1.2 9.6 6 1 10.8z" fill="currentColor" />
+    </svg>
   );
 }
 

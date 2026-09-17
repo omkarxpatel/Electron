@@ -83,6 +83,14 @@ export async function getPlaylistTracks(
   return data;
 }
 
+/** Single playlist by id — used to restore the last-opened playlist on
+ *  launch, which may sit outside the first page of `/me/playlists`. */
+export async function getPlaylist(playlistId: string): Promise<SpotifyPlaylist | null> {
+  return request<SpotifyPlaylist>(
+    `/playlists/${playlistId}?fields=id,name,description,uri,images,owner(id,display_name),tracks(total)`,
+  );
+}
+
 export async function getPlaybackState(): Promise<SpotifyPlaybackState | null> {
   return request<SpotifyPlaybackState>('/me/player');
 }
@@ -126,16 +134,22 @@ export function invalidateQueueCache(): void {
   queueCachedAt = 0;
 }
 
+/** `offsetTrackUri` picks the starting track *inside* the context by URI.
+ *  An index-based `offset: { position }` can't be computed correctly from
+ *  here: Spotify drops unavailable and local items when it builds the
+ *  playback context, so every position past one of them resolves to the
+ *  following track, and the final position falls off the end and plays
+ *  nothing. A URI is resolved against the context by Spotify itself. */
 export async function play(
   uris?: string[],
   contextUri?: string,
-  offsetIdx?: number,
+  offsetTrackUri?: string,
   deviceId?: string,
 ): Promise<void> {
   const body: Record<string, unknown> = {};
   if (uris && uris.length > 0) body.uris = uris;
   if (contextUri) body.context_uri = contextUri;
-  if (typeof offsetIdx === 'number') body.offset = { position: offsetIdx };
+  if (offsetTrackUri) body.offset = { uri: offsetTrackUri };
   const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
   await request(`/me/player/play${query}`, {
     method: 'PUT',

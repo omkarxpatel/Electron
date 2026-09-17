@@ -10,6 +10,7 @@ const KEY_CLIENT_ID = 'av.spotify.clientId';
 const KEY_REFRESH_TOKEN = 'av.spotify.refreshToken';
 const KEY_ACCESS_TOKEN = 'av.spotify.accessToken';
 const KEY_TOKEN_EXPIRY = 'av.spotify.tokenExpiry';
+const KEY_LAST_PLAYLIST = 'av.spotify.lastPlaylistId';
 
 export function getClientId(): string | null {
   // Normalize empty/whitespace to null. A stored '' would otherwise read as
@@ -25,6 +26,22 @@ export function setClientId(id: string): void {
 
 export function clearClientId(): void {
   localStorage.removeItem(KEY_CLIENT_ID);
+}
+
+/** Last playlist the user opened, restored on the next launch. Only the id is
+ *  kept — name, cover and track count are re-fetched so a renamed or
+ *  re-covered playlist doesn't come back stale. */
+export function getLastPlaylistId(): string | null {
+  const id = localStorage.getItem(KEY_LAST_PLAYLIST)?.trim();
+  return id ? id : null;
+}
+
+export function setLastPlaylistId(id: string): void {
+  localStorage.setItem(KEY_LAST_PLAYLIST, id);
+}
+
+export function clearLastPlaylistId(): void {
+  localStorage.removeItem(KEY_LAST_PLAYLIST);
 }
 
 export interface StoredTokens {

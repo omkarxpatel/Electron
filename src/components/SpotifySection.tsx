@@ -137,6 +137,7 @@ export function SpotifySection({ active, showLyrics }: Props) {
           onPlay={library.playTrack}
           onLoadMore={library.loadMoreTracks}
           hasMore={library.tracksNextOffset !== null}
+          shuffle={playback.playback?.shuffle_state === true}
         />
 
         {showLyrics && (

@@ -14,7 +14,7 @@ interface Props {
   selectedPlaylistId: string | null;
   onSelectPlaylist: (playlist: SpotifyPlaylist) => void;
   searchTracks: (query: string) => Promise<SpotifyTrack[]>;
-  playTrack: (track: SpotifyTrack, contextUri?: string, offsetIdx?: number) => void;
+  playTrack: (track: SpotifyTrack, contextUri?: string) => void;
   currentlyPlayingId: string | null;
   /** True when the panel is open. Bumps refresh keys for inner views that
    *  should refetch on each open (saved albums, queue). */
@@ -113,7 +113,7 @@ function SpotifyOverlayImpl({
         <AlbumDetailView
           album={selectedAlbum}
           onBack={backToLibrary}
-          onPlay={(track, contextUri, offsetIdx) => playTrack(track, contextUri, offsetIdx)}
+          onPlay={(track, contextUri) => playTrack(track, contextUri)}
           currentlyPlayingId={currentlyPlayingId}
         />
       )}
@@ -135,7 +135,7 @@ function SpotifyOverlayImpl({
 interface AlbumDetailViewProps {
   album: AlbumWithTracks;
   onBack: () => void;
-  onPlay: (track: SpotifyTrack, contextUri: string, offsetIdx: number) => void;
+  onPlay: (track: SpotifyTrack, contextUri: string) => void;
   currentlyPlayingId: string | null;
 }
 
@@ -187,7 +187,7 @@ function AlbumDetailView({ album, onBack, onPlay, currentlyPlayingId }: AlbumDet
                   key={`${track.id}-${index}`}
                   className="sp-track-row"
                   data-playing={isPlaying ? 'true' : 'false'}
-                  onClick={() => onPlay(trackForPlay, album.uri, index)}
+                  onClick={() => onPlay(trackForPlay, album.uri)}
                 >
                   <td className="sp-track-index">
                     {isPlaying ? <span className="sp-track-playing-icon">♫</span> : index + 1}

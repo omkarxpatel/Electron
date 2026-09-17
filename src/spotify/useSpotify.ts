@@ -1,23 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './api';
 import { authorize, isAuthenticated, disconnect } from './auth';
-import { getClientId, setClientId, clearClientId } from './storage';
+import {
+  getClientId,
+  setClientId,
+  clearClientId,
+  getLastPlaylistId,
+  setLastPlaylistId,
+  clearLastPlaylistId,
+} from './storage';
 import { useVisibility } from '../hooks/useVisibility';
 import type {
   SpotifyPlaybackState,
   SpotifyPlaylist,
   SpotifyTrack,
 } from './types';
-
-/** A track loaded from a playlist, paired with its ORIGINAL playlist position.
- *  We can't use the filtered-array index as the position because null/local
- *  items get filtered out — using the index would shift positions and play
- *  the wrong track when Spotify resolves `play(context_uri, offset.position)`.
- *  Storing position alongside the track makes the invariant local. */
-export interface PlaylistEntry {
-  position: number;
-  track: SpotifyTrack;
-}
 
 export interface SpotifyState {
   clientId: string | null;
@@ -29,7 +26,7 @@ export interface SpotifyState {
   playlistsLoading: boolean;
 
   selectedPlaylist: SpotifyPlaylist | null;
-  entries: PlaylistEntry[];
+  tracks: SpotifyTrack[];
   tracksLoading: boolean;
   /** Total tracks in the selected playlist (for pagination state). */
   tracksTotal: number;
@@ -62,7 +59,7 @@ export function useSpotify() {
     playlists: [],
     playlistsLoading: false,
     selectedPlaylist: null,
-    entries: [],
+    tracks: [],
     tracksLoading: false,
     tracksTotal: 0,
     tracksNextOffset: null,
@@ -136,12 +133,12 @@ export function useSpotify() {
 
   const signOut = useCallback(() => {
     disconnect();
+    clearLastPlaylistId();
     setState((s) => ({
       ...s,
       authed: false,
       playlists: [],
       tracks: [],
-      trackPositions: [],
       selectedPlaylist: null,
       playback: null,
       savedCurrent: null,
@@ -151,13 +148,13 @@ export function useSpotify() {
   const resetClientId = useCallback(() => {
     disconnect();
     clearClientId();
+    clearLastPlaylistId();
     setState((s) => ({
       ...s,
       clientId: null,
       authed: false,
       playlists: [],
       tracks: [],
-      trackPositions: [],
       selectedPlaylist: null,
       playback: null,
       savedCurrent: null,
@@ -178,30 +175,25 @@ export function useSpotify() {
   }, []);
 
   const selectPlaylist = useCallback(async (playlist: SpotifyPlaylist) => {
+    setLastPlaylistId(playlist.id);
     setState((s) => ({
       ...s,
       selectedPlaylist: playlist,
       tracks: [],
-      trackPositions: [],
       tracksLoading: true,
       tracksTotal: 0,
       tracksNextOffset: null,
     }));
     try {
       const res = await api.getPlaylistTracks(playlist.id, 100, 0);
-      // Walk items with their original positions so we can pass the correct
-      // offset to Spotify's `play(context_uri, offset.position)` even when
-      // null/local items get filtered out (these would shift the indices
-      // and cause clicks to play the wrong track).
       const baseOffset = res.offset ?? 0;
-      const entries: PlaylistEntry[] = [];
-      res.items.forEach((it, i) => {
-        if (it.track) entries.push({ position: baseOffset + i, track: it.track });
-      });
+      // Null items (removed or local-only) are dropped; paging still advances
+      // by the raw item count below so the next page starts in the right place.
+      const tracks = res.items.flatMap((it) => (it.track ? [it.track] : []));
       const fetchedThrough = baseOffset + res.items.length;
       setState((s) => ({
         ...s,
-        entries,
+        tracks,
         tracksLoading: false,
         tracksTotal: res.total,
         // Continue from the next playlist position, NOT the filtered count —
@@ -223,17 +215,14 @@ export function useSpotify() {
     try {
       const res = await api.getPlaylistTracks(playlistId, 100, offset);
       const baseOffset = res.offset ?? offset;
-      const moreEntries: PlaylistEntry[] = [];
-      res.items.forEach((it, i) => {
-        if (it.track) moreEntries.push({ position: baseOffset + i, track: it.track });
-      });
+      const moreTracks = res.items.flatMap((it) => (it.track ? [it.track] : []));
       const fetchedThrough = baseOffset + res.items.length;
       setState((cur) => {
         // Skip if user switched playlists during fetch
         if (cur.selectedPlaylist?.id !== playlistId) return { ...cur, tracksLoading: false };
         return {
           ...cur,
-          entries: [...cur.entries, ...moreEntries],
+          tracks: [...cur.tracks, ...moreTracks],
           tracksLoading: false,
           tracksTotal: res.total,
           // Same fix as selectPlaylist — advance by the playlist-position
@@ -252,23 +241,12 @@ export function useSpotify() {
   const playTrack = useCallback(async (
     track: SpotifyTrack,
     contextUri?: string,
-    /** Explicit index within the context — used by views (e.g. album drill-in)
-     *  where `stateRef.current.tracks` isn't the right list to search. */
-    explicitOffsetIdx?: number,
   ) => {
     const doPlay = async (deviceId?: string) => {
       if (contextUri) {
-        // Resolve the playlist position to pass to Spotify:
-        //   - explicitOffsetIdx wins (album drill-in passes its own index)
-        //   - otherwise find the entry for this track and use its stored
-        //     position (filtering nulls/local items shifts the array index
-        //     but NOT the playlist position the entry was built with).
-        let trackIndex: number | undefined = explicitOffsetIdx;
-        if (trackIndex === undefined) {
-          const entry = stateRef.current.entries.find((e) => e.track.id === track.id);
-          if (entry) trackIndex = entry.position;
-        }
-        await api.play(undefined, contextUri, trackIndex, deviceId);
+        // Start the context at this track by URI. Positions can't be mapped
+        // reliably from our side — see the note on `api.play`.
+        await api.play(undefined, contextUri, track.uri, deviceId);
       } else {
         await api.play([track.uri], undefined, undefined, deviceId);
       }
@@ -425,7 +403,24 @@ export function useSpotify() {
   useEffect(() => {
     if (!state.authed) return;
     loadPlaylists();
-  }, [state.authed, loadPlaylists]);
+
+    const lastId = getLastPlaylistId();
+    if (!lastId) return;
+    void api
+      .getPlaylist(lastId)
+      .then((playlist) => {
+        if (!playlist) return;
+        // Don't stomp a selection the user made while this was in flight.
+        if (stateRef.current.selectedPlaylist) return;
+        void selectPlaylist(playlist);
+      })
+      .catch((err) => {
+        // Deleted, unfollowed, or belongs to another account now — drop the
+        // id so we stop asking for it on every launch.
+        console.error('restoring last playlist failed:', err);
+        clearLastPlaylistId();
+      });
+  }, [state.authed, loadPlaylists, selectPlaylist]);
 
   /* ─── Polling: keep playback state fresh ─── */
 
@@ -586,13 +581,8 @@ export function useSpotify() {
     };
   }, [state.authed, currentTrackId]);
 
-  // Display-only projection. Memoized so consumers passing `tracks` to
-  // memo'd children don't get a fresh array identity on every poll re-render.
-  const tracks = useMemo(() => state.entries.map((e) => e.track), [state.entries]);
-
   return {
     ...state,
-    tracks,
     saveClientId,
     connect,
     signOut,

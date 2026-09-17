@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { useSpotify } from './useSpotify';
-import type { PlaylistEntry, SpotifyState } from './useSpotify';
+import type { SpotifyState } from './useSpotify';
 import type {
   SpotifyPlaybackState,
   SpotifyPlaylist,
@@ -59,7 +59,6 @@ export interface LibraryContextValue {
   playlists: SpotifyPlaylist[];
   playlistsLoading: boolean;
   selectedPlaylist: SpotifyPlaylist | null;
-  entries: PlaylistEntry[];
   tracks: SpotifyTrack[];
   tracksLoading: boolean;
   tracksTotal: number;
@@ -72,7 +71,6 @@ export interface LibraryContextValue {
   playTrack: (
     track: SpotifyTrack,
     contextUri?: string,
-    explicitOffsetIdx?: number,
   ) => Promise<void> | void;
   searchTracks: (query: string) => Promise<SpotifyTrack[]>;
 }
@@ -140,7 +138,6 @@ export function SpotifyProvider({ children }: ProviderProps) {
       playlists: spotify.playlists,
       playlistsLoading: spotify.playlistsLoading,
       selectedPlaylist: spotify.selectedPlaylist,
-      entries: spotify.entries,
       tracks: spotify.tracks,
       tracksLoading: spotify.tracksLoading,
       tracksTotal: spotify.tracksTotal,
@@ -163,7 +160,6 @@ export function SpotifyProvider({ children }: ProviderProps) {
       spotify.playlists,
       spotify.playlistsLoading,
       spotify.selectedPlaylist,
-      spotify.entries,
       spotify.tracks,
       spotify.tracksLoading,
       spotify.tracksTotal,
@@ -185,4 +181,4 @@ export function SpotifyProvider({ children }: ProviderProps) {
 
 // Re-export the underlying SpotifyState type (used by lyrics + other consumers
 // that may want the playback shape directly without going through the hook).
-export type { SpotifyState, PlaylistEntry };
+export type { SpotifyState };
