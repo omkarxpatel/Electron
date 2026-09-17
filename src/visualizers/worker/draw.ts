@@ -450,7 +450,7 @@ export function drawFrame(
             // toward the looser grids, since the tightest one packs enough
             // chords in to read as clutter rather than as structure.
             state.scopeLattice =
-              Math.random() < 0.5 ? 0 : 1 + Math.floor(Math.random() * 2.4);
+              Math.random() < 0.55 ? 0 : 1 + Math.floor(Math.random() * 3);
           }
         }
       }
@@ -1588,7 +1588,7 @@ function drawLissajous(
   // still reads as a line. Light output is width times alpha, so cutting the
   // width this far has to be paid back in alpha below or the whole figure
   // just goes dim — the glow gets concentrated, not removed.
-  const bloomW = Math.max(1.5, baseR * 0.019 * (0.4 + glow));
+  const bloomW = Math.max(1.5, baseR * 0.013 * (0.4 + glow));
 
   const sym = Math.max(1, Math.min(8, symmetry));
   // Same geometry, different hue per copy. Built once per frame rather than
@@ -1603,18 +1603,18 @@ function drawLissajous(
   for (let c = 0; c < sym; c++) {
     ctx.save();
     ctx.rotate(angle + (c * Math.PI * 2) / sym);
-    const copyAlpha = c === 0 ? 1 : 0.4;
+    const copyAlpha = c === 0 ? 1 : 0.32;
     ctx.strokeStyle = grads[c];
 
     // Per-frame alpha is deliberately small. With persistence doing the work,
     // a bright per-frame stroke would saturate instantly and there would be
     // nothing left to build.
-    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 0.75;
+    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 0.4;
     ctx.lineWidth = bloomW;
     ctx.stroke(whole);
 
     for (let lvl = 0; lvl < LEVELS; lvl++) {
-      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 0.55;
+      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 0.34;
       ctx.lineWidth = baseW * (0.75 + (lvl / (LEVELS - 1)) * 0.6);
       ctx.stroke(paths[lvl]);
     }
