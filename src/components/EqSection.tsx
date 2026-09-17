@@ -32,10 +32,11 @@ interface Props {
   preEqAnalyserR: AnalyserNode | null;
   /** Post-EQ analyser — drives the response-curve halo + per-band activity. */
   analyser: AnalyserNode | null;
+  /** Post-EQ stereo analysers — drive the Enhancer's per-channel output meter. */
+  analyserL: AnalyserNode | null;
+  analyserR: AnalyserNode | null;
   /** Peak catcher, for the Enhancer's live gain-reduction readout. */
-  limiter: DynamicsCompressorNode | null;
   /** Headroom the EQ auto-trim is giving back, dB. */
-  autoTrimDb: number;
   /** Shared per-band AI delta ref. The audio engine reads it each tick to
    *  add on top of the user's baseline; useAiEnhancer writes to it. */
   aiDeltaRef: { current: number[] };
@@ -63,8 +64,8 @@ export function EqSection({
   preEqAnalyserL,
   preEqAnalyserR,
   analyser,
-  limiter,
-  autoTrimDb,
+  analyserL,
+  analyserR,
   aiDeltaRef,
   baselineRef,
   active,
@@ -203,8 +204,8 @@ export function EqSection({
       paletteId={paletteId}
       paletteOverride={paletteOverride}
       analyser={analyser}
-      limiter={limiter}
-      autoTrimDb={autoTrimDb}
+      analyserL={analyserL}
+      analyserR={analyserR}
     />
   );
 }

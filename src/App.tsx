@@ -76,7 +76,7 @@ function AppContent() {
   // each tick without re-running its effect on every slider move.
   const baselineRef = useRef<number[]>(eq.state.bands);
   baselineRef.current = eq.state.bands;
-  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, limiter, autoTrimDb } =
+  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR } =
     useAudioEngine(
     audioSource.stream,
     eq.state,
@@ -247,6 +247,8 @@ function AppContent() {
               preEqAnalyserL={preEqAnalyserL}
               preEqAnalyserR={preEqAnalyserR}
               analyser={analyser}
+              analyserL={analyserL}
+              analyserR={analyserR}
               aiDeltaRef={aiDeltaRef}
               baselineRef={baselineRef}
               active={isActive}
@@ -256,8 +258,6 @@ function AppContent() {
               accent={accent}
               paletteId={settings.palette}
               paletteOverride={albumPalette}
-              limiter={limiter}
-              autoTrimDb={autoTrimDb}
             />
 
             <SpotifySection active={isActive} showLyrics={settings.showLyrics} />

@@ -52,8 +52,8 @@ interface Props {
   /** Album-art derived palette override; takes precedence over paletteId. */
   paletteOverride: Palette | null;
   analyser: AnalyserNode | null;
-  limiter: DynamicsCompressorNode | null;
-  autoTrimDb: number;
+  analyserL: AnalyserNode | null;
+  analyserR: AnalyserNode | null;
 }
 
 const BAND_COUNTS: ReadonlyArray<BandCount> = [10, 15, 31];
@@ -88,8 +88,8 @@ function EqPanelImpl({
   paletteId,
   paletteOverride,
   analyser,
-  limiter,
-  autoTrimDb,
+  analyserL,
+  analyserR,
 }: Props) {
   const freqs = frequenciesFor(state.bandCount);
   useRenderCount('EqPanel');
@@ -361,9 +361,10 @@ function EqPanelImpl({
         setBalance={setBalance}
         toggleBypass={toggleEnhancerBypass}
         reset={resetEnhancer}
-        limiter={limiter}
         analyser={analyser}
-        autoTrimDb={autoTrimDb}
+        analyserL={analyserL}
+        analyserR={analyserR}
+        accent={accent}
         active={active !== false}
       />
     </aside>

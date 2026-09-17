@@ -1204,6 +1204,32 @@
   color: rgba(255, 255, 255, 0.4);
 }
 
+.sp-track-header-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  background: var(--accent);
+  color: #08080b;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 12.5px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.sp-track-header-play:hover {
+  filter: brightness(1.08);
+}
+
+.sp-track-header-play:active {
+  transform: scale(0.97);
+}
+
 .sp-track-table th {
   text-align: left;
   font-size: 10px;
@@ -3261,7 +3287,7 @@
   display: flex;
   flex-direction: row;
   align-items: center;
-  /* space-between + a real element in the middle (the headroom meter) instead
+  /* space-between + a real element in the middle (the meter bridge) instead
      of space-around + a 36px gap. Five small knobs under space-around smeared
      across the full panel width and read as an empty strip. */
   justify-content: space-between;
@@ -3975,83 +4001,209 @@
 
 /* ── Headroom / gain-staging meter (Enhancer strip) ───────────────────── */
 
-.headroom-meter {
+/* ── Meter bridge ───────────────────────────────────────────────────────
+   One card holding the gain-staging readouts, the output ladders and the
+   waveform as three full-width rows sharing a left edge and a width. These
+   used to be three separate cards at three different sizes with three label
+   registers, which is what made the middle of the strip look arbitrary. */
+.meter-bridge {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  flex: 0 0 auto;
-  min-width: 104px;
-  padding: 6px 10px;
+  gap: 4px;
+  flex: 1 1 auto;
+  max-width: 420px;
+  padding: 7px 11px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid rgba(255, 255, 255, 0.06);
   font-variant-numeric: tabular-nums;
 }
 
-.headroom-row {
+/* Hairlines between rows instead of three separate bezels. */
+.meter-bridge > * + * {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 4px;
+}
+
+.enhancer-panel[data-bypass='true'] .meter-bridge {
+  opacity: 0.4;
+}
+
+/* Row 2: the output ladders. Chrome lives on .meter-bridge now. */
+.output-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.output-meter-head {
   display: flex;
   align-items: baseline;
   gap: 5px;
 }
 
-.headroom-key {
+.output-meter-key {
   font-size: 9px;
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.35);
-  width: 30px;
-  flex: 0 0 auto;
 }
 
-.headroom-val {
-  font-size: 12px;
+.output-meter-val {
+  font-size: 11px;
   color: rgba(255, 255, 255, 0.82);
   margin-left: auto;
 }
 
-.headroom-unit {
+.output-meter.is-over .output-meter-val {
+  color: #e5484d;
+}
+
+.output-meter-unit {
   font-size: 9px;
   color: rgba(255, 255, 255, 0.3);
 }
 
-.headroom-bar {
+.output-meter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.output-meter-ch {
+  font-size: 8.5px;
+  color: rgba(255, 255, 255, 0.3);
+  width: 6px;
+  flex: 0 0 auto;
+}
+
+.output-meter-track {
   position: relative;
-  height: 3px;
+  flex: 1;
+  height: 7px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   overflow: hidden;
-  margin-top: 1px;
 }
 
-.headroom-bar-fill {
+/* Full-width zone gradient revealed by clip-path, so a given colour always
+   means the same level. Hard stops rather than a blend — this is an LED
+   ladder, not a fade. Zones land where they mean something on the -54..+6
+   scale: the hot zone starts around -7 dB and the top zone at exactly
+   0 dBFS (90%), the same threshold the CLIP lamp watches.
+   The ramp is built from the palette accent by mixing toward white, so it
+   themes with the rest of the UI and still reads as "getting hotter" at any
+   hue — which a green/amber/red ladder cannot do when the accent is itself
+   red or green.
+   No CSS transition: the rAF ballistics in OutputMeter are the smoothing,
+   and a transition would fight them. */
+.output-meter-fill {
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 0%;
-  border-radius: 2px;
-  background: var(--accent, #1db954);
-  transition: width 80ms linear;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    var(--accent, #1ed760) 0%,
+    var(--accent, #1ed760) 78%,
+    color-mix(in oklab, var(--accent, #1ed760) 55%, #ffffff) 78%,
+    color-mix(in oklab, var(--accent, #1ed760) 55%, #ffffff) 90%,
+    #ffffff 90%
+  );
+  clip-path: inset(0 100% 0 0);
 }
 
-.headroom-clip {
-  margin-top: 2px;
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  text-align: center;
-  padding: 2px 0;
-  border-radius: 4px;
-  color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.03);
-  transition: background 90ms linear, color 90ms linear;
+/* Cuts the bar into discrete segments. Sits above the fill, so the lit
+   portion reads as a row of LEDs instead of one continuous strip. */
+.output-meter-grille {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 4px,
+    rgba(8, 8, 10, 0.92) 4px 6px
+  );
 }
 
-.headroom-meter.is-clipping .headroom-clip {
-  color: #fff;
-  background: #e5484d;
+/* 0 dBFS, at norm(0) = 90% of the -54..+6 dB scale. */
+.output-meter-zero {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 90%;
+  width: 2px;
+  /* Dark, not bright: this notches the lit bar at 0 dBFS instead of adding
+     a third white mark next to the peak-hold tick. It shows up exactly when
+     the level reaches the point it is marking. */
+  background: rgba(0, 0, 0, 0.8);
 }
 
-.enhancer-panel[data-bypass='true'] .headroom-meter {
+.output-meter-hold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.5);
+  transform: translateX(-1px);
+}
+
+.enhancer-panel[data-bypass='true'] .output-meter {
   opacity: 0.4;
 }
 
+/* Row 2: the waveform. A lit screen set into the card — the inner shadow
+   and hairline bezel are what stop a 30px strip from reading as a flat
+   panel, and the graticule shows through the gaps between hits. */
+.wavestrip {
+  display: block;
+  min-width: 0;
+}
+
+.wavestrip-face {
+  position: relative;
+  width: 100%;
+  border-radius: 3px;
+  overflow: hidden;
+  background: radial-gradient(
+    120% 100% at 50% 0%,
+    rgba(255, 255, 255, 0.045),
+    rgba(0, 0, 0, 0.5) 75%
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+/* Centre line for the trace to sit on, plus the graticule ticks that make it
+   scan-like rather than an empty box. */
+.wavestrip-face::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.wavestrip-face::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 39px,
+    rgba(255, 255, 255, 0.05) 39px 40px
+  );
+}
+
+.wavestrip-canvas {
+  position: relative;
+  display: block;
+}
 
 /* ── Custom palette color pickers ─────────────────────────────────────── */
 

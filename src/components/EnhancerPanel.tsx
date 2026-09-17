@@ -1,7 +1,8 @@
 import { memo } from 'react';
 import type { EnhancerState } from '../state/enhancer';
 import { Knob } from './Knob';
-import { HeadroomMeter } from './HeadroomMeter';
+import { OutputMeter } from './OutputMeter';
+import { LiveWaveform } from './LiveWaveform';
 
 interface Props {
   state: EnhancerState;
@@ -12,9 +13,11 @@ interface Props {
   setBalance: (v: number) => void;
   toggleBypass: () => void;
   reset: () => void;
-  limiter: DynamicsCompressorNode | null;
   analyser: AnalyserNode | null;
-  autoTrimDb: number;
+  analyserL: AnalyserNode | null;
+  analyserR: AnalyserNode | null;
+  /** Active palette accent — the low end of the waveform's colour ramp. */
+  accent: string;
   active: boolean;
 }
 
@@ -31,9 +34,10 @@ function EnhancerPanelImpl({
   setBalance,
   toggleBypass,
   reset,
-  limiter,
   analyser,
-  autoTrimDb,
+  analyserL,
+  analyserR,
+  accent,
   active,
 }: Props) {
   return (
@@ -89,13 +93,15 @@ function EnhancerPanelImpl({
           onChange={setTreble}
         />
         <div className="knob-stack-divider" aria-hidden />
-        <HeadroomMeter
-          limiter={limiter}
-          analyser={analyser}
-          volume={state.volume}
-          autoTrimDb={autoTrimDb}
-          active={active}
-        />
+        <div className="meter-bridge">
+          <OutputMeter
+            analyserL={analyserL}
+            analyserR={analyserR}
+            volume={state.volume}
+            active={active}
+          />
+          <LiveWaveform analyser={analyser} accent={accent} active={active} />
+        </div>
         <div className="knob-stack-divider" aria-hidden />
         <Knob
           label="Volume"
