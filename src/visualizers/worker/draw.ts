@@ -175,6 +175,10 @@ export interface DrawState {
   scopeSpinCur: number;
   /** Transient boost added by bass onsets, decaying back to zero. */
   scopeSpinKick: number;
+  /** Peripheral ambience: one lit-ness value per corner band, and the slow
+   *  running peak each is normalized against. See drawScopeAmbience. */
+  scopeAmbEnv: Float32Array;
+  scopeAmbPeak: Float32Array;
   /** Frequency ratio applied to the R axis, re-rolled on onsets. Integer-ish
    *  ratios are what turn a Lissajous figure into a closed geometric form. */
   scopeRatio: number;
@@ -226,6 +230,8 @@ export function createDrawState(): DrawState {
     scopeSpinTarget: 1,
     scopeSpinCur: 1,
     scopeSpinKick: 0,
+    scopeAmbEnv: new Float32Array(4),
+    scopeAmbPeak: new Float32Array(4),
     scopeRatio: 1,
     crystalLayers: 2,
     crystalM: 6,
@@ -454,6 +460,12 @@ export function drawFrame(
       if (!state.scopeX || state.scopeX.length !== n) {
         state.scopeX = new Float32Array(n);
         state.scopeY = new Float32Array(n);
+      }
+      // Light the rim before anything else goes down, so the geometry and
+      // its echo history both sit on top of it. Immersive only: four corner
+      // glows across a 110px banner strip is a smear, not a surround.
+      if (isLargeStage(stageScaleOf(height))) {
+        drawScopeAmbience(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, dt60);
       }
       // ── Spend the ink on the coherent frames ──
       // scopeInk was measured above, before applyTrails.
@@ -1566,6 +1578,141 @@ function coherenceOf(
 
   const span = Math.max(0.02, state.scopeCohHi - state.scopeCohLo);
   return Math.min(1, Math.max(0, (c - state.scopeCohLo) / span));
+}
+
+/* ============================================================
+   Peripheral ambience
+   ============================================================ */
+
+/** One frequency band per corner, walking the rim in ascending order so the
+ *  lighting reads as the spectrum wrapped around the frame rather than as
+ *  four unrelated lamps. Lows sit at the bottom, air at the top. */
+const SCOPE_AMB_BANDS: readonly (readonly [number, number])[] = [
+  [20, 140],     // bottom-left  — sub
+  [140, 620],    // bottom-right — low-mid
+  [620, 2800],   // top-right    — high-mid
+  [2800, 11000], // top-left     — air
+];
+/** Corner positions as fractions of the stage, in the same order. */
+const SCOPE_AMB_AT: readonly (readonly [number, number])[] = [
+  [0, 1], [1, 1], [1, 0], [0, 0],
+];
+/** How far a corner glow reaches, relative to the longer stage edge. Large
+ *  enough that adjacent corners overlap along the edge between them —
+ *  otherwise the four midpoints of the frame stay black and the effect reads
+ *  as spotlights rather than as surround. */
+const SCOPE_AMB_REACH = 0.8;
+/** Lit-ness release per 60 Hz frame. Attack is instant. Slow on purpose: the
+ *  brief was "mild", and a rim that tracks the envelope sample-for-sample
+ *  strobes. */
+const SCOPE_AMB_RELEASE = 0.94;
+/** Per-band headroom decay. Same trick as the onset threshold and the
+ *  coherence bounds — a fixed scale would leave the air corner permanently
+ *  dark, since it never approaches the level the bass band sits at. */
+const SCOPE_AMB_PEAK_DECAY = 0.9995;
+/** Degrees of hue between one corner and the next. Sampling the palette at
+ *  four positions is not enough on its own: most of these palettes are a
+ *  narrow ramp, and Spotify is a single green, so all four corners came out
+ *  the same colour and the rim read as a flat vignette. Rotating the hue as
+ *  well spreads them over about two thirds of the wheel, which stays related
+ *  to the palette while making each corner its own light. Same arc idea as
+ *  SCOPE_HUE_ARC, which fans the symmetry copies. */
+const SCOPE_AMB_HUE_STEP = 62;
+/** Saturation floor, so a near-white or near-grey palette stop still tints
+ *  its corner instead of washing it out. */
+const SCOPE_AMB_SAT = 0.45;
+
+/**
+ * A soft wash of light around the edge of the stage, under everything else.
+ *
+ * Scope draws inside the middle of the frame and leaves the corners black,
+ * which is what made a large stage feel empty around the geometry. This fills
+ * that space with light rather than with more geometry — four corner
+ * gradients in `lighter`, each driven by its own band, each drifting through
+ * the palette at its own offset. It adds no lines to read, so the figure
+ * keeps its legibility while the frame stops being dead.
+ */
+function drawScopeAmbience(
+  ctx: AnyCanvasCtx,
+  w: number,
+  h: number,
+  freq: Uint8Array,
+  sampleRate: number,
+  palette: Palette,
+  state: DrawState,
+  amount: number,
+  dt60: number,
+): void {
+  const nyq = sampleRate / 2;
+  const rel = Math.pow(SCOPE_AMB_RELEASE, dt60);
+  const decay = Math.pow(SCOPE_AMB_PEAK_DECAY, dt60);
+  const env = state.scopeAmbEnv;
+  const peak = state.scopeAmbPeak;
+
+  for (let b = 0; b < SCOPE_AMB_BANDS.length; b++) {
+    const [loHz, hiHz] = SCOPE_AMB_BANDS[b];
+    const i0 = Math.max(1, Math.floor((loHz / nyq) * freq.length));
+    const i1 = Math.min(freq.length, Math.max(i0 + 1, Math.floor((hiHz / nyq) * freq.length)));
+    let sum = 0;
+    for (let i = i0; i < i1; i++) sum += freq[i];
+    const raw = sum / (i1 - i0) / 255;
+    peak[b] = Math.max(raw, peak[b] * decay);
+    const lit = Math.min(1, raw / Math.max(0.02, peak[b]));
+    env[b] = lit > env[b] ? lit : env[b] * rel + lit * (1 - rel);
+  }
+
+  const reach = Math.max(w, h) * SCOPE_AMB_REACH;
+  ctx.save();
+  // Additive, so the surround can only ever brighten the stage. Anything
+  // that could darken would fight the figure drawn on top of it.
+  ctx.globalCompositeOperation = 'lighter';
+  for (let b = 0; b < SCOPE_AMB_AT.length; b++) {
+    // Squared. The analyser has already smoothed these bands and the
+    // per-band normalization pins each one's recent peak at 1, so the raw
+    // value spends most of its time in the top third — measured, the treble
+    // corners averaged 0.87 and barely moved. Expanding the low end gives
+    // them somewhere to fall back to, which is what makes the rim breathe.
+    const lit = env[b] * env[b];
+    // A floor so a silent corner is still a presence rather than a hole, and
+    // the rest earned by its band. `amount` is the user's slider, applied
+    // straight: at 0 the layer is gone, at 2 it is twice the tuned level.
+    // Nothing downstream clamps it — the control is the last word on how
+    // bright this gets.
+    const alpha = (0.05 + lit * 0.22) * amount;
+    // Colour comes from two places: a palette position a quarter-turn apart
+    // per corner and creeping forward for all four together, and a fixed hue
+    // rotation on top of that. The first keeps the rim recognisably the
+    // user's palette and slowly moving; the second is what separates the
+    // corners when the palette is too narrow to do it alone.
+    const [sr, sg, sb] = sampleRgbAt(palette, ((b / 4 + state.tick * 0.0004) % 1 + 1) % 1);
+    const [h0, s0, l0] = rgbToHsl(sr, sg, sb);
+    const [r, g, bl] = hslToRgb(
+      (((h0 + (b * SCOPE_AMB_HUE_STEP) / 360) % 1) + 1) % 1,
+      Math.max(s0, SCOPE_AMB_SAT),
+      l0,
+    );
+    const cx = SCOPE_AMB_AT[b][0] * w;
+    const cy = SCOPE_AMB_AT[b][1] * h;
+    const rad = reach * (0.66 + lit * 0.34);
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+    // Front-loaded: the light belongs at the rim. A gentler falloff reaches
+    // the middle of the stage as a grey fog and costs the figure its
+    // contrast, which is the one thing this layer must not do.
+    grad.addColorStop(0, `rgba(${r},${g},${bl},${alpha})`);
+    grad.addColorStop(0.32, `rgba(${r},${g},${bl},${alpha * 0.3})`);
+    grad.addColorStop(0.72, `rgba(${r},${g},${bl},${alpha * 0.05})`);
+    grad.addColorStop(1, `rgba(${r},${g},${bl},0)`);
+    ctx.fillStyle = grad;
+    // Only the gradient's bounding box. Alpha is exactly zero outside `rad`,
+    // so clipping to it is lossless and keeps the layer from costing four
+    // full screens of fill.
+    ctx.fillRect(
+      Math.max(0, cx - rad), Math.max(0, cy - rad),
+      Math.min(w, cx + rad) - Math.max(0, cx - rad),
+      Math.min(h, cy + rad) - Math.max(0, cy - rad),
+    );
+  }
+  ctx.restore();
 }
 
 /** Returns the updated peak tracker. */

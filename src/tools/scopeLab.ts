@@ -73,6 +73,10 @@ function settingsFor(style: WaveformStyle): ResolvedSettings {
     particleDensity: 0.45,
     particleSize: 0.85,
     scopeDensity: ui.density,
+    // Off. Lab cells are 250px, below the threshold at which the ambience
+    // draws at all, so the value is inert here — it is set only to satisfy
+    // the type.
+    scopeAmbience: 0,
   };
 }
 

@@ -131,6 +131,20 @@ export function SettingsPanel({
               onChange={(v) => updateVisual('scopeDensity', v)}
               format={(v) => `${Math.round(v * 100)}%`}
             />
+            {/* Immersive only, because the effect is: four corner glows have
+                nowhere to go across a 110px strip, so the banner profile
+                never draws them and a slider here would be inert. */}
+            {settings.waveformStyle === 'lissajous' && settings.immersive && (
+              <Slider
+                label="Ambience"
+                value={settings.scopeAmbience}
+                min={0}
+                max={2}
+                step={0.05}
+                onChange={(v) => updateVisual('scopeAmbience', v)}
+                format={(v) => (v === 0 ? 'off' : `${Math.round(v * 100)}%`)}
+              />
+            )}
           </Section>
         )}
 
