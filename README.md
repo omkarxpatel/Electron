@@ -12,7 +12,7 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
 
 > macOS 11 Big Sur or later. Tested on Apple Silicon and Intel.
 
-<img width="1512" height="952" alt="image" src="https://github.com/user-attachments/assets/01be2a14-2242-4f1a-8387-1a9a96949811" />
+<img width="1512" alt="Electron running: 31-band EQ with live curve, the enhancer meter bridge, a Spotify playlist and synced lyrics, over the particle visualizer" src="docs/screenshot.jpg" />
 
 ---
 
