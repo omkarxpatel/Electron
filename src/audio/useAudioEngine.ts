@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { EQState } from '../state/eq';
 import { frequenciesFor, qFor } from '../state/eq';
 import type { EnhancerState } from '../state/enhancer';
+import type { EffectsState } from '../state/effects';
+import { buildEffectsChain, type EffectsChain } from './effectsGraph';
 import { buildBandCoefs, logSpacedFrequencies, responseCurveDb } from './biquadResponse';
 
 interface AudioEngineState {
@@ -62,6 +64,7 @@ export function useAudioEngine(
   stream: MediaStream | null,
   eqState: EQState,
   enhancerState: EnhancerState,
+  effectsState: EffectsState,
   playthrough: boolean,
   outputDeviceId: string | null,
   /** Optional AI Enhancer per-band delta (length === eqState.bandCount).
@@ -126,6 +129,16 @@ export function useAudioEngine(
   // params on rebuild without becoming dependent on them.
   const eqStateRef = useRef(eqState);
   eqStateRef.current = eqState;
+  // Read at graph-build time only. Keeping effects out of the build effect's
+  // deps is deliberate: a width tweak must not tear down and rebuild the
+  // whole AudioContext.
+  const effectsStateRef = useRef(effectsState);
+  effectsStateRef.current = effectsState;
+  const effectsChainRef = useRef<EffectsChain | null>(null);
+  /** A/B compare taps. `abProcessed` carries the full chain, `abRaw` carries
+   *  the untouched input; exactly one is open at a time. */
+  const abProcessedRef = useRef<GainNode | null>(null);
+  const abRawRef = useRef<GainNode | null>(null);
   const enhancerStateRef = useRef(enhancerState);
   enhancerStateRef.current = enhancerState;
 
@@ -292,8 +305,29 @@ export function useAudioEngine(
         prev.connect(bassShelf);
         bassShelf.connect(midPeak);
         midPeak.connect(trebleShelf);
-        trebleShelf.connect(panner);
-        panner.connect(limiter);
+
+        // Effects rack (width / exciter / reverb) sits after the tone shelves
+        // and before the panner, so everything it adds is still caught by the
+        // limiter downstream.
+        const effectsChain = buildEffectsChain(ctx, effectsStateRef.current);
+        trebleShelf.connect(effectsChain.input);
+        effectsChain.output.connect(panner);
+
+        // A/B compare. Both taps sum into the limiter and exactly one is open,
+        // so the switch lands BEFORE the limiter and masterGain — you're
+        // comparing EQ + enhancer + effects against nothing, with the same
+        // protection and the same volume knob on either side. The analysers
+        // hang off the limiter, so the visualizer follows what you hear.
+        const abProcessed = ctx.createGain();
+        const abRaw = ctx.createGain();
+        const bypassing = effectsStateRef.current.abBypass;
+        abProcessed.gain.value = bypassing ? 0 : 1;
+        abRaw.gain.value = bypassing ? 1 : 0;
+        panner.connect(abProcessed);
+        abProcessed.connect(limiter);
+        inputGain.connect(abRaw);
+        abRaw.connect(limiter);
+
         limiter.connect(analyserNode);
         limiter.connect(splitter);
         analyserNode.connect(masterGain);
@@ -310,6 +344,9 @@ export function useAudioEngine(
         midPeakRef.current = midPeak;
         trebleShelfRef.current = trebleShelf;
         pannerRef.current = panner;
+        effectsChainRef.current = effectsChain;
+        abProcessedRef.current = abProcessed;
+        abRawRef.current = abRaw;
         masterGainRef.current = masterGain;
         limiterRef.current = limiter;
         setLimiter(limiter);
@@ -384,6 +421,10 @@ export function useAudioEngine(
       midPeakRef.current = null;
       trebleShelfRef.current = null;
       pannerRef.current = null;
+      effectsChainRef.current?.dispose();
+      effectsChainRef.current = null;
+      abProcessedRef.current = null;
+      abRawRef.current = null;
       masterGainRef.current = null;
       analyserRef.current = null;
       analyserLRef.current = null;
@@ -429,6 +470,37 @@ export function useAudioEngine(
     const linear = Math.pow(10, inputCompensationDb / 20);
     inputGain.gain.setTargetAtTime(linear, ctx.currentTime, PARAM_RAMP);
   }, [inputCompensationDb]);
+
+  /* Effects rack — the graph-build effect deliberately ignores effectsState
+   * (a width tweak must not rebuild the AudioContext), so this is the only
+   * thing keeping the rack's nodes in sync with the UI. */
+  useEffect(() => {
+    effectsChainRef.current?.apply(effectsState);
+  }, [effectsState]);
+
+  /* Reverb decay is the one expensive change: it regenerates the impulse
+   * response, allocating sampleRate x decay x 2 floats — megabytes at the
+   * top of the range. Debounced so dragging the slider builds one buffer
+   * when you let go rather than sixty on the way there. */
+  useEffect(() => {
+    const chain = effectsChainRef.current;
+    if (!chain) return;
+    const decay = effectsState.reverbDecay;
+    const t = window.setTimeout(() => chain.setDecay(decay), 150);
+    return () => window.clearTimeout(t);
+  }, [effectsState.reverbDecay]);
+
+  /* A/B compare crossfade. Ramped rather than switched so the flip doesn't
+   * click — which would itself colour the comparison. */
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    const processed = abProcessedRef.current;
+    const raw = abRawRef.current;
+    if (!ctx || !processed || !raw) return;
+    const now = ctx.currentTime;
+    processed.gain.setTargetAtTime(effectsState.abBypass ? 0 : 1, now, PARAM_RAMP);
+    raw.gain.setTargetAtTime(effectsState.abBypass ? 1 : 0, now, PARAM_RAMP);
+  }, [effectsState.abBypass]);
 
   /* Pre-EQ analyser attach/detach — only feed the AI analyser splitter when
    * the enhancer is enabled. When disabled, the splitter receives no audio
@@ -518,6 +590,51 @@ export function useAudioEngine(
       const message = err instanceof Error ? err.message : String(err);
       setError(`Could not switch output device: ${message}`);
     });
+  }, [outputDeviceId, analyser]);
+
+  /* ─────────────────────────────────────────────────────────────
+     Context liveness.
+
+     If the audio hardware stalls or gets reset while the app sits
+     idle, Chromium parks the context in 'suspended' and the explicit
+     sink stops applying. Neither `stream` identity nor
+     `outputDeviceId` changes, so the graph-build and sink effects
+     above never re-run — playback stays dead until the user re-picks
+     a device by hand. Resume on statechange, and re-check on window
+     focus for the case where the context was already parked before
+     we attached (no event left to catch).
+
+     Re-assert the sink only after an actual resume: setSinkId on a
+     healthy context is an audible glitch, so we don't do it on every
+     focus.
+     ───────────────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    const ctx = ctxRef.current as AudioContextWithSink | null;
+    if (!ctx) return;
+
+    const heal = () => {
+      if (ctx.state !== 'suspended') return;
+      ctx
+        .resume()
+        .then(() => {
+          if (typeof ctx.setSinkId === 'function') {
+            return ctx.setSinkId(outputDeviceId ?? '');
+          }
+        })
+        .catch(() => {
+          // Context closed underneath us, or the sink vanished. The
+          // graph rebuild that follows a source recovery covers both.
+        });
+    };
+
+    ctx.addEventListener('statechange', heal);
+    window.addEventListener('focus', heal);
+    heal();
+    return () => {
+      ctx.removeEventListener('statechange', heal);
+      window.removeEventListener('focus', heal);
+    };
   }, [outputDeviceId, analyser]);
 
   /* ─────────────────────────────────────────────────────────────

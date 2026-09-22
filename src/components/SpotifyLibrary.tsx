@@ -1,8 +1,18 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { getSavedAlbums } from '../spotify/api';
-import type { SpotifyAlbum, SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
-import { formatDuration } from '../shared/format';
-import { pickMediumImage, smallestImage } from '../shared/image';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  emptySearchResults,
+  getSavedAlbums,
+  type SearchResults,
+  type SearchType,
+} from '../spotify/api';
+import type {
+  SpotifyAlbum,
+  SpotifyArtist,
+  SpotifyPlaylist,
+  SpotifyTrack,
+} from '../spotify/types';
+import { pickMediumImage } from '../shared/image';
+import { SpotifySearchResults, type SearchResultsHandle } from './SpotifySearchResults';
 
 type Filter = 'all' | 'playlists' | 'albums';
 
@@ -12,7 +22,9 @@ interface Props {
   selectedPlaylistId: string | null;
   onSelectPlaylist: (playlist: SpotifyPlaylist) => void;
   onSelectAlbum: (album: SpotifyAlbum) => void;
-  searchTracks: (query: string) => Promise<SpotifyTrack[]>;
+  onSelectArtist: (artist: SpotifyArtist) => void;
+  searchAll: (query: string, signal?: AbortSignal) => Promise<SearchResults>;
+  searchMore: (query: string, type: SearchType, offset: number) => Promise<SearchResults>;
   onPlayTrack: (track: SpotifyTrack) => void;
   currentlyPlayingId: string | null;
   onOpenQueue: () => void;
@@ -21,6 +33,8 @@ interface Props {
 }
 
 const SEARCH_DEBOUNCE_MS = 280;
+/** Cap on the "In your library" strip — it's a shortcut, not a second list. */
+const LIBRARY_MATCH_LIMIT = 6;
 
 export const SpotifyLibrary = memo(SpotifyLibraryImpl);
 
@@ -30,7 +44,9 @@ function SpotifyLibraryImpl({
   selectedPlaylistId,
   onSelectPlaylist,
   onSelectAlbum,
-  searchTracks,
+  onSelectArtist,
+  searchAll,
+  searchMore,
   onPlayTrack,
   currentlyPlayingId,
   onOpenQueue,
@@ -41,9 +57,10 @@ function SpotifyLibraryImpl({
   const [albumsLoading, setAlbumsLoading] = useState<boolean>(false);
 
   const [query, setQuery] = useState<string>('');
-  const [results, setResults] = useState<SpotifyTrack[]>([]);
+  const [results, setResults] = useState<SearchResults>(emptySearchResults);
   const [searchLoading, setSearchLoading] = useState<boolean>(false);
-  const requestIdRef = useRef<number>(0);
+  const [loadingMore, setLoadingMore] = useState<boolean>(false);
+  const resultsHandleRef = useRef<SearchResultsHandle>(null);
 
   // Saved albums — refetch on each panel open.
   useEffect(() => {
@@ -66,34 +83,120 @@ function SpotifyLibraryImpl({
     };
   }, [refreshKey]);
 
-  // Debounced search — out-of-order responses are guarded by a request-id ref.
+  /**
+   * Debounced search. The AbortController is what keeps responses in order:
+   * every keystroke aborts the previous request, so a slow early response
+   * can't land after a fast later one. (This replaced a request-id ref —
+   * aborting also stops the wasted work, not just the stale setState.)
+   */
   useEffect(() => {
     const q = query.trim();
     if (q.length === 0) {
-      requestIdRef.current++;
-      setResults([]);
+      setResults(emptySearchResults());
       setSearchLoading(false);
       return;
     }
     setSearchLoading(true);
-    const myId = ++requestIdRef.current;
+    const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      searchTracks(q)
-        .then((items) => {
-          if (requestIdRef.current !== myId) return;
-          setResults(items);
+      searchAll(q, controller.signal)
+        .then((res) => {
+          setResults(res);
           setSearchLoading(false);
         })
-        .catch(() => {
-          if (requestIdRef.current !== myId) return;
-          setResults([]);
+        .catch((err) => {
+          // Aborted = superseded by a newer query; the effect that replaced
+          // us has already set its own loading state.
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          setResults(emptySearchResults());
           setSearchLoading(false);
         });
     }, SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [query, searchTracks]);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, searchAll]);
 
   const isSearching = query.trim().length > 0;
+
+  /** Append one more page for a single type, de-duped by id (Spotify's
+   *  paging can repeat an item across page boundaries). */
+  const handleLoadMore = useCallback(
+    async (type: SearchType): Promise<void> => {
+      const q = query.trim();
+      if (q.length === 0 || loadingMore) return;
+      setLoadingMore(true);
+      try {
+        const offsetByType: Record<SearchType, number> = {
+          track: results.tracks.length,
+          artist: results.artists.length,
+          album: results.albums.length,
+          playlist: results.playlists.length,
+        };
+        const page = await searchMore(q, type, offsetByType[type]);
+        setResults((prev) => mergePage(prev, type, page));
+      } finally {
+        setLoadingMore(false);
+      }
+    },
+    [query, loadingMore, results, searchMore],
+  );
+
+  /**
+   * All search keyboard handling sits on the input so it never loses focus:
+   *   Esc      — clears the query; only closes the overlay when already empty
+   *   ↑ / ↓    — move the active result row (forwarded to the results list)
+   *   Enter    — activate the active row
+   *
+   * `stopPropagation` on the clearing Esc is load-bearing: HoverOverlayPanel
+   * listens for Escape on `window` and would otherwise close the whole panel
+   * out from under a half-typed query.
+   */
+  const handleSearchKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>): void => {
+      if (e.key === 'Escape') {
+        if (query.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          setQuery('');
+        }
+        return;
+      }
+      if (!isSearching) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        resultsHandleRef.current?.move(1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        resultsHandleRef.current?.move(-1);
+      } else if (e.key === 'Enter') {
+        if (resultsHandleRef.current?.activate()) e.preventDefault();
+      }
+    },
+    [query, isSearching],
+  );
+
+  /** Your own playlists / saved albums matching the query, shown above the
+   *  remote results so "find my playlist by name" doesn't mean scrolling
+   *  the whole grid. Mouse-only — arrow keys drive the remote list. */
+  const libraryMatches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) return [];
+    const out: Array<
+      { kind: 'playlist'; item: SpotifyPlaylist } | { kind: 'album'; item: SpotifyAlbum }
+    > = [];
+    for (const p of playlists) {
+      if (p.name.toLowerCase().includes(q)) out.push({ kind: 'playlist', item: p });
+    }
+    for (const a of savedAlbums) {
+      const hit =
+        a.name.toLowerCase().includes(q) ||
+        a.artists.some((x) => x.name.toLowerCase().includes(q));
+      if (hit) out.push({ kind: 'album', item: a });
+    }
+    return out.slice(0, LIBRARY_MATCH_LIMIT);
+  }, [query, playlists, savedAlbums]);
 
   const filteredItems = useMemo(() => {
     const items: Array<
@@ -119,9 +222,10 @@ function SpotifyLibraryImpl({
           <input
             type="search"
             className="sp-library-search-input"
-            placeholder="What do you want to play?"
+            placeholder="Songs, artists, albums, playlists…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
             spellCheck={false}
             autoComplete="off"
             aria-label="Search Spotify"
@@ -151,12 +255,50 @@ function SpotifyLibraryImpl({
       </div>
 
       {isSearching ? (
-        <SearchTrackResults
-          results={results}
-          loading={searchLoading}
-          onPlay={onPlayTrack}
-          currentlyPlayingId={currentlyPlayingId}
-        />
+        <>
+          {libraryMatches.length > 0 && (
+            <div className="sp-search-library-strip">
+              <span className="sp-search-library-label">In your library</span>
+              {libraryMatches.map((entry) => (
+                <button
+                  key={`${entry.kind}-${entry.item.id}`}
+                  type="button"
+                  className="sp-search-library-chip"
+                  onClick={() =>
+                    entry.kind === 'playlist'
+                      ? onSelectPlaylist(entry.item)
+                      : onSelectAlbum(entry.item)
+                  }
+                  title={entry.item.name}
+                >
+                  {pickMediumImage(entry.item.images) ? (
+                    <img
+                      className="sp-search-library-chip-cover"
+                      src={pickMediumImage(entry.item.images)}
+                      alt=""
+                      loading="lazy"
+                      draggable={false}
+                    />
+                  ) : null}
+                  <span className="sp-search-library-chip-name">{entry.item.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <SpotifySearchResults
+            ref={resultsHandleRef}
+            results={results}
+            loading={searchLoading}
+            loadingMore={loadingMore}
+            onLoadMore={handleLoadMore}
+            currentlyPlayingId={currentlyPlayingId}
+            onPlayTrack={onPlayTrack}
+            onSelectArtist={onSelectArtist}
+            onSelectAlbum={onSelectAlbum}
+            onSelectPlaylist={onSelectPlaylist}
+            query={query}
+          />
+        </>
       ) : (
         <>
           <div className="sp-library-filters">
@@ -214,6 +356,26 @@ function SpotifyLibraryImpl({
       )}
     </div>
   );
+}
+
+/** Append `page`'s items for one type onto `prev`, de-duped by id. Totals come
+ *  from the fresh page since they're authoritative for that query. */
+function mergePage(
+  prev: SearchResults,
+  type: SearchType,
+  page: SearchResults,
+): SearchResults {
+  const append = <T extends { id: string }>(existing: T[], incoming: T[]): T[] => {
+    const seen = new Set(existing.map((it) => it.id));
+    return [...existing, ...incoming.filter((it) => !seen.has(it.id))];
+  };
+  const next: SearchResults = { ...prev };
+  if (type === 'track') next.tracks = append(prev.tracks, page.tracks);
+  else if (type === 'artist') next.artists = append(prev.artists, page.artists);
+  else if (type === 'album') next.albums = append(prev.albums, page.albums);
+  else next.playlists = append(prev.playlists, page.playlists);
+  next.totals = { ...prev.totals, [type]: page.totals[type] || prev.totals[type] };
+  return next;
 }
 
 interface FilterPillProps {
@@ -286,71 +448,6 @@ function AlbumTile({ album, onClick }: AlbumTileProps) {
       <div className="sp-library-tile-name">{album.name}</div>
       <div className="sp-library-tile-meta">Album · {artistNames}</div>
     </button>
-  );
-}
-
-interface SearchTrackResultsProps {
-  results: SpotifyTrack[];
-  loading: boolean;
-  onPlay: (track: SpotifyTrack) => void;
-  currentlyPlayingId: string | null;
-}
-
-function SearchTrackResults({ results, loading, onPlay, currentlyPlayingId }: SearchTrackResultsProps) {
-  if (loading && results.length === 0) {
-    return (
-      <div className="sp-empty-state">
-        <div className="sp-empty-sub">Searching…</div>
-      </div>
-    );
-  }
-  if (results.length === 0) {
-    return (
-      <div className="sp-empty-state">
-        <div className="sp-empty-sub">No tracks found.</div>
-      </div>
-    );
-  }
-  return (
-    <div className="sp-library-scroll">
-      <div className="sp-search-header">
-        <span>{results.length} track{results.length === 1 ? '' : 's'}</span>
-        {loading && <span className="sp-search-spinner">refreshing…</span>}
-      </div>
-      <table className="sp-track-table sp-search-table">
-        <tbody>
-          {results.map((track, index) => {
-            const thumbUrl = smallestImage(track.album.images);
-            const isPlaying = track.id === currentlyPlayingId;
-            return (
-              <tr
-                key={`${track.id}-${index}`}
-                className="sp-track-row"
-                data-playing={isPlaying ? 'true' : 'false'}
-                onClick={() => onPlay(track)}
-              >
-                <td className="sp-track-title-cell">
-                  {thumbUrl ? (
-                    <img className="sp-track-thumb" src={thumbUrl} alt="" loading="lazy" draggable={false} />
-                  ) : (
-                    <div className="sp-track-thumb sp-track-thumb-fallback" />
-                  )}
-                  <div className="sp-track-text">
-                    <div className="sp-track-name">{track.name}</div>
-                    <div className="sp-track-artists">
-                      {track.explicit ? <span className="sp-track-explicit">E</span> : null}
-                      {track.artists.map((a) => a.name).join(', ')}
-                    </div>
-                  </div>
-                </td>
-                <td className="sp-track-album">{track.album.name}</td>
-                <td className="sp-track-duration">{formatDuration(track.duration_ms)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
   );
 }
 

@@ -44,6 +44,10 @@ export interface SpotifyState {
 const POLL_INTERVAL_ACTIVE = 1500;   // ms — window visible
 const POLL_INTERVAL_HIDDEN = 10000;  // ms — window hidden, ramp down to save battery + quota
 const POLL_BACKOFF_MAX = 30000;      // ms — 429/503 backoff cap
+/** Playlist edits are rare compared to playback changes, and the check costs
+ *  a request each time, so this polls far slower than the playback loop. */
+const PLAYLIST_REFRESH_ACTIVE_MS = 60000;
+const PLAYLIST_REFRESH_HIDDEN_MS = 300000;
 
 export function useSpotify() {
   // When the window is hidden, ramp the poll interval up so we stop burning
@@ -174,8 +178,21 @@ export function useSpotify() {
     }
   }, []);
 
+  /** snapshot_id the currently-loaded `tracks` were fetched at, so the
+   *  background refresh can tell "changed on Spotify" from "unchanged".
+   *  Keyed by playlist id so a stale value can't be applied to a new
+   *  selection. */
+  const loadedSnapshotRef = useRef<{ playlistId: string; snapshotId: string | null } | null>(null);
+  /** Previous `isActive`, so the refresh effect can distinguish "window came
+   *  back to the foreground" from "re-ran for some other reason". */
+  const wasActiveRef = useRef(isActive);
+
   const selectPlaylist = useCallback(async (playlist: SpotifyPlaylist) => {
     setLastPlaylistId(playlist.id);
+    loadedSnapshotRef.current = {
+      playlistId: playlist.id,
+      snapshotId: playlist.snapshot_id ?? null,
+    };
     setState((s) => ({
       ...s,
       selectedPlaylist: playlist,
@@ -233,6 +250,69 @@ export function useSpotify() {
     } catch (err) {
       console.error('loadMoreTracks failed:', err);
       setState((cur) => ({ ...cur, tracksLoading: false }));
+    }
+  }, []);
+
+  /**
+   * Re-fetch the span of the selected playlist we already have, in place.
+   *
+   * Deliberately NOT `selectPlaylist` again: that blanks `tracks` first, which
+   * flashes the list to a skeleton and throws away the user's scroll position
+   * and however many pages they'd paged in. This replaces the array in one
+   * shot instead, so a song added on another device just appears.
+   *
+   * Borrows `tracksLoading` rather than a private flag so `loadMoreTracks`
+   * (which early-returns on it) can't interleave and duplicate a page. With
+   * tracks already on screen that flag only renders the small "Loading more
+   * tracks…" footer, not the empty-state skeleton.
+   */
+  const refreshSelectedTracks = useCallback(async () => {
+    const s = stateRef.current;
+    const playlist = s.selectedPlaylist;
+    if (!playlist || s.tracksLoading) return;
+    const playlistId = playlist.id;
+
+    // How far we'd paged. `tracksNextOffset === null` means the whole playlist
+    // was loaded, so re-cover it entirely — including anything appended since,
+    // which is where Spotify puts newly added songs.
+    const hadEverything = s.tracksNextOffset === null;
+    let target = hadEverything ? Number.POSITIVE_INFINITY : s.tracksNextOffset ?? 0;
+
+    setState((cur) => (cur.selectedPlaylist?.id === playlistId ? { ...cur, tracksLoading: true } : cur));
+
+    const collected: SpotifyTrack[] = [];
+    let offset = 0;
+    let total = s.tracksTotal;
+    try {
+      do {
+        const res = await api.getPlaylistTracks(playlistId, 100, offset);
+        // Bail if the user switched playlists mid-refresh.
+        if (stateRef.current.selectedPlaylist?.id !== playlistId) return;
+        total = res.total;
+        if (hadEverything) target = res.total;
+        collected.push(...res.items.flatMap((it) => (it.track ? [it.track] : [])));
+        // Advance by raw item count, not the null-filtered length — same
+        // reasoning as selectPlaylist.
+        offset = (res.offset ?? offset) + res.items.length;
+        // A page that returns nothing would otherwise spin forever.
+        if (res.items.length === 0) break;
+      } while (offset < target && offset < total);
+
+      setState((cur) => {
+        if (cur.selectedPlaylist?.id !== playlistId) return cur;
+        return {
+          ...cur,
+          tracks: collected,
+          tracksLoading: false,
+          tracksTotal: total,
+          tracksNextOffset: offset < total ? offset : null,
+        };
+      });
+    } catch (err) {
+      console.error('refreshSelectedTracks failed:', err);
+      setState((cur) =>
+        cur.selectedPlaylist?.id === playlistId ? { ...cur, tracksLoading: false } : cur,
+      );
     }
   }, []);
 
@@ -383,19 +463,72 @@ export function useSpotify() {
     }
   }, []);
 
-  const searchTracks = useCallback(
-    async (query: string): Promise<SpotifyTrack[]> => {
+  /* ─── Search ─── */
+
+  /** First page: all four types in a single /search call. `signal` lets the
+   *  caller abandon a response for a query the user has already typed past;
+   *  an abort surfaces as a rejection so the caller can distinguish it from
+   *  a genuine failure (which resolves to empty). */
+  const searchAll = useCallback(
+    async (query: string, signal?: AbortSignal): Promise<api.SearchResults> => {
       const trimmed = query.trim();
-      if (trimmed.length === 0) return [];
+      if (trimmed.length === 0) return api.emptySearchResults();
       try {
-        const res = await api.search(trimmed, ['track'], 25);
-        return res?.tracks?.items ?? [];
+        const res = await api.search(
+          trimmed,
+          ['track', 'artist', 'album', 'playlist'],
+          api.SEARCH_PAGE_SIZE,
+          0,
+          signal,
+        );
+        return api.toSearchResults(res);
       } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') throw err;
         console.error('search failed:', err);
-        return [];
+        return api.emptySearchResults();
       }
     },
     [],
+  );
+
+  /** Next page for one type. Spotify caps offset+limit at 1000, so past that
+   *  we stop asking rather than surfacing a 400 to the user. */
+  const searchMore = useCallback(
+    async (
+      query: string,
+      type: api.SearchType,
+      offset: number,
+    ): Promise<api.SearchResults> => {
+      const trimmed = query.trim();
+      if (trimmed.length === 0 || offset + api.SEARCH_PAGE_SIZE > api.SEARCH_MAX_OFFSET) {
+        return api.emptySearchResults();
+      }
+      try {
+        const res = await api.search(trimmed, [type], api.SEARCH_PAGE_SIZE, offset);
+        return api.toSearchResults(res);
+      } catch (err) {
+        console.error('search page failed:', err);
+        return api.emptySearchResults();
+      }
+    },
+    [],
+  );
+
+  /** Start a context (artist / album / playlist URI) from its beginning.
+   *  Artist URIs are valid contexts — Spotify plays that artist's top tracks,
+   *  which is the closest thing to "artist radio" still available to new
+   *  client IDs since /recommendations was withdrawn. */
+  const playContext = useCallback(
+    async (contextUri: string): Promise<void> => {
+      try {
+        await withDeviceFallback((deviceId) =>
+          api.play(undefined, contextUri, undefined, deviceId),
+        );
+      } catch (err) {
+        console.error('playContext failed:', err);
+      }
+    },
+    [withDeviceFallback],
   );
 
   /* ─── On-auth: kick off the data load ─── */
@@ -553,6 +686,88 @@ export function useSpotify() {
     };
   }, [state.authed, isActive]);
 
+  /* ─── Polling: pick up playlist edits made elsewhere ─── */
+
+  /**
+   * Add a song from your phone and the open track list used to stay stale
+   * until you re-selected the playlist. This polls the playlist's
+   * `snapshot_id` — one small field-projected request — and only re-pages the
+   * tracks when it actually changed.
+   *
+   * Runs far slower than the playback poll: playlist edits are rare, and the
+   * check costs quota every tick. It also fires immediately when the window
+   * comes back to the foreground, which is the common case — you edited the
+   * playlist elsewhere and then switched back to the app.
+   */
+  useEffect(() => {
+    if (!state.authed) return;
+    const playlistId = state.selectedPlaylist?.id;
+    if (!playlistId) return;
+
+    let cancelled = false;
+    let timer: number | null = null;
+    let inflight = false;
+
+    const check = async () => {
+      try {
+        const fresh = await api.getPlaylist(playlistId);
+        if (cancelled || !fresh) return;
+        // The user may have switched playlists while this was in flight.
+        if (stateRef.current.selectedPlaylist?.id !== playlistId) return;
+
+        const known = loadedSnapshotRef.current;
+        const knownSnapshot = known?.playlistId === playlistId ? known.snapshotId : null;
+        const nextSnapshot = fresh.snapshot_id ?? null;
+        // If either side lacks a snapshot (older cached object, narrower
+        // projection), fall back to comparing the track total. That still
+        // catches "a song was added", just not an add+remove that nets zero.
+        const changed =
+          knownSnapshot !== null && nextSnapshot !== null
+            ? knownSnapshot !== nextSnapshot
+            : fresh.tracks.total !== stateRef.current.tracksTotal;
+        if (!changed) return;
+
+        loadedSnapshotRef.current = { playlistId, snapshotId: nextSnapshot };
+        await refreshSelectedTracks();
+      } catch (err) {
+        console.error('playlist refresh check failed:', err);
+      }
+    };
+
+    const schedule = () => {
+      if (cancelled) return;
+      timer = window.setTimeout(
+        tick,
+        isActive ? PLAYLIST_REFRESH_ACTIVE_MS : PLAYLIST_REFRESH_HIDDEN_MS,
+      );
+    };
+
+    const tick = async () => {
+      // A stalled check shouldn't stack more on top of it.
+      if (inflight) {
+        schedule();
+        return;
+      }
+      inflight = true;
+      await check();
+      inflight = false;
+      schedule();
+    };
+
+    // Only check straight away when the window just regained focus — not when
+    // this effect re-ran because the user picked a different playlist, since
+    // selectPlaylist has just fetched those tracks anyway.
+    const becameActive = isActive && !wasActiveRef.current;
+    wasActiveRef.current = isActive;
+    if (becameActive) void tick();
+    else schedule();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [state.authed, state.selectedPlaylist?.id, isActive, refreshSelectedTracks]);
+
   /* ─── Saved-track status: re-check whenever the current track changes ─── */
 
   const currentTrackId = state.playback?.item?.id ?? null;
@@ -599,7 +814,9 @@ export function useSpotify() {
     toggleShuffle,
     cycleRepeat,
     toggleSaveCurrent,
-    searchTracks,
+    searchAll,
+    searchMore,
+    playContext,
   };
 }
 

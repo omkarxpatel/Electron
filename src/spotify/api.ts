@@ -87,7 +87,7 @@ export async function getPlaylistTracks(
  *  launch, which may sit outside the first page of `/me/playlists`. */
 export async function getPlaylist(playlistId: string): Promise<SpotifyPlaylist | null> {
   return request<SpotifyPlaylist>(
-    `/playlists/${playlistId}?fields=id,name,description,uri,images,owner(id,display_name),tracks(total)`,
+    `/playlists/${playlistId}?fields=id,name,description,uri,images,owner(id,display_name),tracks(total),snapshot_id`,
   );
 }
 
@@ -306,22 +306,82 @@ export async function getAlbum(id: string): Promise<AlbumWithTracks | null> {
 
 /* ─── Search ─── */
 
+/** Spotify sometimes emits `null` entries in the `playlists` and `albums`
+ *  arrays (long-standing API quirk — deleted or region-blocked items come
+ *  back as holes rather than being omitted). Typed honestly so callers are
+ *  forced to filter instead of crashing on `.name` of null. */
 export interface SpotifySearchResponse {
-  tracks?: { items: SpotifyTrack[]; total: number };
-  artists?: { items: SpotifyArtist[]; total: number };
-  albums?: { items: SpotifyAlbum[]; total: number };
-  playlists?: { items: SpotifyPlaylist[]; total: number };
+  tracks?: { items: Array<SpotifyTrack | null>; total: number };
+  artists?: { items: Array<SpotifyArtist | null>; total: number };
+  albums?: { items: Array<SpotifyAlbum | null>; total: number };
+  playlists?: { items: Array<SpotifyPlaylist | null>; total: number };
 }
 
+export type SearchType = 'track' | 'artist' | 'album' | 'playlist';
+
+/** Items fetched per type per /search call. */
+export const SEARCH_PAGE_SIZE = 20;
+/** Spotify rejects offset+limit past this, so paging stops here. */
+export const SEARCH_MAX_OFFSET = 1000;
+
+/** `offset` pages within a type; Spotify caps offset+limit at 1000.
+ *  `signal` lets a caller drop a response the user has already typed past —
+ *  the fetch in `request()` receives it via the spread options. */
 export async function search(
   q: string,
-  types: Array<'track' | 'artist' | 'album' | 'playlist'> = ['track'],
+  types: SearchType[] = ['track'],
   limit = 20,
+  offset = 0,
+  signal?: AbortSignal,
 ): Promise<SpotifySearchResponse | null> {
   const params = new URLSearchParams({
     q,
     type: types.join(','),
     limit: String(limit),
+    offset: String(offset),
   });
-  return request<SpotifySearchResponse>(`/search?${params.toString()}`);
+  return request<SpotifySearchResponse>(`/search?${params.toString()}`, { signal });
+}
+
+/** Null-filtered, flattened search results with per-type totals so the UI can
+ *  label tabs and decide whether another page exists. */
+export interface SearchResults {
+  tracks: SpotifyTrack[];
+  artists: SpotifyArtist[];
+  albums: SpotifyAlbum[];
+  playlists: SpotifyPlaylist[];
+  totals: Record<SearchType, number>;
+}
+
+export function emptySearchResults(): SearchResults {
+  return {
+    tracks: [],
+    artists: [],
+    albums: [],
+    playlists: [],
+    totals: { track: 0, artist: 0, album: 0, playlist: 0 },
+  };
+}
+
+function present<T>(items: Array<T | null> | undefined): T[] {
+  return (items ?? []).filter((it): it is T => it !== null);
+}
+
+/** Normalize a raw /search body into `SearchResults`. Types absent from the
+ *  response stay empty — so this works for both the all-types first page and
+ *  a single-type "load more" page. */
+export function toSearchResults(res: SpotifySearchResponse | null): SearchResults {
+  const out = emptySearchResults();
+  if (!res) return out;
+  out.tracks = present(res.tracks?.items);
+  out.artists = present(res.artists?.items);
+  out.albums = present(res.albums?.items);
+  out.playlists = present(res.playlists?.items);
+  out.totals = {
+    track: res.tracks?.total ?? 0,
+    artist: res.artists?.total ?? 0,
+    album: res.albums?.total ?? 0,
+    playlist: res.playlists?.total ?? 0,
+  };
+  return out;
 }

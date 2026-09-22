@@ -24,6 +24,16 @@ export type SourceMode = 'none' | 'system' | 'device';
 const STORAGE_MODE_KEY = 'av.audioSource.mode';
 const STORAGE_DEVICE_KEY = 'av.audioSource.deviceId';
 
+/** How long a track may sit `muted` before we treat it as dead. Short
+ *  stalls are self-healing and fire `unmute` well inside this window. */
+const MUTE_GRACE_MS = 1500;
+/** Consecutive auto-recoveries before we stop and hand it back to the user.
+ *  Without a cap, a permanently-stalled device would re-acquire on a loop. */
+const MAX_RECOVERIES = 3;
+/** A track that stays healthy this long has recovered for real, so the
+ *  consecutive-attempt counter resets. */
+const HEALTHY_RESET_MS = 10_000;
+
 interface State {
   stream: MediaStream | null;
   mode: SourceMode;
@@ -145,6 +155,91 @@ export function useAudioSource() {
     },
     [swap],
   );
+
+  /**
+   * Watchdog for an input track that dies in place.
+   *
+   * After the app sits idle, macOS/Chromium can stop delivering data on a
+   * capture track without the device ever leaving `enumerateDevices()`: the
+   * track fires `mute`, or `ended` if the capture was torn down outright.
+   * Either way the `MediaStream` keeps its object identity, so the graph-build
+   * effect in useAudioEngine never re-runs and the UI still reads as connected
+   * while producing silence — which is why recovering used to mean re-picking
+   * the device by hand.
+   *
+   * We re-acquire the SAME deviceId rather than re-running the auto-select
+   * heuristic, so recovery restores the user's explicit choice instead of
+   * quietly moving them to a device they didn't pick.
+   *
+   * Only 'device' mode recovers. Re-requesting a 'system' capture would pop
+   * the macOS Screen Recording dialog, and an unprompted permission dialog is
+   * worse than silence.
+   *
+   * Per spec `track.stop()` does NOT fire `ended`, so our own stream swaps
+   * can't trigger a spurious recovery here.
+   */
+  const recoveriesRef = useRef(0);
+
+  useEffect(() => {
+    if (!state.stream || state.mode !== 'device' || !state.deviceId) return;
+    const track = state.stream.getAudioTracks()[0];
+    if (!track) return;
+    const deviceId = state.deviceId;
+
+    let muteTimer: number | null = null;
+    let healthyTimer: number | null = null;
+
+    const recover = () => {
+      if (muteTimer !== null) window.clearTimeout(muteTimer);
+      muteTimer = null;
+      if (recoveriesRef.current >= MAX_RECOVERIES) {
+        setState((s) => ({
+          ...s,
+          error:
+            'Audio input stopped responding and could not be reconnected. ' +
+            'Pick the device again from the source menu.',
+        }));
+        return;
+      }
+      recoveriesRef.current += 1;
+      void useDevice(deviceId);
+    };
+
+    const onEnded = () => recover();
+    const onMute = () => {
+      if (muteTimer !== null) return;
+      muteTimer = window.setTimeout(() => {
+        muteTimer = null;
+        if (track.muted || track.readyState === 'ended') recover();
+      }, MUTE_GRACE_MS);
+    };
+    const onUnmute = () => {
+      if (muteTimer !== null) window.clearTimeout(muteTimer);
+      muteTimer = null;
+      recoveriesRef.current = 0;
+    };
+
+    track.addEventListener('ended', onEnded);
+    track.addEventListener('mute', onMute);
+    track.addEventListener('unmute', onUnmute);
+
+    if (track.readyState === 'ended') recover();
+    else if (track.muted) onMute();
+    else {
+      healthyTimer = window.setTimeout(() => {
+        healthyTimer = null;
+        recoveriesRef.current = 0;
+      }, HEALTHY_RESET_MS);
+    }
+
+    return () => {
+      if (muteTimer !== null) window.clearTimeout(muteTimer);
+      if (healthyTimer !== null) window.clearTimeout(healthyTimer);
+      track.removeEventListener('ended', onEnded);
+      track.removeEventListener('mute', onMute);
+      track.removeEventListener('unmute', onUnmute);
+    };
+  }, [state.stream, state.mode, state.deviceId, useDevice]);
 
   const disconnect = useCallback(() => {
     swap(null);

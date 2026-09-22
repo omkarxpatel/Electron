@@ -2370,23 +2370,6 @@
   overflow-y: auto;
 }
 
-.sp-search-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 10px 14px 6px;
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.4);
-  position: sticky;
-  top: 0;
-  background: rgba(10, 10, 12, 0.92);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  z-index: 1;
-}
-
 .sp-search-spinner {
   color: var(--accent);
   text-transform: none;
@@ -2396,6 +2379,205 @@
 
 .sp-search-table {
   width: 100%;
+}
+
+/* ─── Search results (tabs, top result, sections, paging) ─── */
+.sp-search-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 22px 12px;
+}
+
+.sp-search-section {
+  margin-bottom: 20px;
+}
+
+.sp-search-section:last-child {
+  margin-bottom: 0;
+}
+
+.sp-search-section-title {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Top-result card — one prominent hit above the per-type sections. */
+.sp-search-top-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.sp-search-top-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sp-search-top-card:focus-visible {
+  border-color: var(--accent-border);
+  outline: none;
+}
+
+.sp-search-top-cover {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sp-search-top-cover[data-round='true'] {
+  border-radius: 50%;
+}
+
+.sp-search-top-text {
+  min-width: 0;
+}
+
+.sp-search-top-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: #f2f2f2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-search-top-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Artist / album / playlist tiles inside results — denser than the library
+   grid, which has the whole panel to itself. */
+.sp-search-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 14px;
+}
+
+.sp-library-tile-cover-round {
+  border-radius: 50%;
+}
+
+.sp-search-more {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 2px;
+}
+
+.sp-search-more-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  border-radius: 16px;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 6px 18px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.sp-search-more-btn:hover:not(:disabled) {
+  background: var(--accent-soft-bg);
+  color: var(--accent-bright);
+}
+
+.sp-search-more-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Keyboard selection. Shared marker across rows, tiles and the top card so
+   arrow-key focus reads the same wherever it lands. */
+.sp-track-row[data-active-row='true'] {
+  background: var(--accent-soft-bg);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+}
+
+.sp-library-tile[data-active-row='true'],
+.sp-search-top-card[data-active-row='true'] {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-bright);
+}
+
+/* "In your library" strip — matches from your own playlists / saved albums,
+   above the remote results. */
+.sp-search-library-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 22px 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.sp-search-library-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.sp-search-library-label {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.sp-search-library-chip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 190px;
+  padding: 4px 12px 4px 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  border-radius: 18px;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.sp-search-library-chip:hover {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+}
+
+.sp-search-library-chip-cover {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.sp-search-library-chip-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .workspace-right .sp-sidebar {
@@ -2564,7 +2746,10 @@
   flex-direction: column;
   gap: 10px;
   min-height: 0;
-  overflow: hidden;
+  /* auto, not hidden. This row shrinks with the window, and `hidden` meant a
+     short window silently ate the preset chips, AI Enhance and Reset with no
+     way to reach them. Scrolling keeps them available at any height. */
+  overflow-y: auto;
   align-items: stretch;
 }
 
@@ -3344,6 +3529,460 @@
   white-space: nowrap;
 }
 
+/* ─── Effects rack — collapsed bar + hover-expand popover ─── */
+.effects-dock {
+  /* Anchor for the popover, and the only height this rack costs the EQ
+     column: one bar. The expanded state floats, so it can't squeeze the
+     mixer above it. */
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.effects-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 5px 14px 5px 16px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.effects-dock[data-open='true'] .effects-bar {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--accent-border);
+}
+
+.effects-bar-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: transparent;
+  border: none;
+  padding: 3px 0;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  text-align: left;
+}
+
+.effects-title {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 0;
+  transition: color 160ms ease;
+}
+
+.effects-title[data-active='true'] {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Three equal meters across the bar. The EQ column is wide, so a short text
+   list left a void down the middle — a proportional track uses that width
+   and turns the strip into something worth reading. Thirds match the knob
+   groups in the popover above. */
+.fx-readout {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  overflow: hidden;
+}
+
+.fx-slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fx-slot-name {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.28);
+  transition: color 200ms ease;
+}
+
+.fx-slot[data-active='true'] .fx-slot-name {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.fx-slot-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+/* Centre tick for bipolar meters (correlation), so zero is readable without
+   having to infer it from the fill. */
+.fx-slot-track[data-bipolar='true']::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -1px;
+  bottom: -1px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.fx-slot-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: block;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-bright));
+  box-shadow: 0 0 6px var(--accent-soft-bg);
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Live meters are repainted ~18x/sec, so the easing that suits a parameter
+   change would smear them into mush. They move instantly. */
+.fx-slot-fill-live {
+  transition: none;
+}
+
+/* Out-of-phase, or the limiter working hard. Both are "look at this", not
+   "this is broken" — amber, matching the A/B bypass warning. */
+.fx-slot-fill[data-warn='true'] {
+  background: linear-gradient(90deg, #c9761a, #ffb020);
+  box-shadow: 0 0 6px rgba(255, 176, 32, 0.4);
+}
+
+.fx-slot-value {
+  flex: 0 0 auto;
+  min-width: 38px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.22);
+  transition: color 200ms ease;
+}
+
+.fx-slot[data-active='true'] .fx-slot-value {
+  color: var(--accent-bright);
+}
+
+.effects-chevron {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+  transition: transform 180ms ease;
+}
+
+.effects-dock[data-open='true'] .effects-chevron {
+  transform: rotate(180deg);
+}
+
+/* Expands upward over the enhancer card. `bottom: 100%` keeps it anchored to
+   the bar however tall the content gets. */
+.effects-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 18px 14px;
+  background: rgba(14, 14, 16, 0.97);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid var(--accent-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.effects-pop[data-open='true'] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.effects-pop-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.effects-pop-title {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* Equal thirds, matching the collapsed bar's three meters, so the groups
+   fill the popover instead of bunching at the left edge. Separated by
+   hairlines rather than boxes — a bordered card inside a bordered popover
+   inside a bordered bar was three nested frames deep. */
+.fx-modules {
+  display: flex;
+  align-items: stretch;
+}
+
+.fx-module {
+  /* Weighted by knob count, not equal thirds. Width has one control and
+     Reverb has three; splitting evenly stranded a lone knob in the middle of
+     a third of the panel while Reverb's three crowded together. */
+  flex: var(--fx-weight, 1);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 2px;
+  transition: opacity 200ms ease;
+}
+
+.fx-module + .fx-module {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.fx-module-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.fx-module-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+
+.fx-module[data-active='true'] .fx-module-dot {
+  background: var(--accent-bright);
+  box-shadow: 0 0 6px var(--accent-bright);
+}
+
+.fx-module-name {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  transition: color 200ms ease;
+}
+
+.fx-module[data-active='true'] .fx-module-name {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* visibility, not display: the label line still has to occupy its row or a
+   solo module's knob floats a text-height above its neighbours', which is
+   exactly what `display: none` did. */
+.fx-module[data-solo='true'] .knob-label {
+  visibility: hidden;
+}
+
+.fx-module-body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 18px;
+}
+
+/* Dependent knobs stay visible but inert until their parent is engaged —
+   greying rather than hiding keeps the module's shape stable. */
+.fx-subknob {
+  transition: opacity 200ms ease;
+}
+
+.fx-subknob[data-dim='true'] {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* A/B reads as a state indicator, not a button — which side you're hearing
+   has to be obvious at a glance while you flip back and forth. */
+.effects-ab {
+  flex: 0 0 auto;
+  background: var(--accent-soft-bg);
+  color: var(--accent-bright);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  outline: none;
+  transition: all 120ms ease;
+}
+
+.effects-ab.is-bypassed {
+  background: rgba(255, 176, 32, 0.14);
+  border-color: rgba(255, 176, 32, 0.5);
+  color: #ffb020;
+}
+
+.effects-reset {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  border: none;
+  padding: 2px 0;
+  font-size: 10.5px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.15);
+  text-underline-offset: 3px;
+  transition: color 120ms ease;
+}
+
+.effects-reset:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.effects-ab-notice {
+  font-size: 11px;
+  color: #ffb020;
+  background: rgba(255, 176, 32, 0.08);
+  border: 1px solid rgba(255, 176, 32, 0.25);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+/* ─── Saved EQ curves ─── */
+.eq-user-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eq-user-chip {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 120ms ease;
+}
+
+.eq-user-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.eq-user-chip.is-active {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+}
+
+.eq-user-chip-load {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.78);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 8px 4px 8px 12px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eq-user-chip.is-active .eq-user-chip-load {
+  color: var(--accent-bright);
+}
+
+.eq-user-chip-del {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 10px;
+  cursor: pointer;
+  outline: none;
+  transition: color 120ms ease;
+}
+
+.eq-user-chip-del:hover {
+  color: #ff6b6b;
+}
+
+.eq-user-save-row {
+  display: flex;
+  gap: 6px;
+}
+
+.eq-user-save-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  color: #eaeaea;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.eq-user-save-ok,
+.eq-user-save-btn {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  transition: all 120ms ease;
+}
+
+.eq-user-save-btn {
+  width: 100%;
+}
+
+.eq-user-save-ok:hover,
+.eq-user-save-btn:hover {
+  background: var(--accent-soft-bg);
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
 /* ─── Knob component (used inside Enhancer panel) ─── */
 
 .knob-wrap {
@@ -3665,7 +4304,11 @@
   color: #ff9b9b;
 }
 
+/* pointer-events:none is load-bearing: this is an absolute overlay that lands
+   directly on top of the EQ header's Live and bypass buttons, and at z-index
+   21 it made both unclickable for as long as the error was showing. */
 .source-error {
+  pointer-events: none;
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
@@ -4486,4 +5129,22 @@
 .stage-notice-reset:hover {
   color: #fff;
   background: rgba(255, 255, 255, 0.14);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Windows window chrome.
+
+   `.topbar` above reserves a 70px gutter on the LEFT for the macOS traffic
+   lights. Windows has nothing there — its caption buttons are painted
+   top-RIGHT by `titleBarOverlay` (see titleBarOptions in electron/main.ts) —
+   so the gutter moves to the other side. 150px clears the three buttons
+   (~46px each at 100% scale) with a margin for display scaling.
+
+   Scoped to [data-platform='win32'], set in src/main.tsx, so macOS layout is
+   untouched.
+   ───────────────────────────────────────────────────────────── */
+
+:root[data-platform='win32'] .topbar {
+  padding-left: 16px;
+  padding-right: 150px;
 }

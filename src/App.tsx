@@ -4,6 +4,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { SpotifyOnboarding } from './components/SpotifyOnboarding';
 import { NowPlayingBar } from './components/NowPlayingBar';
 import { SpotifySection } from './components/SpotifySection';
+import { TrayBridge } from './components/TrayBridge';
 import { UpdateBanner } from './components/UpdateBanner';
 import { VisualizerBanner } from './components/VisualizerBanner';
 import { ImmersiveLyrics } from './components/ImmersiveLyrics';
@@ -18,6 +19,7 @@ import { useSettings } from './state/settings';
 import { SpotifyProvider, useLibrary, usePlayback } from './spotify/SpotifyProvider';
 import { useEQ } from './state/eq';
 import { useEnhancer } from './state/enhancer';
+import { useEffectsRack } from './state/effects';
 import { PALETTES, buildCustomPalette } from './visualizers/palettes';
 import { useAlbumPalette } from './visualizers/useAlbumPalette';
 import { pickMediumImage } from './shared/image';
@@ -44,6 +46,7 @@ function AppContent() {
     useSettings();
   const eq = useEQ();
   const enhancer = useEnhancer();
+  const effects = useEffectsRack();
   const audioSource = useAudioSource();
   const audioOutput = useAudioOutput();
   useAutoSelectDevices({
@@ -76,11 +79,12 @@ function AppContent() {
   // each tick without re-running its effect on every slider move.
   const baselineRef = useRef<number[]>(eq.state.bands);
   baselineRef.current = eq.state.bands;
-  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR } =
+  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, limiter } =
     useAudioEngine(
     audioSource.stream,
     eq.state,
     enhancer.state,
+    effects.state,
     playthrough && !!audioSource.stream,
     audioOutput.outputDeviceId,
     aiDeltaRef,
@@ -244,11 +248,13 @@ function AppContent() {
             <EqSection
               eq={eq}
               enhancer={enhancer}
+              effects={effects}
               preEqAnalyserL={preEqAnalyserL}
               preEqAnalyserR={preEqAnalyserR}
               analyser={analyser}
               analyserL={analyserL}
               analyserR={analyserR}
+              limiter={limiter}
               aiDeltaRef={aiDeltaRef}
               baselineRef={baselineRef}
               active={isActive}
@@ -312,6 +318,8 @@ function AppContent() {
           </button>
         </div>
       )}
+
+      <TrayBridge />
 
       <PerfOverlay />
     </div>

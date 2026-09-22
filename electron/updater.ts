@@ -1,18 +1,27 @@
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { autoUpdater, type ProgressInfo, type UpdateInfo, type UpdateDownloadedEvent } from 'electron-updater';
+import {
+  applyStagedUpdate,
+  discardStagedUpdate,
+  downloadUpdate,
+  fetchLatestUpdate,
+  findReplaceableBundle,
+  stageUpdate,
+  type DownloadProgress,
+  type RemoteUpdate,
+  type StagedUpdate,
+} from './updateInstaller';
 
 /**
- * Auto-update orchestration. Wraps `electron-updater` with:
- *   - A finite state machine surfaced to the renderer over IPC, so the UI
- *     can render exactly one banner regardless of which underlying event
- *     fired (`checking-for-update`, `update-available`, `download-progress`,
- *     `update-downloaded`, `error`).
+ * Auto-update orchestration. Drives the macOS installer in
+ * electron/updateInstaller.ts and adds:
+ *   - A finite state machine surfaced to the renderer over IPC, so the UI can
+ *     render exactly one banner no matter where in the flow we are.
  *   - Categorized errors (network / install / unknown) with appropriate
  *     retry semantics. Network errors back off + retry automatically; install
  *     errors halt and surface a manual-fallback option.
-  *   - A native prompt as soon as a new version is found: install now, install
+ *   - A native prompt as soon as a new version is found: install now, install
  *     on quit, or skip. Nothing downloads until that question is answered;
  *     "install on quit" is what lands the update with no further action.
  *   - Per-version dismissal honored across launches (persisted by main in
@@ -20,13 +29,12 @@ import { autoUpdater, type ProgressInfo, type UpdateInfo, type UpdateDownloadedE
  *   - Periodic background checks every hour while running, plus a one-shot
  *     check 8 s after startup so the first paint isn't fighting the network.
  *
- * Unsigned macOS apps note: electron-updater downloads the `.zip` artifact
- * (not `.dmg`) and uses Squirrel.Mac to swap binaries. The swap usually works
- * even without a Developer ID signature, but ~30% of the time on Sequoia+
- * macOS re-quarantines the new bundle and the relaunched app shows "damaged."
- * When that happens the user falls back to the manual install flow via the
- * always-visible "Open release page" button. We don't pretend silent
- * auto-update is a guarantee — the UI is honest about the failure modes.
+ * This used to be a thin wrapper over electron-updater. It isn't any more:
+ * on macOS electron-updater delegates the install to Squirrel.Mac, which
+ * refuses to swap a bundle it can't code-sign-verify, so for an unsigned app
+ * the download always succeeded and the install always failed.
+ * updateInstaller.ts performs the swap directly — see the comment at the top
+ * of that file for why that's safe without a signature.
  */
 
 const REPO_URL = 'https://github.com/omkarxpatel/Electron';
@@ -81,17 +89,17 @@ let currentState: UpdateState = { kind: 'idle' };
 let periodicCheckTimer: NodeJS.Timeout | null = null;
 let consecutiveFailures = 0;
 let retryTimer: NodeJS.Timeout | null = null;
-// Tracks the version currently flowing through the events (because not every
-// event carries it — `download-progress`, `update-downloaded`, etc. need to
-// fall back to a remembered value).
+// Tracks the version currently flowing through the run, so error states can
+// still name it and point at its release page.
 let lastSeenVersion: string | null = null;
-let lastSeenReleaseNotes: string | undefined;
-// User-asked-for download-now vs background-download distinction. Currently
-// we always background-download because autoDownload = true, but if the user
-// dismissed and a NEW version drops we want to re-trigger.
+// The release the current prompt or download refers to.
+let pendingUpdate: RemoteUpdate | null = null;
+// Downloaded, verified and unpacked. The `will-quit` handler swaps it in.
+let stagedUpdate: StagedUpdate | null = null;
+// Persisted "skip this version" answer.
 let suppressUntilNewerThan: string | null = null;
-// Guards the install prompt so a re-check that re-emits `update-downloaded`
-// for an already-answered version doesn't ask twice.
+// Guards the prompt so a re-check that re-finds an already-answered version
+// doesn't ask twice.
 let promptedForVersion: string | null = null;
 // Set when the user picked "Install now" — the restart happens once the
 // download lands, not at click time.
@@ -148,6 +156,36 @@ function releasePageUrlFor(version?: string): string {
   return `${REPO_URL}/releases/tag/${v}`;
 }
 
+/** Plain x.y.z compare — this project has never shipped a prerelease tag. */
+function isNewer(remote: string, current: string): boolean {
+  const parts = (v: string): number[] => v.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const a = parts(remote);
+  const b = parts(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const [x, y] = [a[i] ?? 0, b[i] ?? 0];
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+/**
+ * Whether this is a shipped build rather than a `npm run dev` session.
+ *
+ * Deliberately not `app.isPackaged`. Electron implements that as
+ * `basename(process.execPath).toLowerCase() !== 'electron'`, and this app's
+ * productName is "Electron", so the executable is literally named `electron`
+ * and every shipped build reports `isPackaged === false`. That one line is
+ * why the updater silently no-opped in every release up to 1.1.0 — it took
+ * the dev-mode branch in production and never checked anything.
+ *
+ * `process.defaultApp` is set only when Electron is launched as
+ * `electron <path>`, which is exactly the dev case, and it doesn't care what
+ * the app or its executable is called.
+ */
+export function isPackagedBuild(): boolean {
+  return process.defaultApp !== true;
+}
+
 // ── Error categorization ───────────────────────────────────────────────────
 
 function categorizeError(err: unknown): { category: UpdateErrorCategory; message: string; canRetry: boolean } {
@@ -155,6 +193,9 @@ function categorizeError(err: unknown): { category: UpdateErrorCategory; message
   const lower = raw.toLowerCase();
 
   // Network-ish: HTTP errors, timeouts, DNS, ENOTFOUND, ECONNRESET, etc.
+  // A 404 lands here too, which is right: it's what a release published
+  // without its latest-mac.yml looks like, and it fixes itself once the
+  // release is completed.
   if (
     lower.includes('enotfound') ||
     lower.includes('econnreset') ||
@@ -169,18 +210,14 @@ function categorizeError(err: unknown): { category: UpdateErrorCategory; message
     return { category: 'network', message: raw, canRetry: true };
   }
 
-  // Install-ish: signature mismatch, Squirrel/ShipIt errors, "code signature",
-  // "verification", "permission denied" on the bundle swap.
+  // Install-ish: the bundle swap can't proceed. No point retrying these on a
+  // timer — the user needs to do something (move the app, free disk space).
   if (
-    lower.includes('signature') ||
-    lower.includes('squirrel') ||
-    lower.includes('shipit') ||
-    lower.includes('cannot be installed') ||
     lower.includes('permission denied') ||
-    lower.includes('verify') ||
-    lower.includes('verification') ||
-    lower.includes('quarantine') ||
-    lower.includes('integrity')
+    lower.includes('read-only') ||
+    lower.includes('no write access') ||
+    lower.includes('enospc') ||
+    lower.includes('.app bundle')
   ) {
     return { category: 'install', message: raw, canRetry: false };
   }
@@ -219,10 +256,10 @@ interface TriggerOptions {
 }
 
 async function triggerCheck(opts: TriggerOptions): Promise<void> {
-  if (!app.isPackaged) {
-    // electron-updater in dev mode requires `forceDevUpdateConfig = true`
-    // AND a local dev-app-update.yml. Not worth the friction for dev —
-    // just signal "no update behavior available" so the UI hides itself.
+  if (!isPackagedBuild()) {
+    // A dev run has no released version to compare against, and the bundle it
+    // would "update" is node_modules/electron. Signal "no update behavior
+    // available" so the UI hides itself.
     log('info', 'Skipping update check in dev mode.');
     broadcast({ kind: 'idle' });
     return;
@@ -250,50 +287,57 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
   log('info', `Checking for updates (source=${opts.source})`);
   broadcast({ kind: 'checking' });
   try {
-    await autoUpdater.checkForUpdates();
+    const update = await fetchLatestUpdate(REPO_URL);
+    consecutiveFailures = 0;
+
+    if (!isNewer(update.version, app.getVersion())) {
+      log('info', `Up to date (running ${app.getVersion()}, latest is ${update.version})`);
+      broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
+      return;
+    }
+
+    lastSeenVersion = update.version;
+    if (isSkipped(update.version)) {
+      log('info', `v${update.version} matches dismissed version; suppressing UI`);
+      broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
+      return;
+    }
+
+    pendingUpdate = update;
+    broadcast({
+      kind: 'available',
+      version: update.version,
+      releasePageUrl: releasePageUrlFor(update.version),
+    });
+    await promptForUpdate(update);
   } catch (err) {
     handleError(err);
   }
-}
-
-async function triggerDownload(): Promise<void> {
-  if (currentState.kind !== 'available') {
-    log('warn', `triggerDownload called from state ${currentState.kind}, ignoring`);
-    return;
-  }
-  log('info', `Starting download for v${currentState.version}`);
-  try {
-    await autoUpdater.downloadUpdate();
-  } catch (err) {
-    handleError(err);
-  }
-}
-
-function triggerInstall(): void {
-  if (currentState.kind !== 'downloaded') {
-    log('warn', `triggerInstall called from state ${currentState.kind}, ignoring`);
-    return;
-  }
-  log('info', `Installing v${currentState.version} and relaunching`);
-  // isSilent=true: no progress UI window from Squirrel itself. Our app's window
-  // is closing anyway so it doesn't matter; matching the docs default.
-  // isForceRunAfter=true: relaunch when done.
-  autoUpdater.quitAndInstall(true, true);
 }
 
 /** Ask once per version, before downloading anything, and act on the answer.
  *
- *  Asking *before* the download is what makes "skip" truthful: on macOS the
- *  only mechanism behind `autoInstallOnAppQuit` is MacUpdater handing the
- *  finished download to Squirrel, which then applies it whenever the app
- *  exits. Once that handoff happens there is no clean way to call it back, so
- *  a version the user refused must never be downloaded in the first place.
- *
- *  The no-window branch is effectively unreachable (this app quits with its
- *  last window); it just declines to download rather than deciding for the user. */
-async function promptForUpdate(version: string): Promise<void> {
-  if (promptedForVersion === version) return;
-  promptedForVersion = version;
+ *  Asking *before* the download is what makes "skip" truthful — a version the
+ *  user refused is never fetched at all — and it's also where we find out
+ *  whether we can install it, so we never promise a swap we can't perform. */
+async function promptForUpdate(update: RemoteUpdate): Promise<void> {
+  if (promptedForVersion === update.version) return;
+  promptedForVersion = update.version;
+
+  // Pre-flight the swap. An app on a read-only volume or owned by another
+  // user can download all day and never install; the end of a 100 MB
+  // download is the worst moment to discover that.
+  const target = await findReplaceableBundle();
+  if (!target.ok) {
+    log('warn', `cannot replace this bundle: ${target.reason}`);
+    broadcast({
+      kind: 'manual-fallback',
+      reason: target.reason,
+      version: update.version,
+      releasePageUrl: releasePageUrlFor(update.version),
+    });
+    return;
+  }
 
   const win =
     BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
@@ -305,7 +349,7 @@ async function promptForUpdate(version: string): Promise<void> {
   const { response } = await dialog.showMessageBox(win, {
     type: 'info',
     title: 'Update available',
-    message: `Version ${version} is available.`,
+    message: `Version ${update.version} is available.`,
     detail:
       'It downloads in the background. Installing restarts the app — your Spotify sign-in, EQ settings and visualizer presets are preserved.',
     buttons: ['Install now', 'Install when I quit', 'Skip this version'],
@@ -315,18 +359,83 @@ async function promptForUpdate(version: string): Promise<void> {
   });
 
   if (response === 2) {
-    suppressUntilNewerThan = version;
-    writeSkippedVersion(version);
-    log('info', `v${version} skipped by user; not downloading`);
+    suppressUntilNewerThan = update.version;
+    writeSkippedVersion(update.version);
+    pendingUpdate = null;
+    log('info', `v${update.version} skipped by user; not downloading`);
     broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
     return;
   }
 
   // Both remaining answers download now. They differ only in whether we
-  // restart as soon as it lands, or let Squirrel apply it on the next quit.
+  // restart as soon as it lands, or apply it on the next quit.
   installWhenDownloaded = response === 0;
-  log('info', `v${version} accepted (${installWhenDownloaded ? 'restart when ready' : 'install on quit'})`);
-  await triggerDownload();
+  log('info', `v${update.version} accepted (${installWhenDownloaded ? 'restart when ready' : 'install on quit'})`);
+  await startDownload(update, target.bundlePath);
+}
+
+async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<void> {
+  const onProgress = (progress: DownloadProgress): void => {
+    broadcast({
+      kind: 'downloading',
+      version: update.version,
+      progress,
+      releasePageUrl: releasePageUrlFor(update.version),
+    });
+  };
+
+  log('info', `Downloading v${update.version} (${update.size} bytes)`);
+  onProgress({ percent: 0, bytesPerSecond: 0, transferred: 0, total: update.size });
+
+  try {
+    const { zipPath, stageRoot } = await downloadUpdate(update, onProgress);
+    stagedUpdate = await stageUpdate(zipPath, stageRoot, bundlePath);
+    consecutiveFailures = 0;
+    log('info', `v${update.version} staged at ${stagedUpdate.appPath}`);
+    broadcast({
+      kind: 'downloaded',
+      version: update.version,
+      releasePageUrl: releasePageUrlFor(update.version),
+    });
+
+    // "Install when I quit" needs nothing here: the `will-quit` handler
+    // applies whatever is staged.
+    if (installWhenDownloaded) {
+      installWhenDownloaded = false;
+      triggerInstall();
+    }
+  } catch (err) {
+    handleError(err);
+  }
+}
+
+async function triggerDownload(): Promise<void> {
+  if (currentState.kind !== 'available' || pendingUpdate === null) {
+    log('warn', `triggerDownload called from state ${currentState.kind}, ignoring`);
+    return;
+  }
+  const target = await findReplaceableBundle();
+  if (!target.ok) {
+    broadcast({
+      kind: 'manual-fallback',
+      reason: target.reason,
+      version: pendingUpdate.version,
+      releasePageUrl: releasePageUrlFor(pendingUpdate.version),
+    });
+    return;
+  }
+  await startDownload(pendingUpdate, target.bundlePath);
+}
+
+function triggerInstall(): void {
+  if (stagedUpdate === null) {
+    log('warn', 'triggerInstall called with nothing staged, ignoring');
+    return;
+  }
+  log('info', `Quitting to install v${lastSeenVersion ?? 'unknown'}`);
+  // The swap itself happens in the `will-quit` handler: the helper it spawns
+  // waits for this process to exit before touching the bundle.
+  app.quit();
 }
 
 function openReleasePage(url?: string): void {
@@ -338,6 +447,13 @@ function handleError(err: unknown): void {
   const cat = categorizeError(err);
   log('error', `[${cat.category}] ${cat.message}`);
   consecutiveFailures += 1;
+
+  // Whatever we had staged or pending is suspect now; don't keep a
+  // half-finished download around to be applied on quit.
+  void clearStaged();
+  pendingUpdate = null;
+  promptedForVersion = null;
+
   if (cat.category === 'network' && cat.canRetry) {
     broadcast({
       kind: 'error',
@@ -353,7 +469,7 @@ function handleError(err: unknown): void {
     // manual download path. Surface a clear explanation.
     broadcast({
       kind: 'manual-fallback',
-      reason: 'Automatic install failed. Download the release manually and replace the app.',
+      reason: cat.message,
       version: lastSeenVersion ?? undefined,
       releasePageUrl: releasePageUrlFor(lastSeenVersion ?? undefined),
     });
@@ -369,91 +485,32 @@ function handleError(err: unknown): void {
   }
 }
 
+async function clearStaged(): Promise<void> {
+  if (stagedUpdate === null) return;
+  const staged = stagedUpdate;
+  stagedUpdate = null;
+  installWhenDownloaded = false;
+  try {
+    await discardStagedUpdate(staged);
+  } catch (err) {
+    log('warn', 'could not clean up the staged update:', err);
+  }
+}
+
 // ── Setup ──────────────────────────────────────────────────────────────────
 
 export function setupAutoUpdater(): void {
-  // Nothing is fetched until the user says yes — see promptForUpdate.
-  autoUpdater.autoDownload = false;
-  // Must be true *before* any download finishes: on macOS this flag is what
-  // makes MacUpdater hand the file to Squirrel, and only a staged update gets
-  // applied on exit. Flipping it later has no effect (MacUpdater.js reads it
-  // once, at download completion), which is why consent is collected up front.
-  autoUpdater.autoInstallOnAppQuit = true;
   suppressUntilNewerThan = readSkippedVersion();
   if (suppressUntilNewerThan) log('info', `v${suppressUntilNewerThan} is skipped (persisted)`);
-  // Tee electron-updater's internal logger into our log() so events are
-  // attributable in the main-process console.
-  autoUpdater.logger = {
-    info: (...a: unknown[]) => log('info', ...a),
-    warn: (...a: unknown[]) => log('warn', ...a),
-    error: (...a: unknown[]) => log('error', ...a),
-    debug: () => {
-      /* electron-updater debug is firehose-level; drop it */
-    },
-  } as unknown as typeof autoUpdater.logger;
 
-  autoUpdater.on('checking-for-update', () => {
-    broadcast({ kind: 'checking' });
-  });
-
-  autoUpdater.on('update-available', (info: UpdateInfo) => {
-    consecutiveFailures = 0;
-    lastSeenVersion = info.version;
-    lastSeenReleaseNotes = typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined;
-    if (isSkipped(info.version)) {
-      log('info', `v${info.version} matches dismissed version; suppressing UI`);
-      broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
-      return;
-    }
-    broadcast({
-      kind: 'available',
-      version: info.version,
-      releaseNotes: lastSeenReleaseNotes,
-      releasePageUrl: releasePageUrlFor(info.version),
-    });
-    void promptForUpdate(info.version);
-  });
-
-  autoUpdater.on('update-not-available', () => {
-    consecutiveFailures = 0;
-    broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
-  });
-
-  autoUpdater.on('download-progress', (p: ProgressInfo) => {
-    const v = lastSeenVersion ?? 'unknown';
-    broadcast({
-      kind: 'downloading',
-      version: v,
-      progress: {
-        percent: p.percent ?? 0,
-        bytesPerSecond: p.bytesPerSecond ?? 0,
-        transferred: p.transferred ?? 0,
-        total: p.total ?? 0,
-      },
-      releasePageUrl: releasePageUrlFor(v),
-    });
-  });
-
-  autoUpdater.on('update-downloaded', (info: UpdateDownloadedEvent) => {
-    consecutiveFailures = 0;
-    lastSeenVersion = info.version;
-    lastSeenReleaseNotes = typeof info.releaseNotes === 'string' ? info.releaseNotes : lastSeenReleaseNotes;
-    broadcast({
-      kind: 'downloaded',
-      version: info.version,
-      releaseNotes: lastSeenReleaseNotes,
-      releasePageUrl: releasePageUrlFor(info.version),
-    });
-    // "Install when I quit" needs nothing here: the download is already staged
-    // with Squirrel, which applies it on exit.
-    if (installWhenDownloaded) {
-      installWhenDownloaded = false;
-      triggerInstall();
-    }
-  });
-
-  autoUpdater.on('error', (err: Error) => {
-    handleError(err);
+  // Where the bundle swap actually gets kicked off, for both "install now"
+  // (which quits immediately) and "install when I quit". Registered on
+  // `will-quit` rather than `before-quit` because main.ts tears this module
+  // down on `before-quit`.
+  app.on('will-quit', () => {
+    if (stagedUpdate === null) return;
+    log('info', `Applying staged update from ${stagedUpdate.appPath}`);
+    applyStagedUpdate(stagedUpdate);
   });
 
   // IPC handlers for renderer-initiated actions.
@@ -469,8 +526,11 @@ export function setupAutoUpdater(): void {
   ipcMain.handle('update:dismiss-version', (_e, version: string) => {
     if (typeof version === 'string' && version.length > 0) {
       suppressUntilNewerThan = version.startsWith('v') ? version.slice(1) : version;
-      installWhenDownloaded = false;
       writeSkippedVersion(suppressUntilNewerThan);
+      // Drop anything already downloaded for it, or `will-quit` would install
+      // the version they just dismissed.
+      void clearStaged();
+      pendingUpdate = null;
       log('info', `Suppressing UI for v${suppressUntilNewerThan} until a newer release`);
       broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
     }
@@ -495,7 +555,7 @@ export function setupAutoUpdater(): void {
     }, PERIODIC_CHECK_INTERVAL_MS);
   }
 
-  log('info', `Auto-updater configured. packaged=${app.isPackaged}, autoDownload=${autoUpdater.autoDownload}`);
+  log('info', `Auto-updater configured. packaged=${isPackagedBuild()}, version=${app.getVersion()}`);
 }
 
 export function teardownAutoUpdater(): void {
@@ -504,5 +564,6 @@ export function teardownAutoUpdater(): void {
     clearInterval(periodicCheckTimer);
     periodicCheckTimer = null;
   }
-  autoUpdater.removeAllListeners();
+  // Deliberately does not touch `stagedUpdate`: main.ts calls this on
+  // `before-quit`, and the staged update has to survive until `will-quit`.
 }

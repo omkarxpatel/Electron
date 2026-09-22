@@ -1,9 +1,23 @@
-import { app, BrowserWindow, Menu, systemPreferences, ipcMain, shell, session, desktopCapturer } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  nativeImage,
+  systemPreferences,
+  ipcMain,
+  shell,
+  session,
+  desktopCapturer,
+  Tray,
+} from 'electron';
 import path from 'node:path';
 import http from 'node:http';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { setupAutoUpdater, teardownAutoUpdater } from './updater';
+// `isPackagedBuild` rather than `app.isPackaged`: productName is "Electron",
+// so the shipped binary is basename "electron" and Electron computes
+// isPackaged as permanently false in every release. See updater.ts.
+import { isPackagedBuild, setupAutoUpdater, teardownAutoUpdater } from './updater';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13,6 +27,38 @@ const RELEASES_URL = `${REPO_URL}/releases`;
 
 let win: BrowserWindow | null = null;
 let authServer: http.Server | null = null;
+let tray: Tray | null = null;
+
+/**
+ * True once a real quit is under way. The window's `close` handler hides the
+ * window instead of destroying it (see `createWindow`), so this flag is what
+ * distinguishes "user hit X" from "user picked Quit" — without it there'd be
+ * no way to actually exit.
+ */
+let isQuitting = false;
+
+/** Mirror of the renderer's now-playing state, pushed over IPC. Drives the
+ *  tray menu's labels and Play/Pause wording while the window is hidden. */
+let nowPlaying: { title: string; artist: string; isPlaying: boolean } | null = null;
+
+/**
+ * Whether this launch should stay invisible. Two sources:
+ *   - `wasOpenedAtLogin` — macOS launched us from the login item.
+ *   - `--hidden` argv — what we register the login item with, and a usable
+ *     manual override (`open -a Electron --args --hidden`).
+ *
+ * `openAsHidden` is deliberately not used: macOS has ignored it since
+ * Ventura, so relying on it would silently show the window at every login.
+ */
+function shouldStartHidden(): boolean {
+  if (process.argv.includes('--hidden')) return true;
+  if (process.platform !== 'darwin') return false;
+  try {
+    return app.getLoginItemSettings().wasOpenedAtLogin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * On startup, kill any older main-process Electron instances belonging to
@@ -85,14 +131,10 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
+  // Re-launching the app while it's already running in the menu bar should
+  // surface the window rather than doing nothing.
   app.on('second-instance', () => {
-    if (!win || win.isDestroyed()) {
-      createWindow();
-      return;
-    }
-    if (win.isMinimized()) win.restore();
-    if (!win.isVisible()) win.show();
-    win.focus();
+    void showWindow();
   });
 }
 
@@ -107,13 +149,188 @@ if (!gotTheLock) {
  */
 let systemAudioMuted = false;
 
-function createWindow() {
+/**
+ * Show the window, bringing the dock icon back with it.
+ *
+ * The dock icon is deliberately tied to window visibility rather than hidden
+ * for good. An app with no dock icon is an macOS "accessory" — it gets no
+ * menu bar, which would take the Edit menu with it, and with it cut / copy /
+ * paste in every text field (the Spotify Client ID box, the search input).
+ * Showing the dock icon whenever a window is on screen keeps the standard
+ * menu and its shortcuts; hiding it on the way out keeps the app invisible
+ * while it sits in the menu bar.
+ */
+async function showWindow(): Promise<void> {
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      await app.dock.show();
+    } catch {
+      // Non-fatal — the window still shows, we just keep the previous
+      // dock state.
+    }
+  }
+  if (!win || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+}
+
+/** Hide the window and drop the dock icon, leaving only the tray. The
+ *  renderer keeps running: audio, the EQ and Spotify polling all continue,
+ *  which is the whole point of hiding rather than quitting. */
+function hideWindow(): void {
+  if (win && !win.isDestroyed() && win.isVisible()) win.hide();
+  if (process.platform === 'darwin' && app.dock) app.dock.hide();
+}
+
+/* ─── Tray ─── */
+
+function trayIconPath(): string {
+  // `trayTemplate.png` + `@2x` ship via build.extraResources in prod; in dev
+  // they're read straight out of the repo. The `Template` suffix is what makes
+  // macOS tint the glyph for light / dark / clicked menu-bar states.
+  return isPackagedBuild()
+    ? path.join(process.resourcesPath, 'tray', 'trayTemplate.png')
+    : path.join(__dirname, '..', 'build', 'tray', 'trayTemplate.png');
+}
+
+/** Trim a track / artist name to something a menu can show on one line. */
+function ellipsize(text: string, max = 38): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+function sendTransport(action: 'toggle' | 'next' | 'previous'): void {
+  // No renderer means no Spotify session to command — show the window so the
+  // user can see why nothing happened rather than failing silently.
+  if (!win || win.isDestroyed()) {
+    void showWindow();
+    return;
+  }
+  win.webContents.send('app-event:transport', action);
+}
+
+function setLaunchAtLogin(enabled: boolean): void {
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    // Our own flag rather than `openAsHidden`, which macOS ignores since
+    // Ventura. Read back by shouldStartHidden().
+    args: enabled ? ['--hidden'] : [],
+  });
+  refreshTray();
+  win?.webContents.send('app-event:login-item', enabled);
+}
+
+function isLaunchAtLoginEnabled(): boolean {
+  try {
+    return app.getLoginItemSettings().openAtLogin;
+  } catch {
+    return false;
+  }
+}
+
+function buildTrayMenu(): Electron.Menu {
+  const np = nowPlaying;
+  const items: Electron.MenuItemConstructorOptions[] = [];
+
+  if (np && np.title) {
+    items.push({ label: ellipsize(np.title), enabled: false });
+    if (np.artist) items.push({ label: ellipsize(np.artist), enabled: false });
+    items.push({ type: 'separator' });
+  }
+
+  items.push(
+    { label: np?.isPlaying ? 'Pause' : 'Play', click: () => sendTransport('toggle') },
+    { label: 'Next Track', click: () => sendTransport('next') },
+    { label: 'Previous Track', click: () => sendTransport('previous') },
+    { type: 'separator' },
+    { label: 'Show Window', click: () => void showWindow() },
+    {
+      label: 'Launch at Login',
+      type: 'checkbox',
+      checked: isLaunchAtLoginEnabled(),
+      click: (item) => setLaunchAtLogin(item.checked),
+    },
+    { type: 'separator' },
+    {
+      // Accelerator here is display-only (tray menus don't register global
+      // keys); the working Cmd+Q is the app menu's `role: 'quit'`.
+      label: `Quit ${app.name}`,
+      accelerator: 'Command+Q',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  );
+
+  return Menu.buildFromTemplate(items);
+}
+
+function refreshTray(): void {
+  if (!tray || tray.isDestroyed()) return;
+  tray.setContextMenu(buildTrayMenu());
+  tray.setToolTip(
+    nowPlaying?.title
+      ? `${nowPlaying.title} — ${nowPlaying.artist}`
+      : `${app.name} — nothing playing`,
+  );
+}
+
+function createTray(): void {
+  const image = nativeImage.createFromPath(trayIconPath());
+  if (image.isEmpty()) {
+    // Missing or unreadable asset. A tray with an empty image renders as an
+    // invisible, unclickable gap in the menu bar — worse than no tray, since
+    // a hidden window would then be unreachable. Skip it and leave the dock
+    // icon permanently on so the app stays usable.
+    console.error(`[main] tray icon missing at ${trayIconPath()} — tray disabled`);
+    return;
+  }
+  image.setTemplateImage(true);
+  tray = new Tray(image);
+  // Left-click opens the same menu as right-click. A bare left-click that
+  // toggled the window would fight the menu on a trackpad.
+  tray.on('click', () => tray?.popUpContextMenu());
+  refreshTray();
+}
+
+/**
+ * Window chrome, per platform. The app draws its own title area (ChromeBar)
+ * everywhere, so what differs is where the OS puts its window controls.
+ *
+ *  - macOS: 'hiddenInset' drops the title bar but keeps the traffic lights,
+ *    nudged inward so they sit inside our chrome. `.topbar` reserves 70px on
+ *    the LEFT for them.
+ *  - Windows: 'hiddenInset' is simply ignored, which would leave a native
+ *    title bar stacked above our chrome. 'hidden' removes it, and
+ *    `titleBarOverlay` paints the native minimize/maximize/close buttons over
+ *    our chrome on the RIGHT. The overlay is not optional: with a plain
+ *    'hidden' title bar and no overlay the window would have no close button.
+ *    Height is left unset so it follows the system caption height.
+ *  - Anything else: leave the default frame in place.
+ */
+function titleBarOptions(): Partial<Electron.BrowserWindowConstructorOptions> {
+  if (process.platform === 'darwin') return { titleBarStyle: 'hiddenInset' };
+  if (process.platform === 'win32') {
+    return {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#0a0a0a', symbolColor: '#e5e5e5' },
+    };
+  }
+  return {};
+}
+
+function createWindow(startHidden = false) {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 640,
     minHeight: 420,
-    titleBarStyle: 'hiddenInset',
+    ...titleBarOptions(),
     backgroundColor: '#0a0a0a',
     show: false,
     webPreferences: {
@@ -124,16 +341,34 @@ function createWindow() {
     },
   });
 
-  win.once('ready-to-show', () => win?.show());
+  win.once('ready-to-show', () => {
+    if (startHidden) {
+      // Never shown at all on a login launch. Cheaper and safer than
+      // show-then-hide: the window never gets a visible GPU surface, and
+      // the user sees no flash.
+      if (process.platform === 'darwin' && app.dock) app.dock.hide();
+      return;
+    }
+    win?.show();
+  });
 
-  // X-button closes the window and quits the app (see window-all-closed
-  // below). We previously did the macOS-native "hide on close, preserve
-  // state" pattern, but on Sequoia+ the visualizer worker's OffscreenCanvas
-  // doesn't release its GPU surface cleanly when the window is hidden,
-  // leading to a "window goes black, must force-quit" hang for users.
-  // Close = quit is unambiguous, takes ~2 s to re-launch, and Spotify auth
-  // + EQ presets survive in localStorage. Worth losing the native pattern
-  // to get reliable close behavior.
+  /**
+   * X-button hides the window; the app keeps running in the menu bar. Quit is
+   * via the tray's Quit item or Cmd+Q (both set `isQuitting` first).
+   *
+   * History worth knowing: this used to be close = quit, because hide-on-close
+   * once left the visualizer worker's OffscreenCanvas holding its GPU surface
+   * and the window came back black. The renderer now pauses that worker on
+   * `visibilitychange` (see WaveformVisualizer's `active` gate), and `role:
+   * 'minimize'` in the Window menu has been exercising the identical
+   * hidden-renderer path all along. If the black-window hang ever returns,
+   * this handler is the first thing to revert.
+   */
+  win.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    hideWindow();
+  });
 
   // Block renderer-initiated new windows. The only legitimate "open externally"
   // path is the allowlisted `shell:open-external` IPC handler.
@@ -331,6 +566,38 @@ ipcMain.handle('system-audio:set-mute', (_event, mute: boolean) => {
 });
 
 /**
+ * Renderer → main now-playing mirror. The renderer is the only thing holding
+ * a Spotify session, so the tray can't read playback itself; it gets told.
+ * Coerced and length-capped here because this crosses the IPC boundary and
+ * ends up as menu-item labels.
+ */
+ipcMain.on('tray:now-playing', (_event, payload: unknown) => {
+  if (!payload || typeof payload !== 'object') {
+    nowPlaying = null;
+    refreshTray();
+    return;
+  }
+  const p = payload as Record<string, unknown>;
+  const title = typeof p.title === 'string' ? p.title.slice(0, 120) : '';
+  const artist = typeof p.artist === 'string' ? p.artist.slice(0, 120) : '';
+  nowPlaying = title ? { title, artist, isPlaying: p.isPlaying === true } : null;
+  refreshTray();
+});
+
+ipcMain.handle('login-item:get', () => isLaunchAtLoginEnabled());
+
+ipcMain.handle('login-item:set', (_event, enabled: unknown) => {
+  setLaunchAtLogin(enabled === true);
+  return isLaunchAtLoginEnabled();
+});
+
+/** Lets the renderer hide to the menu bar (used by the Settings toggle's
+ *  companion action and anything else that wants to tuck the app away). */
+ipcMain.handle('window:hide', () => {
+  hideWindow();
+});
+
+/**
  * Native About panel content. Triggered by the app-menu "About …" item.
  * macOS renders this with the app icon, app name, version, and our copyright /
  * credits / homepage links — feels like a real macOS app rather than an
@@ -343,7 +610,7 @@ function setupAboutPanel(): void {
     copyright: 'Copyright © 2026 Omkar Patel',
     credits: 'Built with Electron, React, Web Audio API.\nSpotify integration via PKCE OAuth.\nLyrics from lrclib.net and lyrics.ovh.',
     website: REPO_URL,
-    iconPath: app.isPackaged
+    iconPath: isPackagedBuild()
       ? path.join(process.resourcesPath, 'icon.icns')
       : path.join(__dirname, '..', 'build', 'icon.png'),
   });
@@ -411,7 +678,7 @@ function buildAppMenu(): void {
         // Reload + Force Reload are dev-only — they reset all renderer state
         // including Spotify auth, AI tick, audio context. Useful when iterating
         // on the dev server; destructive in production.
-        ...(!app.isPackaged
+        ...(!isPackagedBuild()
           ? ([
               { type: 'separator' },
               { role: 'reload' },
@@ -477,21 +744,12 @@ function buildDockMenu(): void {
   if (process.platform !== 'darwin' || !app.dock) return;
   app.dock.setMenu(Menu.buildFromTemplate([
     {
-      label: 'Show Electron',
-      click: () => {
-        if (!win || win.isDestroyed()) {
-          createWindow();
-          return;
-        }
-        if (!win.isVisible()) win.show();
-        win.focus();
-      },
+      label: `Show ${app.name}`,
+      click: () => void showWindow(),
     },
     {
-      label: 'Hide Electron',
-      click: () => {
-        if (win && !win.isDestroyed() && win.isVisible()) win.hide();
-      },
+      label: `Hide ${app.name}`,
+      click: () => hideWindow(),
     },
   ]));
 }
@@ -505,27 +763,31 @@ app.whenReady().then(async () => {
     }
   }
 
+  const startHidden = shouldStartHidden();
+  // Before the window exists, so a login launch never flashes a dock icon.
+  if (startHidden && process.platform === 'darwin' && app.dock) app.dock.hide();
+
   setupAboutPanel();
   buildAppMenu();
   buildDockMenu();
   registerDisplayMediaHandler();
-  createWindow();
+  createTray();
+  createWindow(startHidden);
   setupAutoUpdater();
 
   // Clicking the dock icon (or Cmd+Tabbing back) on macOS. If we still have
   // a window object, just show it (preserves all state). If somehow the
   // window was destroyed, recreate.
   app.on('activate', () => {
-    if (win && !win.isDestroyed()) {
-      if (!win.isVisible()) win.show();
-      win.focus();
-      return;
-    }
-    createWindow();
+    void showWindow();
   });
 });
 
 app.on('before-quit', () => {
+  // Set here too, not just in the tray's Quit item: Cmd+Q, the App menu's
+  // Quit, and a logout-initiated shutdown all arrive this way, and the
+  // window's `close` handler would otherwise veto them.
+  isQuitting = true;
   if (authServer) {
     authServer.close();
     authServer = null;
@@ -534,10 +796,9 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  // Cross-platform: closing the last window quits the app. The previous
-  // macOS-only branch (skip quit, keep dock icon alive) was paired with the
-  // hide-on-close behavior in the BrowserWindow `close` handler; both are
-  // gone now in favor of predictable X-button behavior. See `createWindow`
-  // for the full rationale.
-  app.quit();
+  // On macOS the tray keeps the app alive with no window — that's the whole
+  // point of the menu-bar mode, and this only fires if the window was
+  // genuinely destroyed (a crash, or a real quit) rather than hidden.
+  // Elsewhere there's no tray story, so last window closed = quit.
+  if (process.platform !== 'darwin') app.quit();
 });

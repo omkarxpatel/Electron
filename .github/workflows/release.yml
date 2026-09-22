@@ -1,21 +1,27 @@
 name: Release
 
-# Tag-driven release pipeline. Push a tag like `v0.2.0` (or trigger manually)
-# and this job builds an unsigned DMG + zip for both Apple Silicon and Intel,
-# then uploads them to a GitHub Release matching the tag.
+# Tag-driven release pipeline. Push a tag like `v1.2.0` (or dispatch manually
+# against an existing tag) and this job builds an unsigned DMG + zip for both
+# Apple Silicon and Intel, uploads them to the matching GitHub Release, and
+# then verifies that the result is something electron-updater can actually
+# consume.
+#
+# Building and publishing are deliberately separate steps. electron-builder's
+# built-in publisher failed the v1.1.0 release with "Request timed out" after
+# uploading three of four large assets, which left `latest-mac.yml` off the
+# release — so every installed app 404'd on its update check while the release
+# page looked fine. scripts/publish-release.sh retries per file and uploads
+# the update metadata last; scripts/verify-release.mjs fails the job if the
+# published release still isn't auto-updatable.
 #
 # Unsigned-build notes:
 #   - `identity: null` in package.json's build.mac config keeps electron-builder
 #     from trying to sign with a non-existent Developer ID.
 #   - CSC_IDENTITY_AUTO_DISCOVERY=false belt-and-braces: stops electron-builder
 #     from probing the keychain for signing certs that aren't there.
-#   - End users will see a Gatekeeper warning on first launch and need to
-#     right-click → Open. The README explains this.
-#
-# Requirements:
-#   - Runs on macOS (electron-builder for mac needs Darwin).
-#   - GITHUB_TOKEN is supplied automatically by Actions; electron-builder's
-#     `publish.provider: github` config uses it.
+#   - Unsigned builds can be downloaded and installed by hand, but macOS will
+#     not let Squirrel swap the bundle in place, so auto-*install* does not
+#     work. See README for what users have to do instead.
 
 on:
   push:
@@ -24,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to attach the release to (e.g. v0.2.0). Required for manual runs.'
+        description: 'Existing tag to build and publish (e.g. v1.1.0)'
         required: true
         type: string
 
@@ -32,7 +38,7 @@ permissions:
   contents: write  # needed to create/update releases
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false  # don't cancel in-flight releases
 
 jobs:
@@ -44,9 +50,16 @@ jobs:
     # mounted-DMG asset-copy step. Sonoma stays reliable. Bump this once
     # electron-builder / dmg-builder versions catch up.
     runs-on: macos-14
+    env:
+      # A manual run builds the tag it was given, not whatever main happens to
+      # be. The previous version of this workflow accepted the input and then
+      # ignored it, silently building main instead.
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Node 20
         uses: actions/setup-node@v4
@@ -57,12 +70,30 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Check the tag matches package.json
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag $TAG does not match package.json version $PKG. electron-builder names artifacts after package.json, so this release would publish $PKG and no installed app would ever see $TAG."
+            exit 1
+          fi
+          echo "$TAG matches package.json"
+
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Build + publish to GitHub Releases
+      - name: Build
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Don't probe keychain for code-signing certs we don't have.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run build:publish
+        run: npm run build:release
+
+      - name: Upload artifacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/publish-release.sh "$TAG"
+
+      - name: Verify the release is auto-updatable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/verify-release.mjs "$TAG"

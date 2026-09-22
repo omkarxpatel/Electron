@@ -3,6 +3,7 @@ import { EqPanel } from './EqPanel';
 import { useAiEnhancer } from '../audio/useAiEnhancer';
 import { frequenciesFor, type UseEQReturn } from '../state/eq';
 import type { UseEnhancerReturn } from '../state/enhancer';
+import type { UseEffectsRackReturn } from '../state/effects';
 import type { PaletteId } from '../state/settings';
 import type { Palette } from '../visualizers/palettes';
 
@@ -26,6 +27,8 @@ import type { Palette } from '../visualizers/palettes';
 interface Props {
   eq: UseEQReturn;
   enhancer: UseEnhancerReturn;
+  /** Effects rack, passed whole rather than flattened — see EffectsPanel. */
+  effects: UseEffectsRackReturn;
   /** Pre-EQ analyser nodes feeding the AI Enhancer's FFT. Null when the
    *  audio graph hasn't built yet (no stream). */
   preEqAnalyserL: AnalyserNode | null;
@@ -35,6 +38,8 @@ interface Props {
   /** Post-EQ stereo analysers — drive the Enhancer's per-channel output meter. */
   analyserL: AnalyserNode | null;
   analyserR: AnalyserNode | null;
+  /** Peak catcher — drives the effects bar's live gain-reduction meter. */
+  limiter: DynamicsCompressorNode | null;
   /** Peak catcher, for the Enhancer's live gain-reduction readout. */
   /** Headroom the EQ auto-trim is giving back, dB. */
   /** Shared per-band AI delta ref. The audio engine reads it each tick to
@@ -61,11 +66,13 @@ const AI_DELTA_THRESHOLD_DB = 0.05;
 export function EqSection({
   eq,
   enhancer,
+  effects,
   preEqAnalyserL,
   preEqAnalyserR,
   analyser,
   analyserL,
   analyserR,
+  limiter,
   aiDeltaRef,
   baselineRef,
   active,
@@ -182,6 +189,10 @@ export function EqSection({
       setPreamp={eq.setPreamp}
       setBandCount={eq.setBandCount}
       applyPreset={eq.applyPreset}
+      userPresets={eq.userPresets}
+      saveUserPreset={eq.saveUserPreset}
+      applyUserPreset={eq.applyUserPreset}
+      deleteUserPreset={eq.deleteUserPreset}
       toggleBypass={eq.toggleBypass}
       toggleBandLock={eq.toggleBandLock}
       toggleAiEnhance={eq.toggleAiEnhance}
@@ -192,6 +203,7 @@ export function EqSection({
       playthrough={playthrough}
       togglePlaythrough={togglePlaythrough}
       playthroughDisabled={!hasSource}
+      effects={effects}
       enhancerState={enhancer.state}
       setBass={enhancer.setBass}
       setMid={enhancer.setMid}
@@ -206,6 +218,7 @@ export function EqSection({
       analyser={analyser}
       analyserL={analyserL}
       analyserR={analyserR}
+      limiter={limiter}
     />
   );
 }

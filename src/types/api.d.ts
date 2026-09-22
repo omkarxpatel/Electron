@@ -25,6 +25,26 @@ export interface ElectronApi {
   shell: {
     openExternal(url: string): Promise<void>;
   };
+  /**
+   * Menu-bar bridge — see electron/main.ts's tray section. The renderer owns
+   * the Spotify session, so it pushes now-playing up for the tray's labels
+   * and handles the transport commands the tray sends back.
+   */
+  tray: {
+    setNowPlaying(
+      state: { title: string; artist: string; isPlaying: boolean } | null,
+    ): void;
+    onTransport(handler: (action: TrayTransportAction) => void): () => void;
+  };
+  loginItem: {
+    get(): Promise<boolean>;
+    set(enabled: boolean): Promise<boolean>;
+    /** Fires when launch-at-login is toggled from the tray menu. */
+    onChange(handler: (enabled: boolean) => void): () => void;
+  };
+  window: {
+    hide(): Promise<void>;
+  };
   appEvents: {
     /**
      * Subscribe to the "open preferences" trigger (App menu → Settings… or
@@ -46,6 +66,8 @@ export interface ElectronApi {
     dismissVersion(version: string): Promise<void>;
   };
 }
+
+export type TrayTransportAction = 'toggle' | 'next' | 'previous';
 
 export interface UpdateProgress {
   percent: number;

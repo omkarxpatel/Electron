@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type {
   ResolvedSettings,
   SharedSettings,
@@ -289,6 +289,10 @@ export function SettingsPanel({
           />
         </Section>
 
+        <Section title="Menu bar">
+          <MenuBarSection />
+        </Section>
+
         <Section title="Spotify">
           <div className="settings-spotify-row">
             <button
@@ -321,6 +325,69 @@ export function SettingsPanel({
         </button>
       </div>
     </aside>
+  );
+}
+
+/**
+ * Launch-at-login + hide-to-menu-bar controls.
+ *
+ * Unlike everything else in this panel, launch-at-login isn't app settings —
+ * it's OS state (a macOS login item), owned by the main process. So it has
+ * its own fetch on mount and subscribes to `onChange`, which fires when the
+ * same option is toggled from the tray menu. Without that subscription the
+ * two controls would silently disagree.
+ */
+function MenuBarSection() {
+  const [atLogin, setAtLogin] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.api.loginItem
+      .get()
+      .then((value) => {
+        if (!cancelled) setAtLogin(value);
+      })
+      .catch(() => {
+        if (!cancelled) setAtLogin(false);
+      });
+    const off = window.api.loginItem.onChange((value) => setAtLogin(value));
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, []);
+
+  const toggle = useCallback((): void => {
+    const next = !(atLogin ?? false);
+    setAtLogin(next); // optimistic — the write is fast but not instant
+    void window.api.loginItem
+      .set(next)
+      // Main re-reads the login item and returns the truth; if the OS
+      // refused the write, snap back rather than showing a lie.
+      .then((actual) => setAtLogin(actual))
+      .catch(() => setAtLogin(!next));
+  }, [atLogin]);
+
+  return (
+    <>
+      <ToggleRow
+        title="Launch at login"
+        hint="Start hidden in the menu bar when you log in"
+        value={atLogin ?? false}
+        onToggle={toggle}
+        tooltip="Registers a macOS login item that launches the app with no window. Use the menu-bar icon to bring it up."
+      />
+      <div className="settings-spotify-row">
+        <button
+          type="button"
+          className="settings-spotify-btn"
+          onClick={() => void window.api.window.hide()}
+          title="Hide the window and the dock icon. The app keeps running — audio, EQ and Spotify polling all continue."
+        >
+          Hide to menu bar
+        </button>
+      </div>
+    </>
   );
 }
 

@@ -2,7 +2,7 @@
   "name": "audio-visualizer",
   "productName": "Electron",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
   "homepage": "https://github.com/omkarxpatel/Electron",
   "repository": {
@@ -17,15 +17,17 @@
     "build": "tsc --noEmit && vite build && electron-builder",
     "build:unpack": "tsc --noEmit && vite build && electron-builder --dir",
     "build:publish": "tsc --noEmit && vite build && electron-builder --publish=always",
+    "build:release": "tsc --noEmit && vite build && electron-builder --publish=never",
     "typecheck": "tsc --noEmit",
     "icon:gen": "bash scripts/build-icon.sh"
   },
   "dependencies": {
-    "electron-updater": "^6.8.3",
+    "js-yaml": "^4.3.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
@@ -99,11 +101,37 @@
         }
       ]
     },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
     "publish": {
       "provider": "github",
       "owner": "omkarxpatel",
       "repo": "Electron",
       "releaseType": "release"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "build/tray",
+        "to": "tray",
+        "filter": [
+          "*.png"
+        ]
+      }
+    ]
   }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /* ─────────────────────────────────────────────────────────────
    Band layouts
@@ -65,24 +65,73 @@ export const EQ_PRESETS: Record<Exclude<EQPresetId, 'custom'>, PresetSpec> = {
 };
 
 /**
- * Interpolate a 10-band preset curve to a different band-count layout
- * by sampling the curve at the target frequencies in log-frequency space.
+ * Resample a gain curve from one band layout to another, interpolating in
+ * log-frequency space and clamping past either end.
+ *
+ * Generalized from the 10-band-only version so user presets saved at one
+ * band count survive a switch to another — a curve saved at 31 bands and
+ * recalled at 10 has to come back as the same shape, not garbage.
  */
-function sampleCurveAtFreqs(bands10: number[], targetFreqs: number[]): number[] {
-  const freqs10 = BANDS_10;
+function resampleCurve(
+  sourceFreqs: number[],
+  sourceGains: number[],
+  targetFreqs: number[],
+): number[] {
+  const last = sourceFreqs.length - 1;
   return targetFreqs.map((f) => {
-    if (f <= freqs10[0]) return bands10[0];
-    if (f >= freqs10[freqs10.length - 1]) return bands10[freqs10.length - 1];
-    for (let i = 0; i < freqs10.length - 1; i++) {
-      if (freqs10[i] <= f && f <= freqs10[i + 1]) {
+    if (f <= sourceFreqs[0]) return sourceGains[0];
+    if (f >= sourceFreqs[last]) return sourceGains[last];
+    for (let i = 0; i < last; i++) {
+      if (sourceFreqs[i] <= f && f <= sourceFreqs[i + 1]) {
         const t =
-          (Math.log(f) - Math.log(freqs10[i])) /
-          (Math.log(freqs10[i + 1]) - Math.log(freqs10[i]));
-        return bands10[i] + t * (bands10[i + 1] - bands10[i]);
+          (Math.log(f) - Math.log(sourceFreqs[i])) /
+          (Math.log(sourceFreqs[i + 1]) - Math.log(sourceFreqs[i]));
+        return sourceGains[i] + t * (sourceGains[i + 1] - sourceGains[i]);
       }
     }
     return 0;
   });
+}
+
+function sampleCurveAtFreqs(bands10: number[], targetFreqs: number[]): number[] {
+  return resampleCurve(BANDS_10, bands10, targetFreqs);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   User presets — saved curves, stored separately from the live
+   EQ state so a slider drag's debounced write doesn't rewrite
+   the whole preset library 4x a second.
+   ───────────────────────────────────────────────────────────── */
+
+export interface UserPreset {
+  name: string;
+  bandCount: BandCount;
+  bands: number[];
+  preamp: number;
+}
+
+const USER_PRESETS_KEY = 'av.eq.userPresets.v1';
+
+function loadUserPresets(): UserPreset[] {
+  try {
+    const raw = localStorage.getItem(USER_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((p): p is UserPreset => {
+      if (!p || typeof p !== 'object') return false;
+      const c = p as Partial<UserPreset>;
+      return (
+        typeof c.name === 'string' &&
+        Array.isArray(c.bands) &&
+        (c.bandCount === 10 || c.bandCount === 15 || c.bandCount === 31) &&
+        c.bands.length === c.bandCount &&
+        typeof c.preamp === 'number'
+      );
+    });
+  } catch {
+    return [];
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -101,6 +150,10 @@ export interface EQState {
   /** Whether the AI Enhancer is actively adjusting bands in real time. */
   aiEnhance: boolean;
   activePreset: EQPresetId;
+  /** Name of the user preset currently loaded, or null. Separate from
+   *  `activePreset` so the built-in id union doesn't have to grow a case for
+   *  every curve the user saves. Cleared by anything that edits the curve. */
+  activeUserPreset: string | null;
 }
 
 interface PersistedState extends EQState {
@@ -128,6 +181,7 @@ const DEFAULT_STATE: PersistedState = {
   locked: defaultLocks(10),
   aiEnhance: false,
   activePreset: 'flat',
+  activeUserPreset: null,
   cache: {},
   lockedCache: {},
 };
@@ -165,6 +219,14 @@ function clamp(v: number, min: number, max: number): number {
 
 export function useEQ() {
   const [state, setState] = useState<PersistedState>(load);
+  const [userPresets, setUserPresets] = useState<UserPreset[]>(loadUserPresets);
+
+  // Saving reads the live curve. Going through a ref keeps the save/apply
+  // callbacks stable, so EqPanel's memo isn't invalidated on every drag tick.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const userPresetsRef = useRef(userPresets);
+  userPresetsRef.current = userPresets;
 
   // Debounce persistence. Slider drags fire setState at ~60 Hz; without the
   // debounce we'd run JSON.stringify (including the band-cache object) and
@@ -181,7 +243,7 @@ export function useEQ() {
     setState((s) => {
       const next = s.bands.slice();
       next[index] = clamp(value, -12, 12);
-      return { ...s, bands: next, activePreset: 'custom' };
+      return { ...s, bands: next, activePreset: 'custom', activeUserPreset: null };
     });
   }, []);
 
@@ -211,6 +273,7 @@ export function useEQ() {
         bands,
         preamp: spec.preamp ?? s.preamp,
         activePreset: id,
+        activeUserPreset: null,
       };
     });
   }, []);
@@ -232,8 +295,63 @@ export function useEQ() {
         cache: newCache,
         lockedCache: newLockCache,
         activePreset: 'custom',
+        activeUserPreset: null,
       };
     });
+  }, []);
+
+  /** Save the live curve under `name`. Re-saving an existing name overwrites
+   *  it — the alternative is silently accumulating "Rock 2", "Rock 3". */
+  const saveUserPreset = useCallback((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const s = stateRef.current;
+    const entry: UserPreset = {
+      name: trimmed,
+      bandCount: s.bandCount,
+      bands: s.bands.slice(),
+      preamp: s.preamp,
+    };
+    setUserPresets((prev) => {
+      const next = prev.filter((p) => p.name !== trimmed).concat(entry);
+      next.sort((a, b) => a.name.localeCompare(b.name));
+      localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(next));
+      return next;
+    });
+    setState((cur) => ({ ...cur, activePreset: 'custom', activeUserPreset: trimmed }));
+  }, []);
+
+  const applyUserPreset = useCallback((name: string) => {
+    const preset = userPresetsRef.current.find((p) => p.name === name);
+    if (!preset) return;
+    setState((s) => {
+      // A preset saved at a different band count is resampled rather than
+      // rejected, so curves survive switching layouts.
+      const bands =
+        preset.bandCount === s.bandCount
+          ? preset.bands.slice()
+          : resampleCurve(
+              frequenciesFor(preset.bandCount),
+              preset.bands,
+              frequenciesFor(s.bandCount),
+            );
+      return {
+        ...s,
+        bands,
+        preamp: preset.preamp,
+        activePreset: 'custom',
+        activeUserPreset: preset.name,
+      };
+    });
+  }, []);
+
+  const deleteUserPreset = useCallback((name: string) => {
+    setUserPresets((prev) => {
+      const next = prev.filter((p) => p.name !== name);
+      localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(next));
+      return next;
+    });
+    setState((s) => (s.activeUserPreset === name ? { ...s, activeUserPreset: null } : s));
   }, []);
 
   const toggleBypass = useCallback(() => {
@@ -254,6 +372,10 @@ export function useEQ() {
 
   return {
     state,
+    userPresets,
+    saveUserPreset,
+    applyUserPreset,
+    deleteUserPreset,
     setBand,
     setPreamp,
     applyPreset,

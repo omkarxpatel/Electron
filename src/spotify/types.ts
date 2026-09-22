@@ -13,6 +13,10 @@ export interface SpotifyArtist {
   id: string;
   name: string;
   uri: string;
+  /** Only present on full artist objects (/search, /artists) — the nested
+   *  artists inside track/album objects are simplified and omit these. */
+  images?: SpotifyImage[];
+  genres?: string[];
 }
 
 export interface SpotifyAlbum {
@@ -41,6 +45,13 @@ export interface SpotifyPlaylist {
   images: SpotifyImage[];
   owner: { id: string; display_name: string | null };
   tracks: { total: number };
+  /** Opaque token Spotify changes on ANY edit to the playlist — add, remove,
+   *  reorder, rename. Comparing it is how the background refresh detects that
+   *  a playlist changed without re-paging the whole track list.
+   *
+   *  Optional because older persisted objects and any caller using a narrower
+   *  `fields=` projection won't carry it; treat absent as "unknown". */
+  snapshot_id?: string;
 }
 
 export interface SpotifyPlaylistsResponse {

@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { useSpotify } from './useSpotify';
 import type { SpotifyState } from './useSpotify';
+import type { SearchResults, SearchType } from './api';
 import type {
   SpotifyPlaybackState,
   SpotifyPlaylist,
@@ -72,7 +73,17 @@ export interface LibraryContextValue {
     track: SpotifyTrack,
     contextUri?: string,
   ) => Promise<void> | void;
-  searchTracks: (query: string) => Promise<SpotifyTrack[]>;
+  /** Start an artist / album / playlist URI from the top. */
+  playContext: (contextUri: string) => Promise<void> | void;
+  /** First page of results across all four types. Rejects with AbortError
+   *  when `signal` fires so the caller can ignore a superseded query. */
+  searchAll: (query: string, signal?: AbortSignal) => Promise<SearchResults>;
+  /** Next page for a single type. */
+  searchMore: (
+    query: string,
+    type: SearchType,
+    offset: number,
+  ) => Promise<SearchResults>;
 }
 
 const LibraryContext = createContext<LibraryContextValue | null>(null);
@@ -146,7 +157,9 @@ export function SpotifyProvider({ children }: ProviderProps) {
       selectPlaylist: spotify.selectPlaylist,
       loadMoreTracks: spotify.loadMoreTracks,
       playTrack: spotify.playTrack,
-      searchTracks: spotify.searchTracks,
+      playContext: spotify.playContext,
+      searchAll: spotify.searchAll,
+      searchMore: spotify.searchMore,
     }),
     [
       spotify.clientId,
@@ -168,7 +181,9 @@ export function SpotifyProvider({ children }: ProviderProps) {
       spotify.selectPlaylist,
       spotify.loadMoreTracks,
       spotify.playTrack,
-      spotify.searchTracks,
+      spotify.playContext,
+      spotify.searchAll,
+      spotify.searchMore,
     ],
   );
 

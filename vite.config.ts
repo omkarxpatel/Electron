@@ -23,6 +23,19 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    watch: {
+      // Never watch build output. vite-plugin-electron writes main.js into
+      // dist-electron on every main-process build; with that directory
+      // watched, the write itself looks like a source change, which triggers
+      // another build, which respawns Electron — and killStaleInstances()
+      // then SIGTERMs the previous instance. The result is a restart loop
+      // that eventually takes the dev server down with it.
+      //
+      // `release/` is the packaged .app bundle: thousands of files vite has
+      // no business scanning, and touching any of them forces a full page
+      // reload that wipes renderer state mid-session.
+      ignored: ['**/dist/**', '**/dist-electron/**', '**/release/**'],
+    },
   },
   clearScreen: false,
 });

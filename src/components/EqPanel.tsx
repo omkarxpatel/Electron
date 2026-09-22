@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   EQ_PRESETS,
+  type UserPreset,
   frequenciesFor,
   labelFor,
   qFor,
@@ -12,7 +13,9 @@ import { useRenderCount } from '../perf';
 import { EqBandActivity } from './EqBandActivity';
 import { EqResponseCurve } from './EqResponseCurve';
 import { EnhancerPanel } from './EnhancerPanel';
+import { EffectsPanel } from './EffectsPanel';
 import type { EnhancerState } from '../state/enhancer';
+import type { UseEffectsRackReturn } from '../state/effects';
 import type { PaletteId } from '../state/settings';
 import type { Palette } from '../visualizers/palettes';
 
@@ -22,6 +25,10 @@ interface Props {
   setPreamp: (value: number) => void;
   setBandCount: (count: BandCount) => void;
   applyPreset: (id: Exclude<EQPresetId, 'custom'>) => void;
+  userPresets: UserPreset[];
+  saveUserPreset: (name: string) => void;
+  applyUserPreset: (name: string) => void;
+  deleteUserPreset: (name: string) => void;
   toggleBypass: () => void;
   toggleBandLock: (index: number) => void;
   toggleAiEnhance: () => void;
@@ -37,6 +44,7 @@ interface Props {
   playthrough: boolean;
   togglePlaythrough: () => void;
   playthroughDisabled?: boolean;
+  effects: UseEffectsRackReturn;
   enhancerState: EnhancerState;
   setBass: (v: number) => void;
   setMid: (v: number) => void;
@@ -54,6 +62,7 @@ interface Props {
   analyser: AnalyserNode | null;
   analyserL: AnalyserNode | null;
   analyserR: AnalyserNode | null;
+  limiter: DynamicsCompressorNode | null;
 }
 
 const BAND_COUNTS: ReadonlyArray<BandCount> = [10, 15, 31];
@@ -66,6 +75,10 @@ function EqPanelImpl({
   setPreamp,
   setBandCount,
   applyPreset,
+  userPresets,
+  saveUserPreset,
+  applyUserPreset,
+  deleteUserPreset,
   toggleBypass,
   toggleBandLock,
   toggleAiEnhance,
@@ -76,6 +89,7 @@ function EqPanelImpl({
   playthrough,
   togglePlaythrough,
   playthroughDisabled = false,
+  effects,
   enhancerState,
   setBass,
   setMid,
@@ -90,6 +104,7 @@ function EqPanelImpl({
   analyser,
   analyserL,
   analyserR,
+  limiter,
 }: Props) {
   const freqs = frequenciesFor(state.bandCount);
   useRenderCount('EqPanel');
@@ -345,6 +360,13 @@ function EqPanelImpl({
                 AI Enhance
               </button>
             </div>
+            <UserPresets
+              presets={userPresets}
+              activeName={state.activeUserPreset}
+              onSave={saveUserPreset}
+              onApply={applyUserPreset}
+              onDelete={deleteUserPreset}
+            />
             <button className="eq-reset" onClick={reset}>
               Reset
             </button>
@@ -367,7 +389,117 @@ function EqPanelImpl({
         accent={accent}
         active={active !== false}
       />
+
+      <EffectsPanel
+        effects={effects}
+        analyserL={analyserL}
+        analyserR={analyserR}
+        limiter={limiter}
+        active={active !== false}
+      />
     </aside>
+  );
+}
+
+/**
+ * Saved EQ curves. Click a chip to load it, × to delete it, "Save" to store
+ * the current curve under a name.
+ *
+ * The name is collected with an inline field rather than `window.prompt` —
+ * Electron does not implement prompt() in a BrowserWindow, so it would just
+ * throw.
+ */
+function UserPresets({
+  presets,
+  activeName,
+  onSave,
+  onApply,
+  onDelete,
+}: {
+  presets: UserPreset[];
+  activeName: string | null;
+  onSave: (name: string) => void;
+  onApply: (name: string) => void;
+  onDelete: (name: string) => void;
+}) {
+  const [naming, setNaming] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const commit = (): void => {
+    const trimmed = draft.trim();
+    if (trimmed) onSave(trimmed);
+    setDraft('');
+    setNaming(false);
+  };
+
+  return (
+    <div className="eq-user-presets">
+      {presets.length > 0 && (
+        <div className="eq-presets-row">
+          {presets.map((preset) => (
+            <span
+              key={preset.name}
+              className={`eq-user-chip ${activeName === preset.name ? 'is-active' : ''}`}
+            >
+              <button
+                type="button"
+                className="eq-user-chip-load"
+                onClick={() => onApply(preset.name)}
+                title={`Load "${preset.name}" (saved at ${preset.bandCount} bands)`}
+              >
+                {preset.name}
+              </button>
+              <button
+                type="button"
+                className="eq-user-chip-del"
+                onClick={() => onDelete(preset.name)}
+                aria-label={`Delete preset ${preset.name}`}
+                title="Delete"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {naming ? (
+        <div className="eq-user-save-row">
+          <input
+            type="text"
+            className="eq-user-save-input"
+            value={draft}
+            autoFocus
+            maxLength={24}
+            placeholder="Preset name"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // Stop Escape here or the panel's own window-level handlers
+              // treat it as a dismiss.
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setDraft('');
+                setNaming(false);
+              } else if (e.key === 'Enter') {
+                commit();
+              }
+            }}
+          />
+          <button type="button" className="eq-user-save-ok" onClick={commit}>
+            Save
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="eq-user-save-btn"
+          onClick={() => setNaming(true)}
+          title="Save the current curve and preamp under a name"
+        >
+          Save curve
+        </button>
+      )}
+    </div>
   );
 }
 

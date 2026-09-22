@@ -1,9 +1,19 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useRenderCount } from '../perf';
-import { getAlbum, type AlbumWithTracks } from '../spotify/api';
+import {
+  getAlbum,
+  type AlbumWithTracks,
+  type SearchResults,
+  type SearchType,
+} from '../spotify/api';
 import { SpotifyLibrary } from './SpotifyLibrary';
 import { SpotifyQueue } from './SpotifyQueue';
-import type { SpotifyAlbum, SpotifyPlaylist, SpotifyTrack } from '../spotify/types';
+import type {
+  SpotifyAlbum,
+  SpotifyArtist,
+  SpotifyPlaylist,
+  SpotifyTrack,
+} from '../spotify/types';
 import { formatDuration } from '../shared/format';
 
 type View = 'library' | 'album' | 'queue';
@@ -13,8 +23,10 @@ interface Props {
   playlistsLoading: boolean;
   selectedPlaylistId: string | null;
   onSelectPlaylist: (playlist: SpotifyPlaylist) => void;
-  searchTracks: (query: string) => Promise<SpotifyTrack[]>;
+  searchAll: (query: string, signal?: AbortSignal) => Promise<SearchResults>;
+  searchMore: (query: string, type: SearchType, offset: number) => Promise<SearchResults>;
   playTrack: (track: SpotifyTrack, contextUri?: string) => void;
+  playContext: (contextUri: string) => void;
   currentlyPlayingId: string | null;
   /** True when the panel is open. Bumps refresh keys for inner views that
    *  should refetch on each open (saved albums, queue). */
@@ -32,8 +44,10 @@ function SpotifyOverlayImpl({
   playlistsLoading,
   selectedPlaylistId,
   onSelectPlaylist,
-  searchTracks,
+  searchAll,
+  searchMore,
   playTrack,
+  playContext,
   currentlyPlayingId,
   open,
   onClose,
@@ -82,11 +96,29 @@ function SpotifyOverlayImpl({
     setView('library');
   }, []);
 
+  /**
+   * Play a search result inside its album rather than as a bare URI.
+   *
+   * A one-URI `play` call gives Spotify a context of exactly one track, so
+   * playback stopped dead at the end of it. Handing over the album as the
+   * context (started at this track) means the music keeps going. It isn't
+   * Spotify's own behavior — theirs rolls into an algorithmic radio, which
+   * needs /recommendations, withdrawn for new client IDs in Nov 2024.
+   */
   const handlePlayTrackFromLibrary = useCallback(
     (t: SpotifyTrack): void => {
-      playTrack(t);
+      playTrack(t, t.album?.uri);
     },
     [playTrack],
+  );
+
+  /** Artist URIs are valid playback contexts — Spotify plays that artist's
+   *  top tracks. The overlay stays open so you can keep browsing. */
+  const handleSelectArtist = useCallback(
+    (artist: SpotifyArtist): void => {
+      playContext(artist.uri);
+    },
+    [playContext],
   );
 
   const handleOpenQueue = useCallback((): void => {
@@ -102,7 +134,9 @@ function SpotifyOverlayImpl({
           selectedPlaylistId={selectedPlaylistId}
           onSelectPlaylist={handleSelectPlaylist}
           onSelectAlbum={handleSelectAlbum}
-          searchTracks={searchTracks}
+          onSelectArtist={handleSelectArtist}
+          searchAll={searchAll}
+          searchMore={searchMore}
           onPlayTrack={handlePlayTrackFromLibrary}
           currentlyPlayingId={currentlyPlayingId}
           onOpenQueue={handleOpenQueue}

@@ -160,8 +160,10 @@ export function SpotifySection({ active, showLyrics }: Props) {
             playlistsLoading={library.playlistsLoading}
             selectedPlaylistId={library.selectedPlaylist?.id ?? null}
             onSelectPlaylist={library.selectPlaylist}
-            searchTracks={library.searchTracks}
+            searchAll={library.searchAll}
+            searchMore={library.searchMore}
             playTrack={library.playTrack}
+            playContext={library.playContext}
             currentlyPlayingId={currentlyPlayingId}
             open={overlayOpen}
             onClose={closeOverlay}

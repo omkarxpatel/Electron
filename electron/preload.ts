@@ -32,6 +32,49 @@ const api = {
   },
 
   /**
+   * Menu-bar bridge. The tray lives in main but has no Spotify session of its
+   * own, so the renderer pushes now-playing up and receives transport
+   * commands back down. This is what makes the tray work while the window is
+   * hidden — the renderer is still alive, just not visible.
+   */
+  tray: {
+    setNowPlaying(
+      state: { title: string; artist: string; isPlaying: boolean } | null,
+    ): void {
+      ipcRenderer.send('tray:now-playing', state);
+    },
+    onTransport(handler: (action: 'toggle' | 'next' | 'previous') => void): () => void {
+      const wrapped = (_e: unknown, action: 'toggle' | 'next' | 'previous'): void =>
+        handler(action);
+      ipcRenderer.on('app-event:transport', wrapped);
+      return () => ipcRenderer.off('app-event:transport', wrapped);
+    },
+  },
+
+  /** Launch-at-login state. `onChange` fires when the tray's own checkbox is
+   *  used, so the Settings toggle doesn't drift out of sync with it. */
+  loginItem: {
+    get(): Promise<boolean> {
+      return ipcRenderer.invoke('login-item:get');
+    },
+    set(enabled: boolean): Promise<boolean> {
+      return ipcRenderer.invoke('login-item:set', enabled);
+    },
+    onChange(handler: (enabled: boolean) => void): () => void {
+      const wrapped = (_e: unknown, enabled: boolean): void => handler(enabled);
+      ipcRenderer.on('app-event:login-item', wrapped);
+      return () => ipcRenderer.off('app-event:login-item', wrapped);
+    },
+  },
+
+  window: {
+    /** Hide to the menu bar, dropping the dock icon. */
+    hide(): Promise<void> {
+      return ipcRenderer.invoke('window:hide');
+    },
+  },
+
+  /**
    * Subscribe to main-process app events:
    *   - 'preferences' fires when the user picks App menu → Settings… or
    *     hits Cmd+, on macOS. The renderer should open the Settings drawer.
