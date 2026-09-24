@@ -9,6 +9,7 @@ import { UpdateBanner } from './components/UpdateBanner';
 import { VisualizerBanner } from './components/VisualizerBanner';
 import { ImmersiveLyrics } from './components/ImmersiveLyrics';
 import { EqSection } from './components/EqSection';
+import type { AiEffectTargets } from './audio/useAiEnhancer';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
 import { useAudioSource } from './audio/useAudioSource';
@@ -79,6 +80,14 @@ function AppContent() {
   // each tick without re-running its effect on every slider move.
   const baselineRef = useRef<number[]>(eq.state.bands);
   baselineRef.current = eq.state.bands;
+  // Shared AI effect targets — same arrangement as aiDeltaRef: written by
+  // useAiEnhancer, read each tick by useAudioEngine.
+  const aiEffectsRef = useRef<AiEffectTargets>({
+    active: false,
+    width: 100,
+    exciter: 0,
+    exciterFreq: 90,
+  });
   const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, limiter } =
     useAudioEngine(
     audioSource.stream,
@@ -90,6 +99,7 @@ function AppContent() {
     aiDeltaRef,
     eq.state.aiEnhance,
     0.08,
+    aiEffectsRef,
   );
   const library = useLibrary();
   // Subscribing to playback re-renders AppContent on each 1.5s poll, but
@@ -256,6 +266,7 @@ function AppContent() {
               analyserR={analyserR}
               limiter={limiter}
               aiDeltaRef={aiDeltaRef}
+              aiEffectsRef={aiEffectsRef}
               baselineRef={baselineRef}
               active={isActive}
               playthrough={playthrough}

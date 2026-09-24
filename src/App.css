@@ -3322,6 +3322,76 @@
   box-shadow: 0 0 0 1px var(--accent-border), 0 0 12px var(--accent-glow);
 }
 
+/* ─── AI Enhance tone targets ───
+   Only rendered while AI Enhance is armed. Two columns at a smaller type
+   size than the preset chips above: the side column is ~130px wide, and six
+   full-width chips would push Reset out of view on a short window — the same
+   overflow that .eq-presets-row already had to solve by scrolling. */
+.eq-ai-profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-shrink: 0;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.eq-ai-profiles-label {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  text-align: center;
+}
+
+.eq-ai-profiles-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.eq-ai-profile-chip {
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 5px 4px;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: all 120ms ease;
+  text-align: center;
+}
+
+.eq-ai-profile-chip:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #f3f4f6;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.eq-ai-profile-chip.is-active {
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.eq-ai-loudness {
+  width: 100%;
+}
+
+/* Live readout of what the enhancer chose. Deliberately quiet — it's there to
+   be checked, not watched. */
+.eq-ai-status {
+  font-size: 9.5px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+  padding: 1px 0 2px;
+  min-height: 12px;
+}
+
 /* ─── Presets ─── */
 
 .eq-presets {
@@ -3820,6 +3890,25 @@
 .fx-subknob[data-dim='true'] {
   opacity: 0.35;
   pointer-events: none;
+}
+
+/* AI Enhance is driving this module. Same wrapper gating as fx-subknob —
+   the knobs still show live values, they just can't be dragged, because the
+   enhancer rewrites them 10x/sec and would overwrite the drag anyway. */
+.fx-module-body[data-auto='true'] {
+  pointer-events: none;
+}
+
+.fx-module-auto {
+  margin-left: auto;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--accent);
+  background: var(--accent-soft-bg);
+  border: 1px solid var(--accent-border);
 }
 
 /* A/B reads as a state indicator, not a button — which side you're hearing

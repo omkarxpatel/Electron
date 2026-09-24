@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { EqPanel } from './EqPanel';
-import { useAiEnhancer } from '../audio/useAiEnhancer';
+import { useAiEnhancer, type AiEffectTargets, type AiEnhancerStatus } from '../audio/useAiEnhancer';
 import { frequenciesFor, type UseEQReturn } from '../state/eq';
 import type { UseEnhancerReturn } from '../state/enhancer';
 import type { UseEffectsRackReturn } from '../state/effects';
@@ -47,6 +47,8 @@ interface Props {
   aiDeltaRef: { current: number[] };
   /** Shared baseline ref — the audio engine + AI engine both read it. */
   baselineRef: { current: number[] };
+  /** Shared AI effect targets — written here, read by the audio engine. */
+  aiEffectsRef: { current: AiEffectTargets };
   /** When false, the response-curve halo + band-activity RAF loops pause. */
   active: boolean;
   /** Live (playthrough) state, owned by App because the audio source toggle
@@ -75,6 +77,7 @@ export function EqSection({
   limiter,
   aiDeltaRef,
   baselineRef,
+  aiEffectsRef,
   active,
   playthrough,
   togglePlaythrough,
@@ -94,6 +97,9 @@ export function EqSection({
   const [bandAutoActive, setBandAutoActive] = useState<boolean[]>(
     () => new Array(eq.state.bandCount).fill(false),
   );
+  // What the enhancer is currently doing. The hook only calls onStatus when a
+  // field actually changes, so this can be a plain setState.
+  const [aiStatus, setAiStatus] = useState<AiEnhancerStatus | null>(null);
   const flashClearTimersRef = useRef<number[]>([]);
   // Last AI-delta value we actually dispatched to React state. The AI tick
   // fires 10×/sec but band values usually drift by tiny fractional dBs; we
@@ -113,9 +119,15 @@ export function EqSection({
     enabled: eq.state.aiEnhance,
     bandCount: eq.state.bandCount,
     locked: eq.state.locked,
+    profileId: eq.state.aiProfile,
+    adapt: eq.state.aiAdapt,
+    loudnessComp: eq.state.aiLoudnessComp,
+    driveEffects: eq.state.aiEffects,
+    effectsRef: aiEffectsRef,
     deltaRef: aiDeltaRef,
     baselineRef,
     bandFreqs: aiBandFreqs,
+    onStatus: setAiStatus,
     onTick: (deltas, flashed) => {
       // Threshold-diff: only setState when band values have moved enough
       // to be visually distinguishable on the slider thumb.
@@ -196,6 +208,11 @@ export function EqSection({
       toggleBypass={eq.toggleBypass}
       toggleBandLock={eq.toggleBandLock}
       toggleAiEnhance={eq.toggleAiEnhance}
+      setAiProfile={eq.setAiProfile}
+      setAiAdapt={eq.setAiAdapt}
+      toggleAiEffects={eq.toggleAiEffects}
+      aiStatus={aiStatus}
+      toggleAiLoudnessComp={eq.toggleAiLoudnessComp}
       bandAutoActive={bandAutoActive}
       aiDelta={aiDelta}
       active={active}

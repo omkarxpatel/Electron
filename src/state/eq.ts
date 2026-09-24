@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ENHANCE_PROFILES, type EnhanceProfileId } from '../audio/enhanceProfiles';
+import type { AiAdaptMode } from '../audio/useAiEnhancer';
 
 /* ─────────────────────────────────────────────────────────────
    Band layouts
@@ -149,6 +151,19 @@ export interface EQState {
   locked: boolean[];
   /** Whether the AI Enhancer is actively adjusting bands in real time. */
   aiEnhance: boolean;
+  /** Which target spectrum the AI Enhancer matches toward. 'auto' classifies
+   *  the material live; anything else pins that profile. */
+  aiProfile: EnhanceProfileId;
+  /** How long the AI averages the spectrum over before correcting. 'steady'
+   *  estimates the track's long-term balance and settles; 'live' follows the
+   *  arrangement. See AiAdaptMode in useAiEnhancer. */
+  aiAdapt: AiAdaptMode;
+  /** Equal-loudness (Fletcher-Munson) compensation for quiet listening.
+   *  Opt-in: it can't be detected, only asserted — see useAiEnhancer. */
+  aiLoudnessComp: boolean;
+  /** Let the AI drive the effects rack's stereo width and bass exciter.
+   *  Reverb stays manual — see the AI_WIDTH_* block in useAiEnhancer. */
+  aiEffects: boolean;
   activePreset: EQPresetId;
   /** Name of the user preset currently loaded, or null. Separate from
    *  `activePreset` so the built-in id union doesn't have to grow a case for
@@ -180,6 +195,10 @@ const DEFAULT_STATE: PersistedState = {
   bands: defaultBands(10),
   locked: defaultLocks(10),
   aiEnhance: false,
+  aiProfile: 'auto',
+  aiAdapt: 'steady',
+  aiLoudnessComp: false,
+  aiEffects: false,
   activePreset: 'flat',
   activeUserPreset: null,
   cache: {},
@@ -205,6 +224,15 @@ function load(): PersistedState {
           ? parsed.locked
           : defaultLocks(bandCount),
       aiEnhance: parsed.aiEnhance ?? false,
+      // A profile id persisted by an older build may no longer exist.
+      aiProfile:
+        parsed.aiProfile === 'auto' ||
+        (parsed.aiProfile !== undefined && parsed.aiProfile in ENHANCE_PROFILES)
+          ? parsed.aiProfile
+          : 'auto',
+      aiAdapt: parsed.aiAdapt === 'live' ? 'live' : 'steady',
+      aiLoudnessComp: parsed.aiLoudnessComp ?? false,
+      aiEffects: parsed.aiEffects ?? false,
       cache: parsed.cache ?? {},
       lockedCache: parsed.lockedCache ?? {},
     };
@@ -257,6 +285,24 @@ export function useEQ() {
 
   const toggleAiEnhance = useCallback(() => {
     setState((s) => ({ ...s, aiEnhance: !s.aiEnhance }));
+  }, []);
+
+  /** Picking a profile also arms the enhancer — choosing a voicing while it's
+   *  switched off would otherwise look like it did nothing. */
+  const setAiProfile = useCallback((id: EnhanceProfileId) => {
+    setState((s) => ({ ...s, aiProfile: id, aiEnhance: true }));
+  }, []);
+
+  const setAiAdapt = useCallback((mode: AiAdaptMode) => {
+    setState((s) => ({ ...s, aiAdapt: mode, aiEnhance: true }));
+  }, []);
+
+  const toggleAiEffects = useCallback(() => {
+    setState((s) => ({ ...s, aiEffects: !s.aiEffects, aiEnhance: true }));
+  }, []);
+
+  const toggleAiLoudnessComp = useCallback(() => {
+    setState((s) => ({ ...s, aiLoudnessComp: !s.aiLoudnessComp }));
   }, []);
 
   const setPreamp = useCallback((value: number) => {
@@ -383,6 +429,10 @@ export function useEQ() {
     toggleBypass,
     toggleBandLock,
     toggleAiEnhance,
+    setAiProfile,
+    setAiAdapt,
+    toggleAiEffects,
+    toggleAiLoudnessComp,
     reset,
   };
 }

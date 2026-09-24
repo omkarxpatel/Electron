@@ -4,6 +4,7 @@ import { frequenciesFor, qFor } from '../state/eq';
 import type { EnhancerState } from '../state/enhancer';
 import type { EffectsState } from '../state/effects';
 import { buildEffectsChain, type EffectsChain } from './effectsGraph';
+import type { AiEffectTargets } from './useAiEnhancer';
 import { buildBandCoefs, logSpacedFrequencies, responseCurveDb } from './biquadResponse';
 
 interface AudioEngineState {
@@ -72,6 +73,10 @@ export function useAudioEngine(
   aiDeltaRef: { current: number[] } | null = null,
   aiEnabled = false,
   aiSetTargetTau: number = PARAM_RAMP,
+  /** Optional AI Enhancer effect targets. When `active`, these override the
+   *  user's width / exciter values on the rack — the user's stored state is
+   *  left untouched so switching AI effects off restores it exactly. */
+  aiEffectsRef: { current: AiEffectTargets } | null = null,
   /** Input compensation gain in dB, applied right after the MediaStreamSource
    *  (before the preamp / EQ / analysers). Used to lift quiet virtual inputs
    *  like BlackHole back to parity with direct system audio. Default 0 dB. */
@@ -478,6 +483,14 @@ export function useAudioEngine(
     effectsChainRef.current?.apply(effectsState);
   }, [effectsState]);
 
+  /* Switching AI Enhance off entirely stops the tick loop above, so the
+   * hand-back it does on its own can't run. Do it here instead. */
+  useEffect(() => {
+    if (aiEnabled) return;
+    if (aiEffectsRef?.current) aiEffectsRef.current.active = false;
+    effectsChainRef.current?.apply(effectsStateRef.current);
+  }, [aiEnabled, aiEffectsRef]);
+
   /* Reverb decay is the one expensive change: it regenerates the impulse
    * response, allocating sampleRate x decay x 2 floats — megabytes at the
    * top of the range. Debounced so dragging the slider builds one buffer
@@ -533,14 +546,81 @@ export function useAudioEngine(
    * everything. */
   useEffect(() => {
     if (!aiEnabled || !aiDeltaRef) return;
+    /** Effective curve (baseline + AI delta), reused each tick so the
+     *  10 Hz loop doesn't allocate. */
+    let effective: number[] = [];
+    /** Last auto-trim value pushed to React state. The trim moves
+     *  continuously while the AI adapts; committing every 0.01 dB would
+     *  re-render the Enhancer readout 10×/sec for no visible change. */
+    let lastReportedTrim = Number.NaN;
+    /** Whether the AI was driving the rack on the previous tick. Needed so
+     *  switching Auto effects off hands the rack back: the apply() below only
+     *  runs while active, so without this the chain would keep whatever width
+     *  and exciter the AI last wrote until something else touched
+     *  effectsState. */
+    let fxWasActive = false;
     const id = window.setInterval(() => {
       const ctx = ctxRef.current;
       const filters = filtersRef.current;
-      if (!ctx || filters.length === 0) return;
+      const preamp = preampRef.current;
+      if (!ctx || !preamp || filters.length === 0) return;
       const s = eqStateRef.current;
       if (s.bypass) return;
       const delta = aiDeltaRef.current;
       const now = ctx.currentTime;
+
+      /* Auto headroom trim, recomputed over the curve we're ABOUT to apply.
+       *
+       * applyEqState() can't do this for us: it derives its trim from the
+       * user's baseline bands alone and then bails out (`if (aiEnabled)
+       * return trimDb`) precisely so it doesn't fight this loop over
+       * filter.gain. So while the AI was on, up to 12 dB per band of boost
+       * went in with the trim still sized for the baseline — reintroducing
+       * the exact failure toneSectionPeakDb exists to prevent: the excess
+       * lands on a master already near -1 dBFS, the limiter eats it, and
+       * AI-on ends up quieter AND more compressed than flat. Which reads,
+       * on an A/B, as "the AI sounds worse".
+       */
+      if (effective.length !== filters.length) effective = new Array(filters.length).fill(0);
+      for (let i = 0; i < filters.length; i++) {
+        effective[i] = (s.bands[i] ?? 0) + (delta[i] ?? 0);
+      }
+      const enh = enhancerStateRef.current;
+      const enhBypassed = enh.bypass;
+      const trimDb = toneSectionPeakDb(
+        effective,
+        frequenciesFor(s.bandCount),
+        qFor(s.bandCount),
+        enhBypassed ? 0 : enh.bass,
+        enhBypassed ? 0 : enh.treble,
+        enhBypassed ? 0 : enh.mid,
+        ctx.sampleRate,
+      );
+      preamp.gain.setTargetAtTime(Math.pow(10, (s.preamp - trimDb) / 20), now, PARAM_RAMP);
+
+      /* Effects rack, when the AI is driving it. Merged here rather than in
+       * the effectsState effect below because these values change 10x/sec and
+       * routing them through React state would re-render the panel at that
+       * rate and rewrite localStorage continuously. The user's own state stays
+       * the source of truth for everything the AI doesn't touch (reverb, A/B)
+       * and for all of it once this is switched off. */
+      const fx = aiEffectsRef?.current;
+      if (fx?.active) {
+        effectsChainRef.current?.apply({
+          ...effectsStateRef.current,
+          width: fx.width,
+          exciter: fx.exciter,
+          exciterFreq: fx.exciterFreq,
+        });
+        fxWasActive = true;
+      } else if (fxWasActive) {
+        effectsChainRef.current?.apply(effectsStateRef.current);
+        fxWasActive = false;
+      }
+      if (!(Math.abs(trimDb - lastReportedTrim) < 0.1)) {
+        lastReportedTrim = trimDb;
+        setAutoTrimDb(trimDb);
+      }
       // Keep prevAppliedBandsRef in sync with what we're actually scheduling.
       // Critical for the AI-off transition: when the user disables AI, the
       // eqState effect runs with its dirty-band diff. If we didn't track the
@@ -750,7 +830,10 @@ function applyEqState(
     ctx.sampleRate,
   );
   preamp.gain.setTargetAtTime(Math.pow(10, (state.preamp - trimDb) / 20), now, PARAM_RAMP);
-  // When AI is on, the AI tick owns filter gains — don't write them here.
+  // When AI is on, the AI tick owns filter gains AND the preamp — it
+  // recomputes the trim over baseline+delta, which is the only place that
+  // knows the full curve. The preamp write above is a baseline-only estimate
+  // that the next AI tick (≤100 ms) supersedes.
   if (aiEnabled) return trimDb;
   // Per-band dirty diff. First call after a graph rebuild OR bandCount change
   // writes all bands; subsequent calls only write bands whose value moved.

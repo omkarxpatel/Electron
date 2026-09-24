@@ -19,6 +19,7 @@
     "build:publish": "tsc --noEmit && vite build && electron-builder --publish=always",
     "build:release": "tsc --noEmit && vite build && electron-builder --publish=never",
     "typecheck": "tsc --noEmit",
+    "check:enhancer": "node scripts/check-enhancer.mjs",
     "icon:gen": "bash scripts/build-icon.sh"
   },
   "dependencies": {

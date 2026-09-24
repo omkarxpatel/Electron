@@ -28,8 +28,13 @@ Live mode feeds back on itself. Don't "simplify" it away.
 
 Verification here means:
 
-1. `npm run typecheck` — must be clean. This is the only automated gate.
-2. Run the app and look at it. See below, because launching it has traps.
+1. `npm run typecheck` — must be clean.
+2. `npm run check:enhancer` — if you touched `useAiEnhancer`, `enhanceProfiles`
+   or `biquadResponse`. Asserts the AI Enhancer's target curves and its
+   curve→filter-gain solver against measured thresholds. Typecheck can't tell
+   you a filter delivers the wrong curve; every case it guards shipped silently
+   once already.
+3. Run the app and look at it. See below, because launching it has traps.
 
 If you change the updater or the release pipeline, also run
 `node scripts/verify-release.mjs <tag> --remote-only` against a real tag.

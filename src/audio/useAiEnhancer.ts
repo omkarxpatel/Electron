@@ -1,25 +1,35 @@
 import { useEffect, useRef } from 'react';
-import { frequenciesFor, type BandCount } from '../state/eq';
+import { frequenciesFor, qFor, type BandCount } from '../state/eq';
+import {
+  ISO_10,
+  effectTargetsFor,
+  resolveTarget,
+  type EffectTargets,
+  type EnhanceProfileId,
+  type MaterialClass,
+} from './enhanceProfiles';
+import { buildCurveSolver, solveBandGains } from './biquadResponse';
 
 /**
- * AI Enhancer — real-time adaptive graphic EQ.
+ * AI Enhancer — adaptive graphic EQ that matches the playing music toward a
+ * target spectrum.
  *
- * Design follows the spec produced by the architect agent. Per-tick (10 Hz) flow:
+ * Per-tick (10 Hz) flow:
  *
- *   1. Pull L + R FFT, average to mono (magM) — mono is what we balance against.
- *   2. Aggregate FFT bins into 10 ISO log-spaced band magnitudes in dBFS.
- *   3. Time-smooth (EMA, τ=1.5s) → bandDbEma.
- *   4. Spectral-balance correction: compare bandDbEma (mean-normalized) to a
- *      pink-noise target curve (-3 dB/oct from 1 kHz). Apply 35 % of the
- *      deviation, clamped to ±3 dB per band.
- *   5. Compute features (centroid, bassRatio, onset density via spectral flux,
- *      crest, flatness). Pick a character mode via decision tree with 2 s dwell.
- *   6. Vocal detection: mid-band stereo correlation + vocal-band energy ratio
- *      + formant-region gate. Hysteretic.
- *   7. Loudness compensation (Fletcher–Munson): engaged below -25 dBFS RMS,
- *      full at -50 dBFS via smoothstep. U-shape curve favouring extremes.
- *   8. Sum components → clamp ±6 dB → user-override gate → slew-limit
- *      (3 dB/s for bass, 6 dB/s elsewhere) → write delta to ref.
+ *   1. Pull L + R FFT twice: float for band energies (exact dBFS) and byte
+ *      for the classifier features.
+ *   2. Aggregate float bins into 10 ISO band levels in real dBFS, average them
+ *      over the adapt window (20 s Steady / 1.5 s Live, bias-corrected while
+ *      warming up), and derive a per-band "is anything here" gate.
+ *   3. Features (centroid, bassRatio, onset density, crest, flatness) + vocal
+ *      detection → material class, with dwell and a smoothed confidence.
+ *   4. `enhanceProfiles.resolveTarget` turns (user selection, material class,
+ *      confidence) into ONE target spectrum. Correct a fraction of the
+ *      measured deviation from it, capped and gated by band activity.
+ *   5. Optional quiet-listening compensation, if the user asked for it.
+ *   6. Invert band interaction so the response DELIVERED matches the curve
+ *      computed above, then subtract the user's baseline to get a delta.
+ *   7. User-override gate → per-band locks → slew limit → write to ref.
  *
  * The hook DOESN'T touch BiquadFilter directly — it writes per-band delta dB
  * values into a ref. The audio engine reads that ref each frame and adds it
@@ -27,43 +37,51 @@ import { frequenciesFor, type BandCount } from '../state/eq';
  * and auto-corrections separable.
  */
 
-const ISO_10 = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
-
-/** Pink-noise (-3 dB/oct from 1 kHz) target. Sub clamped to +14.3 to avoid
- *  chasing subsonic that's not musically intended. */
-const PINK_TARGET_10 = [14.3, 12.0, 9.0, 6.0, 3.0, 0.0, -3.0, -6.0, -9.0, -12.0];
-
-type Mode = 'bass' | 'rhythmic' | 'vocal' | 'instrumental' | 'dense';
-
-/** Per-mode 10-band dB profiles applied at full mode-confidence. */
-const MODE_PROFILES: Record<Mode, number[]> = {
-  bass:         [+0.5, +1.0, +0.5, -1.5, -1.0,  0.0, +0.5, +1.0, +1.5, +1.0],
-  rhythmic:     [-1.0, -0.5, -1.5, -0.5,  0.0,  0.0, +0.5, +1.5, +2.5, +2.0],
-  vocal:        [-0.5,  0.0,  0.0, -1.0, +0.5, +1.5, +2.5, +1.5, +0.5,  0.0],
-  instrumental: [+1.5, +1.5, +1.0,  0.0, -0.5, -0.5,  0.0, +0.5, +1.5, +2.0],
-  dense:        [+0.5, +0.5,  0.0, -0.5, -0.5,  0.0, +0.5, +0.5, +1.0, +0.5],
-};
-
-/** Vocal presence boost (multiplied by 0..1 vocal score). */
-const VOCAL_PROFILE = [0, 0, 0, -0.5, +0.8, +1.5, +2.5, +1.5, +0.5, 0];
-
-/** Loudness compensation at full engagement (low SPL listening). U-shaped. */
-const LOUDNESS_PROFILE = [+6.0, +4.5, +3.0, +1.5, +0.5, 0.0, -0.5, 0.0, +1.5, +3.5];
-
-const TICK_HZ = 10;
-const DT = 1 / TICK_HZ;
-const EMA_TAU_S = 1.5;
-const EMA_ALPHA = 1 - Math.exp(-DT / EMA_TAU_S);
-const CORRECTION_STRENGTH = 0.55;
-const CORRECTION_CEILING = 4.0;
-/** Max per-band delta. Set to the slider's full range so the AI can fully
+/** Per-band max delta. Set to the slider's full range so the AI can fully
  *  recover from any baseline position (12 dB span at 6 dB/s slew = 2 s to
  *  fully reach target from an extreme). The slew rate and override gate
  *  still keep motion smooth and non-violent. */
 const TOTAL_CEILING = 12.0;
+
+const TICK_HZ = 10;
+const DT = 1 / TICK_HZ;
+
+/**
+ * How long the band-level estimate averages over.
+ *
+ * The target curves in `enhanceProfiles` are long-term average spectra —
+ * Pestana et al. compute theirs over whole tracks. Estimating one from a
+ * 1.5 s window and correcting toward it 10×/sec is a category error: the
+ * result tracks the arrangement, not the mastering, so the curve breathes
+ * with every chorus. The ear is far more sensitive to timbral CHANGE than to
+ * timbral offset, so a curve that moves is heard as swimmy even when its
+ * average position is better than flat. That's a large part of why AI Enhance
+ * lost A/Bs against a static preset.
+ *
+ * 'steady' averages over 20 s, which is long enough to actually estimate a
+ * track's spectrum. The correction converges and then effectively stops,
+ * which is what a mastering engineer or a DJ does — set it and leave it.
+ *
+ * 'live' keeps the original 1.5 s window. It reads the arrangement rather
+ * than the master, which is the wrong objective for tone but is the thing
+ * that makes the sliders dance, so it stays as a deliberate choice.
+ */
+export type AiAdaptMode = 'live' | 'steady';
+const EMA_ALPHA_LIVE = 1 - Math.exp(-DT / 1.5);
+const EMA_ALPHA_STEADY = 1 - Math.exp(-DT / 20);
+/** Ticks of signal before the running mean has seen a full window and the
+ *  reported curve stops being a warm-up estimate. */
+const LIVE_SETTLE_TICKS = Math.round(1.5 * TICK_HZ);
+const STEADY_SETTLE_TICKS = Math.round(20 * TICK_HZ);
 const SLEW_BASS = 3.0;   // dB/s for the first 3 bands (≤125 Hz)
 const SLEW_OTHER = 6.0;
-const MODE_DWELL_S = 2.0;
+/** How long a new material class must hold before `auto` switches profile.
+ *  Scaled with the adapt mode for the same reason as the EMA: in Steady the
+ *  band levels settle but a profile flip is a discrete jump of a few dB, so
+ *  leaving the dwell at 2 s would leave the curve moving anyway and the
+ *  "Steady" label would be a lie. */
+const MODE_DWELL_LIVE_S = 2.0;
+const MODE_DWELL_STEADY_S = 12.0;
 const USER_OVERRIDE_HOLD_S = 4.0;
 const USER_OVERRIDE_FADE_OUT_S = 0.15;
 const USER_OVERRIDE_FADE_IN_S = 3.0;
@@ -74,9 +92,63 @@ const VOCAL_RATIO_RELEASE = 0.22;
 const VOCAL_FORMANT_GATE = 0.25;
 const VOCAL_ENTER_DWELL_S = 0.8;
 const VOCAL_EXIT_DWELL_S = 0.3;
-const LOUDNESS_LOW_DB = -50;
-const LOUDNESS_HIGH_DB = -25;
 const SET_TARGET_TAU = 0.080;
+
+/**
+ * Band-activity gate, in absolute dBFS. Below FLOOR a band is treated as
+ * empty and left alone; above ACTIVE it's corrected normally.
+ *
+ * Why this exists: Spotify's Ogg Vorbis / AAC streams are low-passed around
+ * 15-16 kHz, so the 16 kHz band measures near-silent on every track. Without
+ * a gate the matcher reads that as "27 dB short of target" and boosts codec
+ * noise into the top octave. Same failure on any quiet passage or gap between
+ * tracks — it would boost the noise floor toward the target curve.
+ *
+ * This is only checkable now that band levels are measured in real dBFS;
+ * with the old byte decode the numbers weren't on an absolute scale at all.
+ */
+const BAND_FLOOR_DBFS = -72;
+const BAND_ACTIVE_DBFS = -58;
+
+/** Summed band activity (0..10) below which we treat the input as silent and
+ *  freeze the curve. A quarter of one band fully active is still nothing. */
+const SIGNAL_PRESENT_ACTIVITY = 0.25;
+
+/**
+ * Quiet-listening compensation at full engagement. U-shaped, per the
+ * equal-loudness contours (ISO 226:2023).
+ *
+ * This is opt-in and flat-rate rather than automatic. It used to engage
+ * itself by measuring program RMS between -50 and -25 dBFS, which is wrong
+ * twice over: the measurement came from 8-bit time-domain data whose
+ * quantization floor (~-48 dBFS) sits inside that very window, and more
+ * fundamentally digital level is not listening level. A quietly-mastered
+ * record got +6 dB of 31 Hz regardless of where the volume knob was.
+ *
+ * Fletcher-Munson compensation is only meaningful against calibrated SPL at
+ * the listener, which we can't measure. So the user asserts the condition
+ * instead — they know when they're listening quietly.
+ *
+ * Mean-zero, like the match target: it's a SHAPE, not a level. The same curve
+ * written as all-boost (+6 at 31 Hz down to 0 at 1 kHz) is identical to the
+ * ear but costs 6 dB of headroom, which the auto-trim then takes straight
+ * back off the whole signal. Boosting to immediately attenuate is how you end
+ * up with "the correction made it quieter".
+ */
+const LOUDNESS_PROFILE = [+4.0, +2.5, +1.0, -0.5, -1.5, -2.0, -2.5, -2.0, -0.5, +1.5];
+
+/** Effect slew limits, per second. Slower than the EQ's: a moving stereo
+ *  image or a breathing distortion amount is far more noticeable than a
+ *  moving band. The target values themselves live in enhanceProfiles. */
+const AI_SLEW_WIDTH = 12;
+const AI_SLEW_EXCITER = 8;
+const AI_SLEW_EXCITER_FREQ = 25;
+
+/** Effect values the AI is driving. `active` is false when AI effects
+ *  control is off, in which case the user's own values stand. */
+export interface AiEffectTargets extends EffectTargets {
+  active: boolean;
+}
 
 interface Params {
   analyserL: AnalyserNode | null;
@@ -84,6 +156,18 @@ interface Params {
   enabled: boolean;
   bandCount: BandCount;
   locked: boolean[];
+  /** Which target spectrum to match. 'auto' classifies the material live. */
+  profileId: EnhanceProfileId;
+  /** How long the band-level estimate averages over. See AiAdaptMode. */
+  adapt: AiAdaptMode;
+  /** Apply the equal-loudness U-curve for quiet listening. */
+  loudnessComp: boolean;
+  /** Let the AI drive stereo width and the bass exciter. */
+  driveEffects: boolean;
+  /** Ref the AI writes its effect targets into, read by the audio engine.
+   *  Same arrangement as deltaRef: a ref rather than state so the 10 Hz loop
+   *  doesn't re-render anything. */
+  effectsRef: { current: AiEffectTargets };
   /** External ref the engine writes its per-band delta into. App.tsx owns
    *  this ref so it can pass the same instance into useAudioEngine. Length
    *  must equal bandCount; this hook resizes it when bandCount changes. */
@@ -100,6 +184,23 @@ interface Params {
    *  flag per band. Lets the parent mirror the delta into React state
    *  (for slider visualization) and flash bands recently moved by > 0.05 dB. */
   onTick?: (deltas: number[], flashed: boolean[]) => void;
+  /** Called only when the reported status actually changes, so the parent can
+   *  drop it straight into React state without throttling it itself. */
+  onStatus?: (status: AiEnhancerStatus) => void;
+}
+
+/** What the enhancer is currently doing, for display. Without this the user
+ *  has no way to tell which target `auto` settled on, or whether the estimate
+ *  has finished warming up — and therefore no way to judge the feature. */
+export interface AiEnhancerStatus {
+  /** The target actually dominating the blend right now. */
+  dominant: Exclude<EnhanceProfileId, 'auto'>;
+  /** False while the averaging window is still filling. */
+  settled: boolean;
+  /** No signal above the noise floor — the curve is frozen. */
+  idle: boolean;
+  /** What the AI is doing to the effects rack, or null when it isn't. */
+  effects: AiEffectTargets | null;
 }
 
 export interface AiEnhancerHandle {
@@ -116,19 +217,38 @@ export function useAiEnhancer({
   enabled,
   bandCount,
   locked,
+  profileId,
+  adapt,
+  loudnessComp,
+  driveEffects,
+  effectsRef,
   deltaRef,
   baselineRef,
   bandFreqs,
   onTick,
+  onStatus,
 }: Params): AiEnhancerHandle {
   const lastUserTouchRef = useRef<number[]>(new Array(bandCount).fill(0));
   // Mirror dynamic inputs into refs so the tick effect doesn't tear down
   // on every render. (Without this, an inline `onTick` arrow or a fresh
   // `locked` array kills the engine before it can produce useful state.)
+  // profileId and loudnessComp go through refs for a second reason: a
+  // teardown would reset the band EMAs, so switching profile would jump the
+  // curve instead of gliding to the new target under the slew limiter.
   const lockedRef = useRef<boolean[]>(locked);
   lockedRef.current = locked;
   const onTickRef = useRef<typeof onTick>(onTick);
   onTickRef.current = onTick;
+  const onStatusRef = useRef<typeof onStatus>(onStatus);
+  onStatusRef.current = onStatus;
+  const profileIdRef = useRef<EnhanceProfileId>(profileId);
+  profileIdRef.current = profileId;
+  const adaptRef = useRef<AiAdaptMode>(adapt);
+  adaptRef.current = adapt;
+  const loudnessCompRef = useRef<boolean>(loudnessComp);
+  loudnessCompRef.current = loudnessComp;
+  const driveEffectsRef = useRef<boolean>(driveEffects);
+  driveEffectsRef.current = driveEffects;
 
   /* Resize the delta buffer whenever band count changes. We mutate in place
    * rather than reassign so the audio engine (which captured the ref by
@@ -148,7 +268,16 @@ export function useAiEnhancer({
   };
 
   useEffect(() => {
-    if (!enabled || !analyserL || !analyserR) {
+    const targetFreqs = bandFreqs.length === bandCount ? bandFreqs : frequenciesFor(bandCount);
+    // A null curveSolver (singular normal equations) means we can't work out
+    // which filter gains deliver a given curve, so there's nothing honest to
+    // write. Treated the same as switched-off rather than guessed at. Doesn't
+    // happen for the three shipped layouts; it's the guard, not a code path.
+    const curveSolver =
+      analyserL && enabled
+        ? buildCurveSolver(targetFreqs, qFor(bandCount), ISO_10, analyserL.context.sampleRate)
+        : null;
+    if (!enabled || !analyserL || !analyserR || !curveSolver) {
       // Engine off → zero out deltas in place AND notify the parent so its
       // React state mirror clears. Without the notify, the EqPanel would
       // keep displaying `baseline + stale_delta` (the slider wouldn't move
@@ -162,40 +291,62 @@ export function useAiEnhancer({
     const binsL = new Uint8Array(analyserL.frequencyBinCount);
     const binsR = new Uint8Array(analyserR.frequencyBinCount);
     const binsM = new Float32Array(analyserL.frequencyBinCount);
+    // Float FFT — real dBFS per bin, which the byte path can't give us. The
+    // byte data is quantized to a fixed dB window (minDecibels..maxDecibels,
+    // -100..-30 by default) and saturates at the top of it; on mastered music
+    // the bass and midrange sit above -30 dBFS most of the time and all read
+    // 255. The old code also decoded bytes as if the window were 100 dB wide
+    // rather than 70, inflating every measured deviation by 1.43×.
+    const fltL = new Float32Array(analyserL.frequencyBinCount);
+    const fltR = new Float32Array(analyserR.frequencyBinCount);
     const time = new Uint8Array(analyserL.fftSize);
     const sampleRate = analyserL.context.sampleRate;
     const fftSize = analyserL.fftSize;
 
     // Persistent state across ticks.
-    const bandDbEma = new Array(10).fill(-60);
+    const bandDbEma = new Array(10).fill(-100);
+    /** Ticks of real signal folded into bandDbEma so far. Used to bias-correct
+     *  the EMA while it warms up — see the alpha calculation in the tick. */
+    let emaTicks = 0;
     const prevSpectrum = new Float32Array(binsM.length);
     const onsetTimes: number[] = [];
-    let currentMode: Mode = 'dense';
-    let candidateMode: Mode = 'dense';
+    let currentMode: MaterialClass = 'dense';
+    let candidateMode: MaterialClass = 'dense';
     let modeCandidateAcc = 0;
+    let confidenceSm = 0;
+    // Current (slewed) effect values, persisted across ticks.
+    let fxWidth = 100;
+    let fxExciter = 0;
+    let fxExciterFreq = 90;
+    /** Last status handed to onStatus. Compared field-by-field so the parent
+     *  only re-renders when something a human would notice has changed. */
+    let lastStatus: AiEnhancerStatus | null = null;
     let vocalScoreSm = 0;
     let vocalAbove = 0;       // accumulated time above enter threshold
     let vocalBelow = 0;       // accumulated time in release
     let vocalActive = false;
-    const targetFreqs = bandFreqs.length === bandCount ? bandFreqs : frequenciesFor(bandCount);
-    const iso10List = ISO_10 as readonly number[] as number[];
 
     // ─── Preallocated scratch buffers — created once per engine lifetime
     // and reused on every tick. At 10 Hz this eliminates ~7 array allocations
     // per second (×4–31 elements each), removing a meaningful GC contributor.
     const bandDbInst = new Float64Array(10);
-    const correction10 = new Float64Array(10);
+    const activity10 = new Float64Array(10);
+    const target10 = new Float64Array(10);
     const idealShape10 = new Float64Array(10);
-    const desiredDelta10 = new Float64Array(10);
-    const baseline10Buf = new Float64Array(10);
+    const filterGainsN = new Float64Array(bandCount);
     const flashedBuf: boolean[] = new Array(bandCount).fill(false);
     const deltaSnapshotBuf: number[] = new Array(bandCount).fill(0);
-    // Precompute per-band classifications (isBass) and ISO/target log lookup —
-    // these are stable for the engine lifetime.
     const isBassFlags = new Uint8Array(bandCount);
-    for (let i = 0; i < bandCount; i++) isBassFlags[i] = isBassBand(targetFreqs[i]) ? 1 : 0;
+    for (let i = 0; i < bandCount; i++) isBassFlags[i] = targetFreqs[i] <= 200 ? 1 : 0;
     // Cache the kLo/kHi FFT-bin range per ISO band (10 entries × 2 ints) —
     // these depend only on sampleRate + bin count, both stable.
+    //
+    // Known limit: at fftSize 1024 / 48 kHz a bin is 46.9 Hz, so the 31 Hz and
+    // 62 Hz bands both resolve to the single bin at 46.9 Hz and always read the
+    // same level. The sub/bass split therefore comes from the target curve's own
+    // shape rather than from anything measured. Bumping the pre-EQ analysers to
+    // 4096 would fix it, but every classifier threshold below is normalised by
+    // bin count, so that change has to come with re-derived thresholds.
     const isoBinRanges = new Int32Array(20);
     for (let i = 0; i < 10; i++) {
       const center = ISO_10[i];
@@ -206,7 +357,6 @@ export function useAiEnhancer({
       isoBinRanges[i * 2] = kLo;
       isoBinRanges[i * 2 + 1] = kHi;
     }
-
     let ticking = true;
 
     const tick = (): void => {
@@ -214,46 +364,62 @@ export function useAiEnhancer({
 
       analyserL.getByteFrequencyData(binsL);
       analyserR.getByteFrequencyData(binsR);
+      analyserL.getFloatFrequencyData(fltL);
+      analyserR.getFloatFrequencyData(fltR);
       analyserL.getByteTimeDomainData(time);
       for (let k = 0; k < binsM.length; k++) {
         binsM[k] = (binsL[k] + binsR[k]) * 0.5;
       }
 
-      // ─── 1. Per-ISO-band dB energies (10-band reference) ───
-      for (let i = 0; i < 10; i++) {
-        bandDbInst[i] = -100;
-      }
+      // ─── 1. Per-ISO-band levels in real dBFS, + activity gate ───
+      let loudestInst = -200;
       for (let i = 0; i < 10; i++) {
         const kLo = isoBinRanges[i * 2];
         const kHi = isoBinRanges[i * 2 + 1];
         let sumLin = 0;
         let count = 0;
         for (let k = kLo; k < kHi; k++) {
-          const db = (binsM[k] / 255) * 100 - 100;
-          sumLin += Math.pow(10, db / 20);
+          // Mono-sum in linear amplitude, not in dB — averaging decibels
+          // biases toward the quieter channel.
+          sumLin += (Math.pow(10, fltL[k] / 20) + Math.pow(10, fltR[k] / 20)) * 0.5;
           count++;
         }
         const mean = sumLin / Math.max(1, count);
-        bandDbInst[i] = 20 * Math.log10(Math.max(1e-9, mean));
-        bandDbEma[i] += EMA_ALPHA * (bandDbInst[i] - bandDbEma[i]);
+        // Floored well below the activity gate: true silence reads about
+        // -180 dB, which is a long way for an average to climb back from.
+        bandDbInst[i] = Math.max(-120, 20 * Math.log10(Math.max(1e-9, mean)));
+        if (bandDbInst[i] > loudestInst) loudestInst = bandDbInst[i];
       }
-
-      // ─── 2. Spectral balance correction (pink target, mean-normalized) ───
-      let meanDb = 0;
-      for (let i = 0; i < 10; i++) meanDb += bandDbEma[i];
-      meanDb /= 10;
+      const isLive = adaptRef.current === 'live';
+      // Fold into the running estimate only while something is actually
+      // playing. A 20 s window that averages in the gap between tracks would
+      // have a few seconds of near-silence — which is spectrally flat at the
+      // floor — pulling the estimated shape toward flat.
+      const signalPresent = loudestInst > BAND_FLOOR_DBFS;
+      // Bias-corrected EMA: 1/n early on makes this an exact running mean
+      // until the window fills, then it settles to the fixed time constant.
+      // Without it a 20 s window would take most of a minute to become
+      // meaningful, and the enhancer would sit idle through the start of
+      // every listening session.
+      const emaAlpha = Math.max(isLive ? EMA_ALPHA_LIVE : EMA_ALPHA_STEADY, 1 / (emaTicks + 1));
+      if (signalPresent) {
+        emaTicks++;
+        for (let i = 0; i < 10; i++) {
+          bandDbEma[i] += emaAlpha * (bandDbInst[i] - bandDbEma[i]);
+        }
+      }
       for (let i = 0; i < 10; i++) {
-        const observed = bandDbEma[i] - meanDb;
-        const deviation = PINK_TARGET_10[i] - observed;
-        correction10[i] = clamp(CORRECTION_STRENGTH * deviation, -CORRECTION_CEILING, CORRECTION_CEILING);
+        activity10[i] = smoothstep01(
+          clamp01((bandDbEma[i] - BAND_FLOOR_DBFS) / (BAND_ACTIVE_DBFS - BAND_FLOOR_DBFS)),
+        );
       }
 
-      // ─── 3. Features ───
+      // ─── 2. Features ───
       const centroid = spectralCentroid(binsM, sampleRate, fftSize);
       const bassRatio = bandEnergyRatio(binsM, 20, 200, sampleRate);
       const flux = spectralFlux(binsM, prevSpectrum);
       const flat = spectralFlatness(binsM);
-      const { rmsDb, crestDb } = timeDomainStats(time);
+      const { crestDb } = timeDomainStats(time);
 
       // Onset peak: flux > 1.4× running mean → register onset (per-tick window).
       const fluxMean = (prevSpectrum[binsM.length - 1] || 0.001); // hack-stash: last cell tracks running mean
@@ -266,7 +432,7 @@ export function useAiEnhancer({
       while (onsetTimes.length && now - onsetTimes[0] > 1000) onsetTimes.shift();
       const onsetDensity = onsetTimes.length;
 
-      // ─── 4. Vocal detection ───
+      // ─── 3. Vocal detection ───
       const vocalR = bandStereoCorrelation(binsL, binsR, 250, 3000, sampleRate);
       const vocalRatio = bandEnergyRatio(binsM, 250, 3000, sampleRate);
       const vocalEnergyMid = vocalRatio || 0.0001;  // same as vocalRatio; was being recomputed
@@ -288,8 +454,8 @@ export function useAiEnhancer({
       const vocalScoreTarget = vocalActive ? 1 : 0;
       vocalScoreSm += 0.45 * (vocalScoreTarget - vocalScoreSm); // ~120ms attack/release
 
-      // ─── 5. Character classifier (priority-ordered) ───
-      let nextMode: Mode;
+      // ─── 4. Material classifier (priority-ordered) ───
+      let nextMode: MaterialClass;
       if (bassRatio > 0.32 && centroid < 1500) nextMode = 'bass';
       else if (onsetDensity > 4.5 && crestDb > 14) nextMode = 'rhythmic';
       else if (vocalScoreSm > 0.6 && bassRatio < 0.25 && onsetDensity < 4) nextMode = 'vocal';
@@ -301,7 +467,7 @@ export function useAiEnhancer({
         modeCandidateAcc = 0;
       } else if (nextMode === candidateMode) {
         modeCandidateAcc += DT;
-        if (modeCandidateAcc >= MODE_DWELL_S) {
+        if (modeCandidateAcc >= (isLive ? MODE_DWELL_LIVE_S : MODE_DWELL_STEADY_S)) {
           currentMode = nextMode;
           modeCandidateAcc = 0;
         }
@@ -310,65 +476,95 @@ export function useAiEnhancer({
         modeCandidateAcc = DT;
       }
 
-      // Soft mode confidence (margin against thresholds, clamped 0..1).
-      const modeConfidence = modeMargin(currentMode, { centroid, bassRatio, onsetDensity, crestDb, flat, vocalScore: vocalScoreSm });
+      // Soft mode confidence (margin against thresholds, clamped 0..1), on
+      // the same time constant as the band levels. It comes from
+      // instantaneous features, and `auto` blends reference→profile by it, so
+      // an unsmoothed confidence would keep the target drifting every tick
+      // even once the spectrum estimate and the material class had both settled.
+      if (signalPresent) {
+        const rawConfidence = modeMargin(currentMode, { centroid, bassRatio, onsetDensity, crestDb, flat, vocalScore: vocalScoreSm });
+        confidenceSm += emaAlpha * (rawConfidence - confidenceSm);
+      }
 
-      // ─── 6. Loudness compensation (Fletcher–Munson) ───
-      // smoothstep(low,high,x) where low engages, high disengages
-      const t = clamp01((rmsDb - LOUDNESS_LOW_DB) / (LOUDNESS_HIGH_DB - LOUDNESS_LOW_DB));
-      const loudEng = 1 - smoothstep01(t);
-
-      // ─── 7. Absolute-targeting model ───
-      // The AI has an ideal effective EQ shape it wants — mean-zero around
-      // 0 dB. Target = idealShape directly. Delta = target − baseline, so
-      // wherever the user has dragged a slider, the AI actively moves toward
-      // its own preferred position. The user-override gate (below) preserves
-      // fresh manual adjustments for 4 s + 3 s ramp; the lock buttons preserve
-      // a band indefinitely. Without those, the AI takes back over.
-      const modeDelta = MODE_PROFILES[currentMode];
+      // ─── 5. Resolve the target spectrum and match toward it ───
+      const { strength, ceilingDb, dominant } = resolveTarget(
+        profileIdRef.current,
+        currentMode,
+        confidenceSm,
+        target10,
+      );
+      // Mean over ACTIVE bands only. An empty band (codec-lowpassed top
+      // octave, a gap between tracks) sitting at -100 dBFS would otherwise
+      // drag the mean down and skew every other band's deviation with it.
+      let wSum = 0;
+      let mSum = 0;
       for (let i = 0; i < 10; i++) {
-        idealShape10[i] =
-          correction10[i] +
-          modeDelta[i] * modeConfidence +
-          VOCAL_PROFILE[i] * vocalScoreSm +
-          LOUDNESS_PROFILE[i] * loudEng;
+        mSum += activity10[i] * bandDbEma[i];
+        wSum += activity10[i];
       }
-      const baselineNow = baselineRef.current;
-      let baseline10: ArrayLike<number>;
-      if (bandCount === 10) {
-        // Mirror baselineNow into the preallocated buffer instead of slicing.
-        for (let i = 0; i < 10; i++) baseline10Buf[i] = baselineNow[i] ?? 0;
-        baseline10 = baseline10Buf;
-      } else {
-        // interpolateLog still allocates — leave it for a separate, scoped change.
-        baseline10 = interpolateLog(baselineNow, targetFreqs, iso10List);
-      }
+      const meanDb = wSum > 1e-3 ? mSum / wSum : 0;
+      // Nothing playing → hold everything where it is rather than moving it.
+      // The AI targets an absolute shape, so with every band gated off its
+      // target is neutral, and it would spend a pause slewing the user's whole
+      // manual curve to flat and then slewing it back when the music returns.
+      // Silence isn't a tonal balance worth correcting toward. Smoothed rather
+      // than instantaneous so it can't chatter on a quiet passage.
+      const hold = wSum < SIGNAL_PRESENT_ACTIVITY;
+      const applyLoudness = loudnessCompRef.current;
       for (let i = 0; i < 10; i++) {
-        const d = idealShape10[i] - baseline10[i];
-        desiredDelta10[i] = clamp(d, -TOTAL_CEILING, TOTAL_CEILING);
+        const observed = bandDbEma[i] - meanDb;
+        const deviation = target10[i] - observed;
+        const match = clamp(strength * deviation, -ceilingDb, ceilingDb) * activity10[i];
+        idealShape10[i] = match + (applyLoudness ? LOUDNESS_PROFILE[i] : 0);
       }
 
-      // ─── 8. Interpolate to actual bandCount (10/15/31) ───
-      let targetDelta: ArrayLike<number>;
-      if (bandCount === 10) {
-        targetDelta = desiredDelta10;
-      } else {
-        // For 15/31 bands we still call interpolateLog; the allocation is small
-        // and bounded by bandCount.
-        const arr = Array.from(desiredDelta10);
-        targetDelta = interpolateLog(arr, iso10List, targetFreqs);
+      // ─── 5b. Effects rack targets ───
+      // Reuses measurements already taken above. See the AI_WIDTH_* /
+      // AI_EXCITER_* constants for why width and exciter are driven and
+      // reverb isn't.
+      if (driveEffectsRef.current && !hold) {
+        // Correlation over the range where widening does anything. Below
+        // ~300 Hz most masters are near-mono by design and widening the low
+        // end is how you lose the centre; above 8 kHz there's little there.
+        const corr = bandStereoCorrelation(binsL, binsR, 300, 8000, sampleRate);
+        const want = effectTargetsFor(
+          corr,
+          (bandDbEma[0] + bandDbEma[1]) * 0.5 - meanDb,
+          bandDbEma[1] - bandDbEma[0],
+          // Gate on the bottom two bands actually containing something —
+          // without it we'd generate harmonics from the noise floor of a
+          // bass-light record.
+          Math.min(activity10[0], activity10[1]),
+        );
+        fxWidth = approach(fxWidth, want.width, AI_SLEW_WIDTH * DT);
+        fxExciter = approach(fxExciter, want.exciter, AI_SLEW_EXCITER * DT);
+        fxExciterFreq = approach(fxExciterFreq, want.exciterFreq, AI_SLEW_EXCITER_FREQ * DT);
       }
+      const fx = effectsRef.current;
+      fx.active = driveEffectsRef.current;
+      fx.width = fxWidth;
+      fx.exciter = fxExciter;
+      fx.exciterFreq = fxExciterFreq;
 
-      // ─── 9. User-override gate + slew limit ───
+      // ─── 6. Curve → filter gains ───
+      // idealShape10 is the response we want to HEAR. Overlapping biquads sum
+      // and shelves only deliver half their gain at their corner frequency, so
+      // writing the curve straight to the filter gains delivers something else
+      // entirely. The solver maps curve → gains in one matvec, resampling to
+      // the user's band layout on the way.
+      solveBandGains(curveSolver, idealShape10, filterGainsN, bandCount, 10);
+
+      // ─── 7. User-override gate + slew limit ───
       const cur = deltaRef.current;
       if (cur.length !== bandCount) {
         // Shouldn't happen — useEffect above keeps it in sync — but guard anyway.
         return;
       }
+      const baselineNow = baselineRef.current;
       // Reuse flashedBuf — clear it instead of reallocating.
       for (let i = 0; i < bandCount; i++) flashedBuf[i] = false;
       const lockedNow = lockedRef.current;
-      for (let i = 0; i < bandCount; i++) {
+      for (let i = 0; !hold && i < bandCount; i++) {
         // Locked band → drain its delta to zero gently and skip.
         if (lockedNow[i]) {
           const r = isBassFlags[i] ? SLEW_BASS : SLEW_OTHER;
@@ -386,10 +582,10 @@ export function useAiEnhancer({
         } else if (since < USER_OVERRIDE_HOLD_S + USER_OVERRIDE_FADE_IN_S) {
           userGain = (since - USER_OVERRIDE_HOLD_S) / USER_OVERRIDE_FADE_IN_S;
         }
-        const raw = targetDelta[i] * userGain;
+        const desired = (filterGainsN[i] - (baselineNow[i] ?? 0)) * userGain;
         const rate = isBassFlags[i] ? SLEW_BASS : SLEW_OTHER;
         const prev = cur[i];
-        const next = approach(prev, clamp(raw, -TOTAL_CEILING, TOTAL_CEILING), rate * DT);
+        const next = approach(prev, clamp(desired, -TOTAL_CEILING, TOTAL_CEILING), rate * DT);
         if (Math.abs(next - prev) > 0.05) flashedBuf[i] = true;
         cur[i] = next;
       }
@@ -402,6 +598,21 @@ export function useAiEnhancer({
       }
       for (let i = 0; i < bandCount; i++) deltaSnapshotBuf[i] = cur[i];
       onTickRef.current?.(deltaSnapshotBuf, flashedBuf);
+
+      const settled = emaTicks >= (isLive ? LIVE_SETTLE_TICKS : STEADY_SETTLE_TICKS);
+      const fxSnapshot: AiEffectTargets | null = fx.active
+        ? { active: true, width: fxWidth, exciter: fxExciter, exciterFreq: fxExciterFreq }
+        : null;
+      if (
+        lastStatus === null ||
+        lastStatus.dominant !== dominant ||
+        lastStatus.settled !== settled ||
+        lastStatus.idle !== hold ||
+        effectsDiffer(lastStatus.effects, fxSnapshot)
+      ) {
+        lastStatus = { dominant, settled, idle: hold, effects: fxSnapshot };
+        onStatusRef.current?.(lastStatus);
+      }
     };
 
     const id = window.setInterval(tick, 1000 / TICK_HZ);
@@ -420,6 +631,18 @@ export function useAiEnhancer({
 /* ────────────────────────────────────────────────────────────── */
 /* Helpers                                                        */
 /* ────────────────────────────────────────────────────────────── */
+
+/** Threshold comparison so slewing effect values don't re-render the panel
+ *  ten times a second for changes no knob could show. */
+function effectsDiffer(a: AiEffectTargets | null, b: AiEffectTargets | null): boolean {
+  if ((a === null) !== (b === null)) return true;
+  if (a === null || b === null) return false;
+  return (
+    Math.abs(a.width - b.width) > 0.5 ||
+    Math.abs(a.exciter - b.exciter) > 0.5 ||
+    Math.abs(a.exciterFreq - b.exciterFreq) > 1
+  );
+}
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -440,9 +663,14 @@ function approach(prev: number, target: number, maxStep: number): number {
   return target;
 }
 
-function isBassBand(centerHz: number): boolean {
-  return centerHz <= 200;
-}
+/* The feature helpers below read the BYTE spectrum, which is quantized into
+ * the analyser's minDecibels..maxDecibels window and saturates at the top of
+ * it. That distorts them on loud material. They're left on the byte path
+ * deliberately: every classifier threshold above was tuned against this exact
+ * behaviour, so moving them to float dB would need all of those thresholds
+ * re-derived against measurements. The band levels that drive the actual EQ
+ * correction are on the float path, which is what mattered. Retuning the
+ * classifier is a separate, measurable change. */
 
 function spectralCentroid(mag: Float32Array, sampleRate: number, fftSize: number): number {
   let num = 0, den = 0;
@@ -543,9 +771,9 @@ interface ClassifierFeatures {
   vocalScore: number;
 }
 
-function modeMargin(mode: Mode, f: ClassifierFeatures): number {
+function modeMargin(mode: MaterialClass, f: ClassifierFeatures): number {
   // Soft margin against the dominant threshold for the chosen mode.
-  // Smaller margin → lower confidence → smaller mode-profile contribution.
+  // Smaller margin → lower confidence → target blends back toward reference.
   let margin = 0;
   switch (mode) {
     case 'bass':
@@ -565,22 +793,4 @@ function modeMargin(mode: Mode, f: ClassifierFeatures): number {
       break;
   }
   return clamp01(margin / 0.5);
-}
-
-/** Log-frequency interpolation from a 10-band value array onto an arbitrary
- *  target frequency vector. Endpoints clamped. */
-function interpolateLog(values10: number[], freqs10: number[], target: number[]): number[] {
-  const logF10 = freqs10.map(Math.log);
-  return target.map((f) => {
-    const lf = Math.log(f);
-    if (lf <= logF10[0]) return values10[0];
-    if (lf >= logF10[logF10.length - 1]) return values10[values10.length - 1];
-    for (let i = 0; i < logF10.length - 1; i++) {
-      if (logF10[i] <= lf && lf <= logF10[i + 1]) {
-        const t = (lf - logF10[i]) / (logF10[i + 1] - logF10[i]);
-        return values10[i] + t * (values10[i + 1] - values10[i]);
-      }
-    }
-    return 0;
-  });
 }

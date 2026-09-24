@@ -9,6 +9,13 @@ import {
   type EQPresetId,
   type EQState,
 } from '../state/eq';
+import {
+  ENHANCE_PROFILE_ORDER,
+  profileHint,
+  profileLabel,
+  type EnhanceProfileId,
+} from '../audio/enhanceProfiles';
+import type { AiAdaptMode, AiEnhancerStatus } from '../audio/useAiEnhancer';
 import { useRenderCount } from '../perf';
 import { EqBandActivity } from './EqBandActivity';
 import { EqResponseCurve } from './EqResponseCurve';
@@ -32,6 +39,12 @@ interface Props {
   toggleBypass: () => void;
   toggleBandLock: (index: number) => void;
   toggleAiEnhance: () => void;
+  setAiProfile: (id: EnhanceProfileId) => void;
+  setAiAdapt: (mode: AiAdaptMode) => void;
+  toggleAiLoudnessComp: () => void;
+  toggleAiEffects: () => void;
+  /** Live readout of what the enhancer is doing; null before its first tick. */
+  aiStatus?: AiEnhancerStatus | null;
   /** Per-band flags driven by the AI enhancer engine — true for ~500ms after
    *  the engine just nudged that band. Used to flash the slider in the UI. */
   bandAutoActive?: boolean[];
@@ -67,6 +80,22 @@ interface Props {
 
 const BAND_COUNTS: ReadonlyArray<BandCount> = [10, 15, 31];
 
+/**
+ * One line saying what the enhancer is actually doing. Without it `auto` is a
+ * black box — you can watch the sliders move but not tell which target it
+ * chose, or whether the 20 s average has finished filling and the curve you're
+ * judging is the final one.
+ */
+function describeAiStatus(
+  selected: EnhanceProfileId,
+  status: AiEnhancerStatus | null | undefined,
+): string {
+  if (!status) return 'starting…';
+  if (status.idle) return 'no signal — holding';
+  if (!status.settled) return selected === 'auto' ? 'listening…' : 'settling…';
+  return selected === 'auto' ? `matching ${profileLabel(status.dominant)}` : 'settled';
+}
+
 export const EqPanel = memo(EqPanelImpl);
 
 function EqPanelImpl({
@@ -82,6 +111,11 @@ function EqPanelImpl({
   toggleBypass,
   toggleBandLock,
   toggleAiEnhance,
+  setAiProfile,
+  setAiAdapt,
+  toggleAiLoudnessComp,
+  toggleAiEffects,
+  aiStatus,
   bandAutoActive,
   aiDelta,
   active = true,
@@ -355,11 +389,67 @@ function EqPanelImpl({
                 type="button"
                 className={`eq-preset-chip eq-preset-chip-ai ${state.aiEnhance ? 'is-active' : ''}`}
                 onClick={toggleAiEnhance}
-                title="AI Enhance — adapts the EQ in real time to whatever music is playing. Lock a band (lock icon next to its label) to keep its value fixed."
+                title="AI Enhance — measures what's playing and matches it toward a target spectrum in real time. Pick the target below. Lock a band (lock icon next to its label) to keep its value fixed."
               >
                 AI Enhance
               </button>
             </div>
+            {state.aiEnhance && (
+              <div className="eq-ai-profiles">
+                <span className="eq-ai-profiles-label">Tone target</span>
+                <div className="eq-ai-profiles-row">
+                  {ENHANCE_PROFILE_ORDER.map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`eq-ai-profile-chip ${state.aiProfile === id ? 'is-active' : ''}`}
+                      onClick={() => setAiProfile(id)}
+                      title={profileHint(id)}
+                    >
+                      {profileLabel(id)}
+                    </button>
+                  ))}
+                </div>
+                <span className="eq-ai-status" title="What the enhancer is doing right now.">
+                  {describeAiStatus(state.aiProfile, aiStatus)}
+                </span>
+                <span className="eq-ai-profiles-label">Adapt</span>
+                <div className="eq-ai-profiles-row">
+                  <button
+                    type="button"
+                    className={`eq-ai-profile-chip ${state.aiAdapt === 'steady' ? 'is-active' : ''}`}
+                    onClick={() => setAiAdapt('steady')}
+                    title="Steady — averages the spectrum over 20 s, so the correction settles on the track's overall balance and then holds. Sounds better; the sliders barely move."
+                  >
+                    Steady
+                  </button>
+                  <button
+                    type="button"
+                    className={`eq-ai-profile-chip ${state.aiAdapt === 'live' ? 'is-active' : ''}`}
+                    onClick={() => setAiAdapt('live')}
+                    title="Live — 1.5 s window, so the curve follows the arrangement section by section. More fun to watch, but a moving EQ is audible as movement."
+                  >
+                    Live
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className={`eq-ai-profile-chip eq-ai-loudness ${state.aiEffects ? 'is-active' : ''}`}
+                  onClick={toggleAiEffects}
+                  title="Let the enhancer drive stereo width and the bass exciter too, from the same measurements it uses for the EQ. Those knobs become read-only while it does. Reverb stays manual — there's no measurement that says a finished master wants reverb."
+                >
+                  Auto effects
+                </button>
+                <button
+                  type="button"
+                  className={`eq-ai-profile-chip eq-ai-loudness ${state.aiLoudnessComp ? 'is-active' : ''}`}
+                  onClick={toggleAiLoudnessComp}
+                  title="Equal-loudness compensation for quiet listening — lifts the low and high extremes the ear loses at low level. Switch it on only when you are actually listening quietly: playback level can't be measured from the signal, so this is something you tell the app, not something it detects."
+                >
+                  Quiet listening
+                </button>
+              </div>
+            )}
             <UserPresets
               presets={userPresets}
               activeName={state.activeUserPreset}
@@ -392,6 +482,7 @@ function EqPanelImpl({
 
       <EffectsPanel
         effects={effects}
+        aiEffects={state.aiEffects ? aiStatus?.effects ?? null : null}
         analyserL={analyserL}
         analyserR={analyserR}
         limiter={limiter}

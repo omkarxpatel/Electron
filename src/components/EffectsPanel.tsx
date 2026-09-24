@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { UseEffectsRackReturn } from '../state/effects';
+import type { AiEffectTargets } from '../audio/useAiEnhancer';
 import { Knob } from './Knob';
 
 /**
@@ -30,6 +31,11 @@ import { Knob } from './Knob';
 
 interface Props {
   effects: UseEffectsRackReturn;
+  /** Width / exciter values the AI Enhancer is currently driving, or null
+   *  when it isn't. Non-null makes those two modules read-only: the AI
+   *  rewrites them 10x/sec, so leaving the knobs live would just let it
+   *  overwrite a drag half a second later. */
+  aiEffects?: AiEffectTargets | null;
   /** Post-EQ stereo pair — drives the phase-correlation meter. */
   analyserL: AnalyserNode | null;
   analyserR: AnalyserNode | null;
@@ -62,8 +68,19 @@ const KNOB_SIZE = 68;
 
 export const EffectsPanel = memo(EffectsPanelImpl);
 
-function EffectsPanelImpl({ effects, analyserL, analyserR, limiter, active }: Props) {
-  const { state } = effects;
+function EffectsPanelImpl({ effects, aiEffects, analyserL, analyserR, limiter, active }: Props) {
+  // The AI owns width + exciter while it's driving them, so show ITS values
+  // on those knobs. The user's stored state is untouched underneath and comes
+  // straight back when Auto effects is switched off.
+  const autoFx = aiEffects ?? null;
+  const state = autoFx
+    ? {
+        ...effects.state,
+        width: autoFx.width,
+        exciter: autoFx.exciter,
+        exciterFreq: autoFx.exciterFreq,
+      }
+    : effects.state;
   const [open, setOpen] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
 
@@ -276,7 +293,7 @@ function EffectsPanelImpl({ effects, analyserL, analyserR, limiter, active }: Pr
             sub-parameter reads as belonging to its parent — and dimming a
             whole module when its amount is zero becomes self-explanatory. */}
         <div className="fx-modules">
-          <FxModule name="Width" active={widthOn} knobs={1} solo>
+          <FxModule name="Width" active={widthOn} knobs={1} solo auto={!!autoFx}>
             <Knob
               label="Amount"
               value={state.width}
@@ -290,7 +307,7 @@ function EffectsPanelImpl({ effects, analyserL, analyserR, limiter, active }: Pr
             />
           </FxModule>
 
-          <FxModule name="Exciter" active={exciterOn} knobs={2}>
+          <FxModule name="Exciter" active={exciterOn} knobs={2} auto={!!autoFx}>
             <Knob
               label="Amount"
               value={state.exciter}
@@ -466,6 +483,7 @@ function FxModule({
   active,
   knobs,
   solo,
+  auto,
   children,
 }: {
   name: string;
@@ -476,20 +494,32 @@ function FxModule({
   /** Single-knob module — its knob's own label repeats the module name, so
    *  the label is hidden visually (the knob keeps its aria-label). */
   solo?: boolean;
+  /** The AI Enhancer is driving this module. Its knobs show the AI's values
+   *  and go inert — same wrapper-gating trick as FxSubKnob, since Knob has no
+   *  disabled prop. */
+  auto?: boolean;
   children: ReactNode;
 }) {
   return (
     <section
       className="fx-module"
       data-active={active}
+      data-auto={auto ? 'true' : 'false'}
       data-solo={solo ? 'true' : 'false'}
       style={{ '--fx-weight': knobs } as CSSProperties}
     >
       <header className="fx-module-head">
         <span className="fx-module-dot" aria-hidden />
         <span className="fx-module-name">{name}</span>
+        {auto && (
+          <span className="fx-module-auto" title="Driven by AI Enhance. Switch off Auto effects to take this back.">
+            AUTO
+          </span>
+        )}
       </header>
-      <div className="fx-module-body">{children}</div>
+      <div className="fx-module-body" data-auto={auto ? 'true' : 'false'}>
+        {children}
+      </div>
     </section>
   );
 }
