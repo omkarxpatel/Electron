@@ -29,11 +29,12 @@ Live mode feeds back on itself. Don't "simplify" it away.
 Verification here means:
 
 1. `npm run typecheck` — must be clean.
-2. `npm run check:enhancer` — if you touched `useAiEnhancer`, `enhanceProfiles`
-   or `biquadResponse`. Asserts the AI Enhancer's target curves and its
-   curve→filter-gain solver against measured thresholds. Typecheck can't tell
-   you a filter delivers the wrong curve; every case it guards shipped silently
-   once already.
+2. `npm run check:enhancer` — if you touched `useAiEnhancer`, `enhanceProfiles`,
+   `biquadResponse` or `loudness`. Asserts the AI Enhancer's target curves, its
+   curve→filter-gain solver, and the BS.1770 loudness meter (against the
+   standard's published coefficient tables and the EBU Tech 3341 tones).
+   Typecheck can't tell you a filter delivers the wrong curve; every case it
+   guards shipped silently once already.
 3. Run the app and look at it. See below, because launching it has traps.
 
 If you change the updater or the release pipeline, also run

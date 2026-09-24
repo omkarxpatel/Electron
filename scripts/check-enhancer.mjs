@@ -13,7 +13,13 @@
  *   - a centres-only fit drove the shelf bands to twice the gain they needed,
  *     which the headroom trim then took straight back off the whole signal.
  *
- * `src/audio/biquadResponse.ts` and `src/audio/enhanceProfiles.ts` have no
+ * It also checks `src/audio/loudness.ts` against the ITU-R BS.1770-4
+ * coefficient tables and the EBU Tech 3341 compliance tones. Loudness is what
+ * level-matches an A/B comparison, and an A/B that isn't level-matched only
+ * ever learns "louder wins" — a silent failure that would poison every
+ * preference judgement collected under it.
+ *
+ * `biquadResponse.ts`, `enhanceProfiles.ts` and `loudness.ts` have no
  * imports, so they compile standalone and run under plain node — no bundler,
  * no browser, no AudioContext.
  *
@@ -90,6 +96,7 @@ async function loadModules() {
       'tsc',
       'src/audio/biquadResponse.ts',
       'src/audio/enhanceProfiles.ts',
+      'src/audio/loudness.ts',
       '--outDir', out,
       '--module', 'esnext',
       '--target', 'es2022',
@@ -99,13 +106,15 @@ async function loadModules() {
   );
   const biquad = await import(pathToFileURL(join(out, 'biquadResponse.js')).href);
   const profiles = await import(pathToFileURL(join(out, 'enhanceProfiles.js')).href);
-  return { biquad, profiles, cleanup: () => rmSync(out, { recursive: true, force: true }) };
+  const loudness = await import(pathToFileURL(join(out, 'loudness.js')).href);
+  return { biquad, profiles, loudness, cleanup: () => rmSync(out, { recursive: true, force: true }) };
 }
 
-const { biquad, profiles, cleanup } = await loadModules();
+const { biquad, profiles, loudness, cleanup } = await loadModules();
 const { buildBandCoefs, responseCurveDb, buildCurveSolver, solveBandGains, logSpacedFrequencies } =
   biquad;
 const { ENHANCE_PROFILES, ISO_10 } = profiles;
+const { kWeightingStages, measureIntegratedLufs, matchGainDb } = loudness;
 
 const PROBES = logSpacedFrequencies(96);
 
@@ -264,6 +273,99 @@ console.log('\nEffects rack targets');
     if (exciterFreq < 40 || exciterFreq > 160) freqInRange = false;
   }
   check('crossover stays within the rack range', freqInRange, '40-160 Hz');
+}
+
+// ── BS.1770 loudness ─────────────────────────────────────────────────────
+
+console.log('\nBS.1770 loudness');
+{
+  // BS.1770-4 tabulates K-weighting only at 48 kHz. We rebuild it per rate,
+  // so the table is the one thing proving the rebuild is the same filter.
+  const [shelf, hp] = kWeightingStages(48000);
+  const near = (a, b) => Math.abs(a - b) < 1e-12;
+  check(
+    'K-weighting shelf matches the published 48 kHz table',
+    near(shelf.b0, 1.53512485958697) &&
+      near(shelf.b1, -2.69169618940638) &&
+      near(shelf.b2, 1.19839281085285) &&
+      near(shelf.a1, -1.69065929318241) &&
+      near(shelf.a2, 0.73248077421585),
+    'to 1e-12',
+  );
+  check(
+    'K-weighting high-pass matches the published 48 kHz table',
+    near(hp.b0, 1) &&
+      near(hp.b1, -2) &&
+      near(hp.b2, 1) &&
+      near(hp.a1, -1.99004745483398) &&
+      near(hp.a2, 0.99007225036621),
+    'numerator stays unnormalised, as the standard tabulates it',
+  );
+
+  /** EBU Tech 3341 states its test tones by peak amplitude, not RMS. Reading
+   *  them as RMS puts every case exactly 3.01 dB — 10log10(2) — off. */
+  function sine(seconds, dbfsPeak, rate, hz = 1000) {
+    const amp = Math.pow(10, dbfsPeak / 20);
+    const n = Math.round(seconds * rate);
+    const ch = new Float32Array(n);
+    for (let i = 0; i < n; i++) ch[i] = amp * Math.sin((2 * Math.PI * hz * i) / rate);
+    return ch;
+  }
+  const stereo = (seconds, db, rate) => {
+    const c = sine(seconds, db, rate);
+    return [c, Float32Array.from(c)];
+  };
+  const concat = (parts) => [0, 1].map((ch) => {
+    const total = parts.reduce((n, p) => n + p[ch].length, 0);
+    const out = new Float32Array(total);
+    let at = 0;
+    for (const p of parts) { out.set(p[ch], at); at += p[ch].length; }
+    return out;
+  });
+
+  // Tolerance is EBU's own: ±0.1 LU.
+  const within = (got, want) => Math.abs(got - want) <= 0.1;
+  const cases = [
+    ['tone at -23 dBFS reads -23 LUFS', stereo(20, -23, 48000), -23],
+    ['tone at -33 dBFS reads -33 LUFS', stereo(20, -33, 48000), -33],
+    [
+      'quiet head and tail are gated out',
+      concat([stereo(10, -36, 48000), stereo(60, -23, 48000), stereo(10, -36, 48000)]),
+      -23,
+    ],
+    [
+      'near-silence is gated out too',
+      concat([
+        stereo(10, -72, 48000), stereo(10, -36, 48000), stereo(60, -23, 48000),
+        stereo(10, -36, 48000), stereo(10, -72, 48000),
+      ]),
+      -23,
+    ],
+    [
+      'relative gate holds with a loud centre section',
+      concat([stereo(20, -26, 48000), stereo(20.1, -20, 48000), stereo(20, -26, 48000)]),
+      -23,
+    ],
+  ];
+  for (const [label, signal, want] of cases) {
+    const got = measureIntegratedLufs(signal, 48000);
+    check(label, within(got, want), `${got.toFixed(2)} LUFS`);
+  }
+
+  // A hardcoded 48 kHz table would sail through everything above and then be
+  // wrong on every 44.1 kHz device.
+  const at441 = measureIntegratedLufs(stereo(20, -23, 44100), 44100);
+  check('same tone reads the same at 44.1 kHz', within(at441, -23), `${at441.toFixed(2)} LUFS`);
+
+  // Level matching is the only reason any of this is here.
+  const quiet = measureIntegratedLufs(stereo(20, -30, 48000), 48000);
+  const gain = matchGainDb(quiet, -23);
+  check(
+    'match gain lines two takes up',
+    Math.abs(quiet + gain - -23) < 1e-9,
+    `${gain.toFixed(2)} dB to reach -23 LUFS`,
+  );
+  check('silence cannot produce a match gain', matchGainDb(-Infinity, -23) === 0);
 }
 
 cleanup();
