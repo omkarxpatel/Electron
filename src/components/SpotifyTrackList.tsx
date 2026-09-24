@@ -169,8 +169,8 @@ function SpotifyTrackListImpl({
             <div className="sp-track-header-desc">{playlist.description}</div>
           ) : null}
           <div className="sp-track-header-meta">
-            {playlist.owner.display_name ?? playlist.owner.id} ·{' '}
-            {playlist.tracks.total} tracks
+            {playlist.owner.display_name ?? playlist.owner.id}
+            {playlist.tracks ? ` · ${playlist.tracks.total} tracks` : null}
           </div>
           {tracks.length > 0 && (
             <button

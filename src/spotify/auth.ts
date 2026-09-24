@@ -16,6 +16,9 @@ export const SCOPES = [
   'user-library-read',
   // Required to save / unsave the current track (PUT/DELETE /me/tracks).
   'user-library-modify',
+  // Without this /me/player/recently-played 403s. It seeds "now playing" on
+  // launch when the poll has nothing cached yet.
+  'user-read-recently-played',
 ].join(' ');
 
 const TOKEN_URL = 'https://accounts.spotify.com/api/token';

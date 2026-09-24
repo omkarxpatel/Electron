@@ -44,7 +44,12 @@ export interface SpotifyPlaylist {
   uri: string;
   images: SpotifyImage[];
   owner: { id: string; display_name: string | null };
-  tracks: { total: number };
+  /** Optional because a playlist object can arrive without it: client IDs
+   *  created after Spotify's Feb 2026 API wave return a narrowed shape, and
+   *  `fields=` projections can omit it too. Reading `tracks.total` unguarded
+   *  threw inside render and blanked the entire window via the root error
+   *  boundary — guard every access. */
+  tracks?: { total: number };
   /** Opaque token Spotify changes on ANY edit to the playlist — add, remove,
    *  reorder, rename. Comparing it is how the background refresh detects that
    *  a playlist changed without re-paging the whole track list.

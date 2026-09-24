@@ -724,7 +724,11 @@ export function useSpotify() {
         const changed =
           knownSnapshot !== null && nextSnapshot !== null
             ? knownSnapshot !== nextSnapshot
-            : fresh.tracks.total !== stateRef.current.tracksTotal;
+            // No snapshot AND no track total leaves nothing to compare, so
+            // treat it as unchanged. Comparing `undefined` would read as
+            // "changed" on every poll and re-page the playlist forever.
+            : fresh.tracks !== undefined &&
+              fresh.tracks.total !== stateRef.current.tracksTotal;
         if (!changed) return;
 
         loadedSnapshotRef.current = { playlistId, snapshotId: nextSnapshot };
