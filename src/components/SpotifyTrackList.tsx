@@ -147,6 +147,9 @@ function SpotifyTrackListImpl({
   }
 
   const coverUrl = playlist.images[0]?.url;
+  // Absent for playlists the user doesn't own, on either side of the Feb 2026
+  // field rename — show no count rather than claiming zero.
+  const trackTotal = playlist.items?.total ?? playlist.tracks?.total;
 
   return (
     <div className="sp-track-view">
@@ -170,7 +173,7 @@ function SpotifyTrackListImpl({
           ) : null}
           <div className="sp-track-header-meta">
             {playlist.owner.display_name ?? playlist.owner.id}
-            {playlist.tracks ? ` · ${playlist.tracks.total} tracks` : null}
+            {trackTotal !== undefined ? ` · ${trackTotal} tracks` : null}
           </div>
           {tracks.length > 0 && (
             <button

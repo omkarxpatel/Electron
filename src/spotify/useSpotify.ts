@@ -13,8 +13,16 @@ import { useVisibility } from '../hooks/useVisibility';
 import type {
   SpotifyPlaybackState,
   SpotifyPlaylist,
+  SpotifyPlaylistTrackItem,
   SpotifyTrack,
 } from './types';
+
+/** Feb 2026 renamed a playlist entry's `track` key to `item`. Grandfathered
+ *  client IDs send both, newer ones only `item`. Null entries are real —
+ *  removed or local-only tracks — so callers still have to drop them. */
+function entryTrack(it: SpotifyPlaylistTrackItem): SpotifyTrack | null {
+  return it.item ?? it.track ?? null;
+}
 
 export interface SpotifyState {
   clientId: string | null;
@@ -206,7 +214,7 @@ export function useSpotify() {
       const baseOffset = res.offset ?? 0;
       // Null items (removed or local-only) are dropped; paging still advances
       // by the raw item count below so the next page starts in the right place.
-      const tracks = res.items.flatMap((it) => (it.track ? [it.track] : []));
+      const tracks = res.items.flatMap((it) => entryTrack(it) ?? []);
       const fetchedThrough = baseOffset + res.items.length;
       setState((s) => ({
         ...s,
@@ -232,7 +240,7 @@ export function useSpotify() {
     try {
       const res = await api.getPlaylistTracks(playlistId, 100, offset);
       const baseOffset = res.offset ?? offset;
-      const moreTracks = res.items.flatMap((it) => (it.track ? [it.track] : []));
+      const moreTracks = res.items.flatMap((it) => entryTrack(it) ?? []);
       const fetchedThrough = baseOffset + res.items.length;
       setState((cur) => {
         // Skip if user switched playlists during fetch
@@ -290,7 +298,7 @@ export function useSpotify() {
         if (stateRef.current.selectedPlaylist?.id !== playlistId) return;
         total = res.total;
         if (hadEverything) target = res.total;
-        collected.push(...res.items.flatMap((it) => (it.track ? [it.track] : [])));
+        collected.push(...res.items.flatMap((it) => entryTrack(it) ?? []));
         // Advance by raw item count, not the null-filtered length — same
         // reasoning as selectPlaylist.
         offset = (res.offset ?? offset) + res.items.length;
@@ -718,6 +726,7 @@ export function useSpotify() {
         const known = loadedSnapshotRef.current;
         const knownSnapshot = known?.playlistId === playlistId ? known.snapshotId : null;
         const nextSnapshot = fresh.snapshot_id ?? null;
+        const freshTotal = fresh.items?.total ?? fresh.tracks?.total;
         // If either side lacks a snapshot (older cached object, narrower
         // projection), fall back to comparing the track total. That still
         // catches "a song was added", just not an add+remove that nets zero.
@@ -727,8 +736,7 @@ export function useSpotify() {
             // No snapshot AND no track total leaves nothing to compare, so
             // treat it as unchanged. Comparing `undefined` would read as
             // "changed" on every poll and re-page the playlist forever.
-            : fresh.tracks !== undefined &&
-              fresh.tracks.total !== stateRef.current.tracksTotal;
+            : freshTotal !== undefined && freshTotal !== stateRef.current.tracksTotal;
         if (!changed) return;
 
         loadedSnapshotRef.current = { playlistId, snapshotId: nextSnapshot };

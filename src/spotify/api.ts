@@ -77,7 +77,7 @@ export async function getPlaylistTracks(
   offset = 0,
 ): Promise<SpotifyPlaylistTracksResponse> {
   const data = await request<SpotifyPlaylistTracksResponse>(
-    `/playlists/${playlistId}/tracks?limit=${limit}&offset=${offset}`,
+    `/playlists/${playlistId}/items?limit=${limit}&offset=${offset}`,
   );
   if (!data) throw new Error('Empty tracks response');
   return data;
@@ -87,7 +87,10 @@ export async function getPlaylistTracks(
  *  launch, which may sit outside the first page of `/me/playlists`. */
 export async function getPlaylist(playlistId: string): Promise<SpotifyPlaylist | null> {
   return request<SpotifyPlaylist>(
-    `/playlists/${playlistId}?fields=id,name,description,uri,images,owner(id,display_name),tracks(total),snapshot_id`,
+    // `items(total)`, not `tracks(total)`: post-Feb-2026 client IDs have no
+    // `tracks` field at all, and pre-cutover IDs carry both, so asking for
+    // `items` is the one projection that works for either.
+    `/playlists/${playlistId}?fields=id,name,description,uri,images,owner(id,display_name),items(total),snapshot_id`,
   );
 }
 
