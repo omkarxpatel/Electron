@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef } from 'react';
 import { useRenderCount } from '../perf';
 import type { ResolvedSettings } from '../state/settings';
+import { FULL_QUALITY, frameDue } from '../state/quality';
 import type { VisualizerProps } from './types';
 
 /**
@@ -39,6 +40,11 @@ interface WorkerBundle {
 const canvasBundles = new WeakMap<HTMLCanvasElement, WorkerBundle>();
 const STRICTMODE_GRACE_MS = 500;
 
+/** Backing-store scale: the tier's render scale on top of the device's DPR. */
+function backingDpr(renderScale: number): number {
+  return (window.devicePixelRatio || 1) * renderScale;
+}
+
 function WaveformVisualizerImpl({
   analyser,
   analyserL = null,
@@ -46,8 +52,16 @@ function WaveformVisualizerImpl({
   settings,
   active = true,
   paletteOverride = null,
+  quality = FULL_QUALITY,
 }: VisualizerProps) {
   useRenderCount('WaveformVisualizer');
+  // Refs, not effect deps: both are read from long-lived closures (the
+  // ResizeObserver and the RAF tick), and a tier change shouldn't tear either
+  // of them down.
+  const renderScaleRef = useRef<number>(quality.renderScale);
+  renderScaleRef.current = quality.renderScale;
+  const frameCapRef = useRef<number | null>(quality.frameCapHz);
+  frameCapRef.current = quality.frameCapHz;
   // Bumps when the *analyser* changes (which means we need a fresh sample
   // rate / fft size, plus a fresh canvas because transferControlToOffscreen
   // is one-shot). For StrictMode's same-analyser remount, the key stays
@@ -110,7 +124,7 @@ function WaveformVisualizerImpl({
       const rect = canvas.getBoundingClientRect();
       bundle.worker.postMessage({
         type: 'RESIZE',
-        dpr: window.devicePixelRatio || 1,
+        dpr: backingDpr(renderScaleRef.current),
         cssWidth: rect.width,
         cssHeight: rect.height,
       });
@@ -151,7 +165,7 @@ function WaveformVisualizerImpl({
         return;
       }
       const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = backingDpr(renderScaleRef.current);
       worker.postMessage(
         {
           type: 'INIT',
@@ -190,7 +204,7 @@ function WaveformVisualizerImpl({
       const r = canvas.getBoundingClientRect();
       workerRef.current?.postMessage({
         type: 'RESIZE',
-        dpr: window.devicePixelRatio || 1,
+        dpr: backingDpr(renderScaleRef.current),
         cssWidth: r.width,
         cssHeight: r.height,
       });
@@ -226,6 +240,21 @@ function WaveformVisualizerImpl({
     workerRef.current?.postMessage({ type: 'SETTINGS', settings } satisfies SettingsMsg);
   }, [settings]);
 
+  // A tier change resizes the backing store. Separate from the ResizeObserver
+  // because the CSS box hasn't moved — only how many real pixels back it.
+  useEffect(() => {
+    if (!initedRef.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const r = canvas.getBoundingClientRect();
+    workerRef.current?.postMessage({
+      type: 'RESIZE',
+      dpr: backingDpr(quality.renderScale),
+      cssWidth: r.width,
+      cssHeight: r.height,
+    });
+  }, [quality.renderScale]);
+
   // Forward palette override (album-art derived) to the worker independently
   // from settings — it changes once per song, not on every slider drag, so a
   // separate effect keeps the SETTINGS post out of the per-track path and
@@ -248,8 +277,11 @@ function WaveformVisualizerImpl({
     }
     workerRef.current?.postMessage({ type: 'RESUME' });
     let raf = 0;
-    const tick = () => {
+    let lastSentAt = 0;
+    const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
+      // Frame cap first: it's the cheapest way to not do the work at all.
+      if (!frameDue(now, lastSentAt, frameCapRef.current)) return;
       const scratchT = scratchTimeRef.current;
       const scratchF = scratchFreqRef.current;
       const worker = workerRef.current;
@@ -263,6 +295,7 @@ function WaveformVisualizerImpl({
       analyser.getByteFrequencyData(scratchF);
       const seq = bundle.lastSentSeq + 1;
       bundle.lastSentSeq = seq;
+      lastSentAt = now;
       // Stereo payload only for styles that plot L against R — sending two
       // extra arrays every frame for the other nine styles would double the
       // structured-clone cost for nothing.

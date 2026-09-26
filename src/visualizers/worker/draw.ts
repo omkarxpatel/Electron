@@ -14,7 +14,7 @@ import {
   type AnyCanvasCtx,
   type Palette,
 } from '../palettes';
-import { applyTrails, glowBlur, roundRectPath } from '../canvasUtils';
+import { applyTrails, glowBlur, roundRectSubPath } from '../canvasUtils';
 
 /* ============================================================
    Helpers — buffer sizing
@@ -700,6 +700,9 @@ function drawBars(
   const grad = verticalGradient(ctx, palette, midY - peakHeight / 2, midY + peakHeight / 2);
   ctx.fillStyle = grad;
 
+  // One path for every bar, one fill. See roundRectSubPath — per-bar fills
+  // re-ran the shadow blur once per bar and cost ~5x the frame rate.
+  ctx.beginPath();
   for (let b = 0; b < barCount; b++) {
     const peak = peakPerBar(time, b, samplesPerBar);
     const bandBoost = spectralAt(spectral, (b + 0.5) / barCount) * 0.45;
@@ -709,12 +712,12 @@ function drawBars(
     const x = startX + b * slot;
     if (mirror) {
       const halfH = barH / 2;
-      roundRectPath(ctx, x, midY - halfH, barWidth, barH, barWidth / 2);
+      roundRectSubPath(ctx, x, midY - halfH, barWidth, barH, barWidth / 2);
     } else {
-      roundRectPath(ctx, x, midY - barH / 2, barWidth, barH, barWidth / 2);
+      roundRectSubPath(ctx, x, midY - barH / 2, barWidth, barH, barWidth / 2);
     }
-    ctx.fill();
   }
+  ctx.fill();
 }
 
 function drawLine(
@@ -902,6 +905,7 @@ function drawRadial(
   ctx.lineCap = 'round';
   ctx.lineWidth = Math.max(2, barWidth * 0.9);
 
+  ctx.beginPath();
   for (let b = 0; b < barCount; b++) {
     const peak = peakPerBar(time, b, samplesPerBar);
     const bandBoost = spectralAt(spectral, b / barCount) * 0.4;
@@ -914,11 +918,10 @@ function drawRadial(
     const y1 = cy + Math.sin(angle) * innerRadius;
     const x2 = cx + Math.cos(angle) * len;
     const y2 = cy + Math.sin(angle) * len;
-    ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
-    ctx.stroke();
   }
+  ctx.stroke();
 }
 
 function drawSpectrum(
@@ -948,6 +951,7 @@ function drawSpectrum(
   const grad = horizontalGradient(ctx, palette, 0, w);
   ctx.fillStyle = grad;
 
+  ctx.beginPath();
   for (let b = 0; b < barCount; b++) {
     const f0 = minFreq * Math.exp((b / barCount) * logRatio);
     const f1 = minFreq * Math.exp(((b + 1) / barCount) * logRatio);
@@ -967,9 +971,9 @@ function drawSpectrum(
 
     const halfH = Math.max(4, smoothed[b] * maxHalfHeight);
     const x = b * slot + (slot - barWidth) / 2;
-    roundRectPath(ctx, x, midY - halfH, barWidth, halfH * 2, barWidth / 2);
-    ctx.fill();
+    roundRectSubPath(ctx, x, midY - halfH, barWidth, halfH * 2, barWidth / 2);
   }
+  ctx.fill();
 }
 
 function drawDots(

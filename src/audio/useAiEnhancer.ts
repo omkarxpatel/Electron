@@ -75,6 +75,12 @@ const LIVE_SETTLE_TICKS = Math.round(1.5 * TICK_HZ);
 const STEADY_SETTLE_TICKS = Math.round(20 * TICK_HZ);
 const SLEW_BASS = 3.0;   // dB/s for the first 3 bands (≤125 Hz)
 const SLEW_OTHER = 6.0;
+/** How far a band must travel from where it last flashed before it flashes
+ *  again. Must match AI_DELTA_THRESHOLD_DB in EqSection.tsx: that constant
+ *  decides when the slider actually redraws, and the highlight is a claim
+ *  that the slider moved — different numbers make it lie in one direction or
+ *  the other. */
+const FLASH_MIN_DB = 0.05;
 /** How long a new material class must hold before `auto` switches profile.
  *  Scaled with the adapt mode for the same reason as the EMA: in Steady the
  *  band levels settle but a profile flip is a discrete jump of a few dB, so
@@ -335,6 +341,8 @@ export function useAiEnhancer({
     const idealShape10 = new Float64Array(10);
     const filterGainsN = new Float64Array(bandCount);
     const flashedBuf: boolean[] = new Array(bandCount).fill(false);
+    /** Each band's value the last time it flashed — see FLASH_MIN_DB. */
+    const flashRefBuf = new Float64Array(bandCount);
     const deltaSnapshotBuf: number[] = new Array(bandCount).fill(0);
     const isBassFlags = new Uint8Array(bandCount);
     for (let i = 0; i < bandCount; i++) isBassFlags[i] = targetFreqs[i] <= 200 ? 1 : 0;
@@ -586,7 +594,18 @@ export function useAiEnhancer({
         const rate = isBassFlags[i] ? SLEW_BASS : SLEW_OTHER;
         const prev = cur[i];
         const next = approach(prev, clamp(desired, -TOTAL_CEILING, TOTAL_CEILING), rate * DT);
-        if (Math.abs(next - prev) > 0.05) flashedBuf[i] = true;
+        // Distance travelled since this band last flashed, NOT distance moved
+        // this tick. The per-tick form only fired while a band was slewing
+        // hard: a band converging on a slowly drifting target moves well under
+        // FLASH_MIN_DB per tick, so it crept across the panel accumulating
+        // visible change while never once tripping the test — the highlight
+        // appeared on fast corrections and was missing on slow ones, which
+        // read as the highlight working only sometimes. Measuring from the
+        // last flash catches both, and costs one float per band.
+        if (Math.abs(next - flashRefBuf[i]) > FLASH_MIN_DB) {
+          flashedBuf[i] = true;
+          flashRefBuf[i] = next;
+        }
         cur[i] = next;
       }
       // Snapshot into the reusable buffer (no per-tick allocation). The

@@ -1,6 +1,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import electron from 'vite-plugin-electron/simple';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // VSCode's integrated terminal sets ELECTRON_RUN_AS_NODE=1 so its own Electron
 // runtime acts as Node. If we let that leak into our spawned Electron child,
@@ -20,6 +24,18 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      // Two HTML entries: the app shell and the notch HUD, which is its own
+      // BrowserWindow. Without listing it here `vite build` emits only
+      // index.html and the packaged app's notch window 404s — dev works
+      // regardless, because the dev server resolves any .html on demand.
+      input: {
+        index: path.resolve(__dirname, 'index.html'),
+        notch: path.resolve(__dirname, 'notch.html'),
+      },
+    },
+  },
   server: {
     port: 5173,
     strictPort: true,

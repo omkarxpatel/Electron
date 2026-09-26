@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Same policy as index.html minus everything this window cannot do. It has
+      no Spotify session and no lyrics fetching of its own — state arrives over
+      IPC — so `connect-src` is 'self' plus the dev server's websocket only.
+      Album art still comes from the Spotify CDNs.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://i.scdn.co https://mosaic.scdn.co https://image-cdn-fa.spotifycdn.com https://image-cdn-ak.spotifycdn.com; connect-src 'self' ws://localhost:* http://localhost:*; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'"
+    />
+    <title>Notch</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/notch/main.tsx"></script>
+  </body>
+</html>

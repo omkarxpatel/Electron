@@ -6,6 +6,8 @@ import type {
   WaveformStyle,
 } from '../state/settings';
 import { PALETTES } from '../visualizers/palettes';
+import { TIER_KNOBS, TIER_LABELS, type UseQuality } from '../state/quality';
+import type { QualityTier } from '../types/api';
 import {
   checkForUpdate,
   dismissVersion,
@@ -19,6 +21,66 @@ import type { UpdateState } from '../types/api';
 /** Everything from Style through Motion writes to ONE stage's profile. Without
  *  saying so, adjusting glow in fullscreen and seeing the banner unchanged
  *  reads as a bug rather than as the feature working. */
+/**
+ * Quality tier picker.
+ *
+ * States what each tier actually does rather than labelling it "quality" and
+ * leaving the user to guess — the tier moves render scale and the frame cap,
+ * and both are legible as a sentence. It deliberately does not touch particle
+ * density or scope ambience: those are literal user-facing multipliers, and a
+ * tier that silently clamped them would make their labels a lie.
+ */
+function PerformanceSection({ quality }: { quality: UseQuality }) {
+  const { state, tier, setTier } = quality;
+  const knobs = TIER_KNOBS[tier];
+
+  const effect =
+    `${knobs.renderScale === 1 ? 'Full resolution' : `${Math.round(knobs.renderScale * 100)}% resolution`}` +
+    ` · ${knobs.frameCapHz === null ? 'uncapped frame rate' : `${knobs.frameCapHz} fps cap`}`;
+
+  const origin =
+    state.kind !== 'ready'
+      ? 'Detecting…'
+      : state.profile.source === 'user'
+        ? 'Set by you'
+        : state.profile.source === 'measured'
+          ? 'Measured on this Mac'
+          : 'Detected automatically';
+
+  const machine =
+    state.kind === 'ready'
+      ? [
+          state.capability.cpuModel,
+          `${state.capability.cpuCount} cores`,
+          `${state.capability.primary.refreshHz} Hz`,
+          state.capability.canvasAccelerated ? 'GPU accelerated' : 'software rendering',
+        ].join(' · ')
+      : null;
+
+  return (
+    <>
+      <Segmented<QualityTier>
+        value={tier}
+        options={[
+          { id: 'high', label: TIER_LABELS.high },
+          { id: 'balanced', label: TIER_LABELS.balanced },
+          { id: 'low', label: TIER_LABELS.low },
+        ]}
+        onChange={(t) => void setTier(t)}
+      />
+      <div className="setting-toggle-row">
+        <span className="setting-toggle-label">
+          <span className="setting-toggle-title">{effect}</span>
+          <span className="setting-toggle-hint">
+            {origin}
+            {machine ? ` — ${machine}` : ''}
+          </span>
+        </span>
+      </div>
+    </>
+  );
+}
+
 function StageNotice({ immersive, onReset }: { immersive: boolean; onReset: () => void }) {
   return (
     <div className="stage-notice">
@@ -46,6 +108,10 @@ interface Props {
   /** Resets only the stage currently being edited. */
   resetActiveProfile: () => void;
   reset: () => void;
+  /** The single useQuality() instance, shared with the visualizer. A second
+   *  instance here would hold its own tier, so changing it would never reach
+   *  the render path. */
+  quality: UseQuality;
   spotifyAuthed: boolean;
   onReconnectSpotify: () => void;
   onSignOutSpotify: () => void;
@@ -59,6 +125,7 @@ export function SettingsPanel({
   updateVisual,
   resetActiveProfile,
   reset,
+  quality,
   spotifyAuthed,
   onReconnectSpotify,
   onSignOutSpotify,
@@ -289,6 +356,10 @@ export function SettingsPanel({
           />
         </Section>
 
+        <Section title="Performance">
+          <PerformanceSection quality={quality} />
+        </Section>
+
         <Section title="Menu bar">
           <MenuBarSection />
         </Section>
@@ -339,6 +410,7 @@ export function SettingsPanel({
  */
 function MenuBarSection() {
   const [atLogin, setAtLogin] = useState<boolean | null>(null);
+  const [notchOn, setNotchOn] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -357,6 +429,39 @@ function MenuBarSection() {
     };
   }, []);
 
+  // Same story as launch-at-login: main owns it (it has to, the HUD is
+  // created before any renderer exists) and the tray can change it too.
+  useEffect(() => {
+    let cancelled = false;
+    void window.api.notch
+      .getEnabled()
+      .then((value) => {
+        if (!cancelled) setNotchOn(value);
+      })
+      .catch(() => {
+        if (!cancelled) setNotchOn(false);
+      });
+    const off = window.api.notch.onEnabledChange((value) => setNotchOn(value));
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, []);
+
+  const toggleNotch = useCallback((): void => {
+    // Until `getEnabled` answers, the row renders "Off" whatever the truth is,
+    // so a click here would act on a state we don't have yet — and toggling
+    // the HUD off when the user meant to turn it on looks like the switch is
+    // broken rather than racing.
+    if (notchOn === null) return;
+    const next = !notchOn;
+    setNotchOn(next); // optimistic — creating the window takes a moment
+    void window.api.notch
+      .setEnabled(next)
+      .then((actual) => setNotchOn(actual))
+      .catch(() => setNotchOn(!next));
+  }, [notchOn]);
+
   const toggle = useCallback((): void => {
     const next = !(atLogin ?? false);
     setAtLogin(next); // optimistic — the write is fast but not instant
@@ -370,6 +475,13 @@ function MenuBarSection() {
 
   return (
     <>
+      <ToggleRow
+        title="Notch HUD"
+        hint="Music controls that hang from the notch. Hides the dock icon."
+        value={notchOn ?? false}
+        onToggle={toggleNotch}
+        tooltip="Hover the notch for artwork, the current lyric, a scrubber and transport; click the panel to bring this window forward. While this is on the app runs from the menu bar only — macOS requires that for the HUD to appear over fullscreen apps — so there is no dock icon or Cmd+Tab entry. Turning it off restores both."
+      />
       <ToggleRow
         title="Launch at login"
         hint="Start hidden in the menu bar when you log in"

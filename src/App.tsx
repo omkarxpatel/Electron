@@ -4,7 +4,9 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { SpotifyOnboarding } from './components/SpotifyOnboarding';
 import { NowPlayingBar } from './components/NowPlayingBar';
 import { SpotifySection } from './components/SpotifySection';
+import { SectionBoundary } from './components/SectionBoundary';
 import { TrayBridge } from './components/TrayBridge';
+import { NotchBridge } from './components/NotchBridge';
 import { UpdateBanner } from './components/UpdateBanner';
 import { VisualizerBanner } from './components/VisualizerBanner';
 import { ImmersiveLyrics } from './components/ImmersiveLyrics';
@@ -17,6 +19,7 @@ import { useAutoSelectDevices } from './audio/useAutoSelectDevices';
 import { useVisibility } from './hooks/useVisibility';
 import { PerfOverlay, useRenderCount } from './perf';
 import { useSettings } from './state/settings';
+import { useQuality } from './state/quality';
 import { SpotifyProvider, useLibrary, usePlayback } from './spotify/SpotifyProvider';
 import { useEQ } from './state/eq';
 import { useEnhancer } from './state/enhancer';
@@ -59,6 +62,10 @@ function AppContent() {
   // gate on this and fully suspend, so the app uses no rendering CPU/GPU
   // while it's not on screen. Audio playback is unaffected.
   const isActive = useVisibility(2500);
+  // Machine capability -> render scale and frame cap. Resolves asynchronously
+  // from main; until it does, `knobs` is full quality, so a slow profile read
+  // can never make the visualizer start out degraded.
+  const quality = useQuality();
   // NOTE: there used to be an automatic +6 dB "BlackHole compensation" here.
   // It was removed — it sat at inputGain, UPSTREAM of the -1 dBFS / ratio-20
   // limiter, so the limiter clawed it straight back on anything loud:
@@ -277,12 +284,15 @@ function AppContent() {
               paletteOverride={albumPalette}
             />
 
-            <SpotifySection active={isActive} showLyrics={settings.showLyrics} />
+            <SectionBoundary label="Spotify panel">
+              <SpotifySection active={isActive} showLyrics={settings.showLyrics} />
+            </SectionBoundary>
           </div>
         )}
       </main>
 
       {analyser && !needsOnboarding && (
+        <SectionBoundary label="visualizer">
         <VisualizerBanner
           analyser={analyser}
           analyserL={analyserL}
@@ -290,10 +300,16 @@ function AppContent() {
           settings={resolved}
           active={isActive}
           paletteOverride={albumPalette}
+          quality={quality.knobs}
         />
+        </SectionBoundary>
       )}
 
-      {showPlayerBar && <NowPlayingBar />}
+      {showPlayerBar && (
+        <SectionBoundary label="player bar">
+          <NowPlayingBar />
+        </SectionBoundary>
+      )}
 
       <SettingsPanel
         open={panelOpen}
@@ -303,6 +319,7 @@ function AppContent() {
         updateVisual={updateVisual}
         resetActiveProfile={resetActiveProfile}
         reset={reset}
+        quality={quality}
         spotifyAuthed={library.authed}
         onReconnectSpotify={library.connect}
         onSignOutSpotify={library.signOut}
@@ -331,6 +348,7 @@ function AppContent() {
       )}
 
       <TrayBridge />
+      <NotchBridge albumPalette={albumPalette} />
 
       <PerfOverlay />
     </div>

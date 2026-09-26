@@ -21,6 +21,11 @@ interface Props {
   playlistsLoading: boolean;
   selectedPlaylistId: string | null;
   onSelectPlaylist: (playlist: SpotifyPlaylist) => void;
+  onSelectLikedSongs: () => void;
+  /** True when the track list is currently showing Liked Songs. */
+  likedSelected: boolean;
+  onOpenStats: () => void;
+  onCreatePlaylist: (name: string) => Promise<void>;
   onSelectAlbum: (album: SpotifyAlbum) => void;
   onSelectArtist: (artist: SpotifyArtist) => void;
   searchAll: (query: string, signal?: AbortSignal) => Promise<SearchResults>;
@@ -43,6 +48,10 @@ function SpotifyLibraryImpl({
   playlistsLoading,
   selectedPlaylistId,
   onSelectPlaylist,
+  onSelectLikedSongs,
+  likedSelected,
+  onOpenStats,
+  onCreatePlaylist,
   onSelectAlbum,
   onSelectArtist,
   searchAll,
@@ -301,6 +310,39 @@ function SpotifyLibraryImpl({
         </>
       ) : (
         <>
+          {/* Pinned above the filters rather than mixed into the grid: these
+              two aren't playlists or albums, so no filter pill should ever
+              hide them. */}
+          <div className="sp-library-pinned">
+            <button
+              type="button"
+              className="sp-library-pinned-btn"
+              data-selected={likedSelected ? 'true' : 'false'}
+              onClick={onSelectLikedSongs}
+            >
+              <span className="sp-library-pinned-icon sp-liked-cover" aria-hidden>
+                <IconHeartSmall />
+              </span>
+              <span className="sp-library-pinned-text">
+                <span className="sp-library-pinned-title">Liked Songs</span>
+                <span className="sp-library-pinned-sub">Everything you've saved</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="sp-library-pinned-btn"
+              onClick={onOpenStats}
+            >
+              <span className="sp-library-pinned-icon sp-stats-cover" aria-hidden>
+                <IconStats />
+              </span>
+              <span className="sp-library-pinned-text">
+                <span className="sp-library-pinned-title">Your Stats</span>
+                <span className="sp-library-pinned-sub">Top tracks, artists & movement</span>
+              </span>
+            </button>
+          </div>
+
           <div className="sp-library-filters">
             <FilterPill label="All" active={filter === 'all'} onClick={() => setFilter('all')} />
             <FilterPill
@@ -313,6 +355,7 @@ function SpotifyLibraryImpl({
               active={filter === 'albums'}
               onClick={() => setFilter('albums')}
             />
+            <NewPlaylistButton onCreate={onCreatePlaylist} />
           </div>
 
           <div className="sp-library-scroll">
@@ -448,6 +491,78 @@ function AlbumTile({ album, onClick }: AlbumTileProps) {
       <div className="sp-library-tile-name">{album.name}</div>
       <div className="sp-library-tile-meta">Album · {artistNames}</div>
     </button>
+  );
+}
+
+/** Inline name entry rather than a dialog — one field, and the playlist
+ *  opens as soon as it exists, so a modal would be in the way. */
+function NewPlaylistButton({ onCreate }: { onCreate: (name: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const commit = useCallback(() => {
+    const trimmed = name.trim();
+    setEditing(false);
+    setName('');
+    if (!trimmed || busy) return;
+    setBusy(true);
+    void onCreate(trimmed)
+      .catch((err: unknown) => console.error('createPlaylist failed:', err))
+      .finally(() => setBusy(false));
+  }, [name, busy, onCreate]);
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className="sp-library-new-btn"
+        onClick={() => setEditing(true)}
+        title="Create a new playlist"
+      >
+        + New
+      </button>
+    );
+  }
+  return (
+    <input
+      className="sp-library-new-input"
+      value={name}
+      autoFocus
+      spellCheck={false}
+      placeholder="Playlist name…"
+      onChange={(e) => setName(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit();
+        if (e.key === 'Escape') {
+          setEditing(false);
+          setName('');
+        }
+      }}
+      aria-label="New playlist name"
+    />
+  );
+}
+
+function IconHeartSmall() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 21s-7.5-4.7-9.3-9A5.3 5.3 0 0 1 12 6.6 5.3 5.3 0 0 1 21.3 12c-1.8 4.3-9.3 9-9.3 9z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function IconStats() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="12" width="4" height="9" rx="1" fill="currentColor" />
+      <rect x="10" y="7" width="4" height="14" rx="1" fill="currentColor" />
+      <rect x="17" y="3" width="4" height="18" rx="1" fill="currentColor" />
+    </svg>
   );
 }
 

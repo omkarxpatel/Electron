@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { WaveformVisualizer } from '../visualizers';
 import type { ResolvedSettings } from '../state/settings';
+import type { QualityKnobs } from '../state/quality';
 import type { Palette } from '../visualizers/palettes';
 
 /**
@@ -22,11 +23,13 @@ interface Props {
    *  art when "Auto-tint from album art" is on. Null otherwise — the worker
    *  falls back to `PALETTES[settings.palette]`. */
   paletteOverride: Palette | null;
+  /** Active quality tier's knobs — see src/state/quality.ts. */
+  quality: QualityKnobs;
 }
 
 export const VisualizerBanner = memo(VisualizerBannerImpl);
 
-function VisualizerBannerImpl({ analyser, analyserL, analyserR, settings, active, paletteOverride }: Props) {
+function VisualizerBannerImpl({ analyser, analyserL, analyserR, settings, active, paletteOverride, quality }: Props) {
   return (
     <div className="viz-banner">
       <WaveformVisualizer
@@ -36,6 +39,7 @@ function VisualizerBannerImpl({ analyser, analyserL, analyserR, settings, active
         settings={settings}
         active={active}
         paletteOverride={paletteOverride}
+        quality={quality}
       />
     </div>
   );

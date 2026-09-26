@@ -31,7 +31,18 @@ export function glowBlur(settings: ResolvedSettings): number {
   return settings.glow * 32; // 0..32 px
 }
 
-export function roundRectPath(
+/**
+ * Append a rounded rect to the CURRENT path. The caller owns `beginPath()`
+ * and the fill.
+ *
+ * This used to call `beginPath()` itself, which forced one fill per shape.
+ * Canvas charges the shadow cost per *draw call*, not per shape, so filling
+ * 300 bars separately re-ran `shadowBlur` 300 times across the whole backing
+ * store. That alone held bars/mirror/spectrum/radial to 16-25 fps on an M5 at
+ * 1500x800 — the styles with the least going on were the slowest in the app.
+ * One path and one fill is the same picture at ~5x the frame rate.
+ */
+export function roundRectSubPath(
   ctx: AnyCanvasCtx,
   x: number,
   y: number,
@@ -41,7 +52,6 @@ export function roundRectPath(
 ): void {
   if (w <= 0 || h <= 0) return;
   const radius = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
   ctx.moveTo(x + radius, y);
   ctx.arcTo(x + w, y, x + w, y + h, radius);
   ctx.arcTo(x + w, y + h, x, y + h, radius);

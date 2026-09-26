@@ -16,7 +16,16 @@ export interface SpotifyArtist {
   /** Only present on full artist objects (/search, /artists) — the nested
    *  artists inside track/album objects are simplified and omit these. */
   images?: SpotifyImage[];
-  genres?: string[];
+  /**
+   * Feb 2026 REMOVED `popularity` and `followers` from artist objects, and
+   * live probes since then show `genres` coming back as null. All three are
+   * still sent to client IDs created before the cutover, so they're optional
+   * rather than deleted — read them through the helpers in `stats.ts`, which
+   * treat absent as "this account can't have this stat" rather than zero.
+   */
+  genres?: string[] | null;
+  popularity?: number;
+  followers?: { total: number };
 }
 
 export interface SpotifyAlbum {
@@ -25,6 +34,11 @@ export interface SpotifyAlbum {
   uri: string;
   images: SpotifyImage[];
   artists: SpotifyArtist[];
+  /** Present on the simplified albums returned by /artists/{id}/albums,
+   *  which is what the artist page lists. */
+  release_date?: string;
+  album_type?: string;
+  total_tracks?: number;
 }
 
 export interface SpotifyTrack {
@@ -35,6 +49,9 @@ export interface SpotifyTrack {
   explicit: boolean;
   artists: SpotifyArtist[];
   album: SpotifyAlbum;
+  /** Removed from Dev Mode responses in Feb 2026; grandfathered client IDs
+   *  still receive it. Same handling as the artist fields above. */
+  popularity?: number;
 }
 
 export interface SpotifyPlaylist {
@@ -44,6 +61,11 @@ export interface SpotifyPlaylist {
   uri: string;
   images: SpotifyImage[];
   owner: { id: string; display_name: string | null };
+  /** Whether other users may add to this playlist. Together with `owner.id`
+   *  it's the only way to know an edit will be accepted — Spotify answers a
+   *  write to someone else's playlist with a 403 that reads identically to a
+   *  missing-scope 403. Absent on narrower `fields=` projections. */
+  collaborative?: boolean;
   /** Spotify's Feb 2026 wave renamed `tracks` to `items`. Both keys are live
    *  simultaneously: client IDs created before the cutover receive both, IDs
    *  created after receive only `items`, and neither is sent for a playlist
@@ -85,6 +107,23 @@ export interface SpotifyPlaylistTracksResponse {
   offset: number;
 }
 
+/** One row of GET /me/tracks. Unlike playlist entries, this kept the `track`
+ *  key through Feb 2026 — only the playlist shape was renamed to `item`. */
+export interface SavedTrackItem {
+  added_at: string;
+  track: SpotifyTrack | null;
+}
+
+export interface SavedTracksResponse {
+  items: SavedTrackItem[];
+  total: number;
+  next: string | null;
+  offset: number;
+}
+
+/** Which of the three windows /me/top is being asked about. */
+export type TopTimeRange = 'short_term' | 'medium_term' | 'long_term';
+
 export interface SpotifyDevice {
   id: string | null;
   name: string;
@@ -95,14 +134,33 @@ export interface SpotifyDevice {
   volume_percent: number | null;
 }
 
+/** What Spotify will refuse *right now*. Every flag it sets comes back as a
+ *  403 "Player command failed: Restriction violated" if you call anyway, so
+ *  the transport buttons read this instead of firing a doomed request.
+ *  Only the flags the UI acts on are declared. */
+export interface SpotifyDisallows {
+  toggling_shuffle?: boolean;
+  toggling_repeat_context?: boolean;
+  toggling_repeat_track?: boolean;
+}
+
 export interface SpotifyPlaybackState {
   device: SpotifyDevice | null;
   shuffle_state: boolean;
+  /** Spotify's Smart Shuffle — shuffle that splices in suggested tracks that
+   *  aren't in the playlist. Undocumented in the Web API reference but
+   *  present on the live /me/player response, so it is optional here.
+   *
+   *  READ-ONLY, permanently: PUT /me/player/shuffle takes a bare boolean and
+   *  has no smart variant, so the app can show this mode but can never
+   *  command it. The user turns it on from the Spotify client. */
+  smart_shuffle?: boolean;
   repeat_state: 'off' | 'track' | 'context';
   is_playing: boolean;
   progress_ms: number | null;
   item: SpotifyTrack | null;
   context: { uri: string; type: string } | null;
+  actions?: { disallows?: SpotifyDisallows };
 }
 
 export interface SpotifyUser {

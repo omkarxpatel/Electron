@@ -2,6 +2,7 @@ import { memo, useEffect, useRef } from 'react';
 import { useRenderCount } from '../perf';
 import type { SpotifyPlaybackState, SpotifyImage } from '../spotify/types';
 import { formatDuration as formatTime } from '../shared/format';
+import { requestOverlayNav } from '../spotify/navigation';
 
 interface Props {
   playback: SpotifyPlaybackState | null;
@@ -14,6 +15,9 @@ interface Props {
   cycleRepeat: () => void;
   toggleSaveCurrent: () => void;
   savedCurrent: boolean | null;
+  /** The playing track isn't in the playlist that's open — i.e. Smart Shuffle
+   *  spliced it in. Computed by NowPlayingBar, which has the track list. */
+  suggested: boolean;
 }
 
 // pickSmallestImage selects by area rather than relying on Spotify's image
@@ -42,6 +46,20 @@ const DOUBLE_CLICK_MS = 400;
 // stale value while Spotify catches up.
 const POLL_LOCKOUT_MS = 1100;
 
+export type ShuffleMode = 'off' | 'on' | 'smart';
+
+const RESTRICTED_HINT = 'Spotify is blocking this right now — it refuses the command in this context';
+
+const SHUFFLE_TITLE: Record<ShuffleMode | 'blocked', string> = {
+  off: 'Playing in order — click to shuffle',
+  on: 'Shuffle on — click to play in order',
+  // Deliberately says where it came from: we can read Smart Shuffle but the
+  // Web API has no way to set it, so promising a click would switch it on
+  // would be a lie.
+  smart: 'Smart Shuffle — shuffled with suggested tracks. Turn it on or off in the Spotify app; clicking here plays in order',
+  blocked: RESTRICTED_HINT,
+};
+
 export const SpotifyNowPlaying = memo(SpotifyNowPlayingImpl);
 
 function SpotifyNowPlayingImpl({
@@ -55,10 +73,28 @@ function SpotifyNowPlayingImpl({
   cycleRepeat,
   toggleSaveCurrent,
   savedCurrent,
+  suggested,
 }: Props) {
   useRenderCount('SpotifyNowPlaying');
   const duration = playback?.item?.duration_ms ?? 0;
   const isPlaying = !!playback?.is_playing;
+
+  // Three display states, two settable ones. Smart Shuffle can only be read
+  // (see SpotifyPlaybackState.smart_shuffle), so a click cycles off <-> on
+  // and Smart Shuffle simply renders when Spotify reports it.
+  const shuffleMode: ShuffleMode = playback?.smart_shuffle
+    ? 'smart'
+    : playback?.shuffle_state
+      ? 'on'
+      : 'off';
+  // Spotify answers a disallowed toggle with 403 "Restriction violated". The
+  // old button fired anyway, lit up optimistically, then snapped back when the
+  // rollback landed — indistinguishable from a broken control. Read the flag
+  // instead. It clears on its own, so the button re-enables without a reload.
+  const disallows = playback?.actions?.disallows;
+  const shuffleBlocked = disallows?.toggling_shuffle === true;
+  const repeatBlocked =
+    disallows?.toggling_repeat_context === true || disallows?.toggling_repeat_track === true;
 
   /* ── Progress slider runs UNCONTROLLED, same pattern as the volume slider.
    *    The progress ms is stored in a ref; a RAF loop (only while playing)
@@ -209,9 +245,47 @@ function SpotifyNowPlayingImpl({
           <div className="sp-player-art sp-player-art-fallback" />
         )}
         <div className="sp-player-info">
-          <div className="sp-player-track">{track?.name ?? '—'}</div>
+          {/* Title opens the album, each artist name opens that artist. Both
+              are plain buttons rather than links — there's no URL to go to,
+              the overlay just drills in. */}
+          {track ? (
+            <button
+              type="button"
+              className="sp-player-track sp-player-link"
+              onClick={() => track.album?.id && requestOverlayNav({ kind: 'album', albumId: track.album.id })}
+              disabled={!track.album?.id}
+              title={`Go to ${track.album?.name ?? 'album'}`}
+            >
+              {track.name}
+            </button>
+          ) : (
+            <div className="sp-player-track">—</div>
+          )}
           <div className="sp-player-artist">
-            {track ? track.artists.map((a) => a.name).join(', ') : ''}
+            {suggested ? (
+              <span
+                className="sp-suggested-badge"
+                title="Smart Shuffle picked this — it isn't in the playlist you have open"
+              >
+                Suggested
+              </span>
+            ) : null}
+            {track
+              ? track.artists.map((a, i) => (
+                  <span key={`${a.id}-${i}`}>
+                    {i > 0 ? ', ' : null}
+                    <button
+                      type="button"
+                      className="sp-player-link"
+                      onClick={() => a.id && requestOverlayNav({ kind: 'artist', artistId: a.id })}
+                      disabled={!a.id}
+                      title={`Go to ${a.name}`}
+                    >
+                      {a.name}
+                    </button>
+                  </span>
+                ))
+              : null}
           </div>
         </div>
         <button
@@ -234,13 +308,14 @@ function SpotifyNowPlayingImpl({
             type="button"
             className="sp-icon-btn sp-icon-btn-toggle"
             onClick={toggleShuffle}
-            disabled={!playback}
+            disabled={!playback || shuffleBlocked}
             aria-label="Shuffle"
-            aria-pressed={!!playback?.shuffle_state}
-            title={playback?.shuffle_state ? 'Shuffle on' : 'Shuffle off'}
-            data-active={playback?.shuffle_state ? 'true' : 'false'}
+            aria-pressed={shuffleMode !== 'off'}
+            title={SHUFFLE_TITLE[shuffleBlocked ? 'blocked' : shuffleMode]}
+            data-active={shuffleMode !== 'off' ? 'true' : 'false'}
+            data-mode={shuffleMode}
           >
-            <IconShuffle />
+            <IconShuffle mode={shuffleMode} />
           </button>
           <button
             type="button"
@@ -272,14 +347,16 @@ function SpotifyNowPlayingImpl({
             type="button"
             className="sp-icon-btn sp-icon-btn-toggle"
             onClick={cycleRepeat}
-            disabled={!playback}
+            disabled={!playback || repeatBlocked}
             aria-label="Repeat"
             title={
-              playback?.repeat_state === 'track'
-                ? 'Repeat: this track'
-                : playback?.repeat_state === 'context'
-                  ? 'Repeat: queue'
-                  : 'Repeat off'
+              repeatBlocked
+                ? RESTRICTED_HINT
+                : playback?.repeat_state === 'track'
+                  ? 'Repeat: this track'
+                  : playback?.repeat_state === 'context'
+                    ? 'Repeat: queue'
+                    : 'Repeat off'
             }
             data-active={
               playback?.repeat_state && playback.repeat_state !== 'off' ? 'true' : 'false'
@@ -393,7 +470,13 @@ function IconHeart({ filled }: { filled: boolean }) {
   );
 }
 
-function IconShuffle() {
+/**
+ * Crossed arrows in every state, as Spotify does it: off and on are the same
+ * glyph and differ only by colour (white vs accent), and Smart Shuffle adds
+ * sparkles so the third state is distinguishable from the second — which
+ * colour alone could not carry.
+ */
+function IconShuffle({ mode }: { mode: ShuffleMode }) {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M16 4l4 4-4 4" />
@@ -401,6 +484,12 @@ function IconShuffle() {
       <path d="M4 8h2c2 0 3.4 1 4.5 2.5" />
       <path d="M13.5 14c1.1 1.5 2.5 2.5 4.5 2.5h2" />
       <path d="M16 20l4-4-4-4" />
+      {mode === 'smart' ? (
+        <>
+          <path d="M6.2 3.2l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6L4 5.4l1.6-.6z" fill="currentColor" strokeWidth="0.7" />
+          <path d="M20.4 18.2l.45 1.2 1.2.45-1.2.45-.45 1.2-.45-1.2-1.2-.45 1.2-.45z" fill="currentColor" strokeWidth="0.7" />
+        </>
+      ) : null}
     </svg>
   );
 }

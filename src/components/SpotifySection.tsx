@@ -1,9 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HoverOverlayPanel } from './HoverOverlayPanel';
+import { SectionBoundary } from './SectionBoundary';
 import { SpotifyTrackList } from './SpotifyTrackList';
 import { prefetchLyrics } from '../lyrics/useLyrics';
 import { getQueue } from '../spotify/api';
 import { useLibrary, usePlayback } from '../spotify/SpotifyProvider';
+import { useTransportShortcuts } from '../spotify/useTransportShortcuts';
+import type { SpotifyTrack } from '../spotify/types';
+import { onOverlayNav } from '../spotify/navigation';
 
 /**
  * The right column of the post-auth workspace: music-icon overlay trigger,
@@ -43,6 +47,9 @@ interface Props {
 export function SpotifySection({ active, showLyrics }: Props) {
   const library = useLibrary();
   const playback = usePlayback();
+  // Space / ← / →. Registered here because this section is only mounted once
+  // Spotify is connected, so the keys do nothing before there's a player.
+  useTransportShortcuts();
   const currentlyPlayingId = useMemo(
     () => playback.playback?.item?.id ?? null,
     [playback.playback?.item?.id],
@@ -73,6 +80,58 @@ export function SpotifySection({ active, showLyrics }: Props) {
     setOverlayOpen(false);
   }, [cancelOverlayClose]);
   useEffect(() => () => cancelOverlayClose(), [cancelOverlayClose]);
+
+  // "Go to album" from a track row. The album view lives inside the overlay,
+  // so this opens the panel and hands it the album to drill into. The nonce
+  // is what makes asking for the *same* album twice register as a new
+  // request — the overlay resets itself to the library view on every open,
+  // so without it the second trip would land back on the library.
+  const [albumRequest, setAlbumRequest] = useState<{ albumId: string; nonce: number } | null>(
+    null,
+  );
+  const [artistRequest, setArtistRequest] = useState<
+    { artistId: string; nonce: number } | null
+  >(null);
+  const navNonceRef = useRef(0);
+
+  const openAlbum = useCallback(
+    (albumId: string): void => {
+      navNonceRef.current += 1;
+      setArtistRequest(null);
+      setAlbumRequest({ albumId, nonce: navNonceRef.current });
+      openOverlay();
+    },
+    [openOverlay],
+  );
+  const openArtist = useCallback(
+    (artistId: string): void => {
+      navNonceRef.current += 1;
+      setAlbumRequest(null);
+      setArtistRequest({ artistId, nonce: navNonceRef.current });
+      openOverlay();
+    },
+    [openOverlay],
+  );
+
+  const handleGoToAlbum = useCallback(
+    (track: SpotifyTrack): void => {
+      const albumId = track.album?.id;
+      if (!albumId) return;
+      openAlbum(albumId);
+    },
+    [openAlbum],
+  );
+
+  // The player bar is a sibling, not a child — it asks for these by window
+  // event rather than through App. See src/spotify/navigation.ts.
+  useEffect(
+    () =>
+      onOverlayNav((target) => {
+        if (target.kind === 'album') openAlbum(target.albumId);
+        else openArtist(target.artistId);
+      }),
+    [openAlbum, openArtist],
+  );
   const overlayTriggerProps = useMemo(
     () => ({
       onMouseEnter: openOverlay,
@@ -129,21 +188,36 @@ export function SpotifySection({ active, showLyrics }: Props) {
           </button>
         </div>
 
+        <SectionBoundary label="track list">
         <SpotifyTrackList
-          playlist={library.selectedPlaylist}
+          source={library.source}
           tracks={library.tracks}
+          tracksTotal={library.tracksTotal}
           loading={library.tracksLoading}
           currentlyPlayingId={currentlyPlayingId}
           onPlay={library.playTrack}
+          onPlayTracks={library.playTracks}
           onLoadMore={library.loadMoreTracks}
           hasMore={library.tracksNextOffset !== null}
+          rawLoadedThrough={library.tracksNextOffset}
           shuffle={playback.playback?.shuffle_state === true}
+          playlists={library.playlists}
+          userId={library.userId}
+          onAddToPlaylist={library.addTrackToPlaylist}
+          onRemoveFromSource={library.removeTrackFromSource}
+          onGoToAlbum={handleGoToAlbum}
+          onRenamePlaylist={library.renamePlaylist}
+          onDeletePlaylist={library.deletePlaylist}
+          onMoveTrack={library.moveTrackInPlaylist}
         />
+        </SectionBoundary>
 
         {showLyrics && (
-          <Suspense fallback={null}>
-            <LyricsPane playback={playback.playback} active={active} />
-          </Suspense>
+          <SectionBoundary label="lyrics">
+            <Suspense fallback={null}>
+              <LyricsPane playback={playback.playback} active={active} />
+            </Suspense>
+          </SectionBoundary>
         )}
       </div>
 
@@ -154,12 +228,20 @@ export function SpotifySection({ active, showLyrics }: Props) {
         onMouseLeave={requestOverlayClose}
         onClose={closeOverlay}
       >
+        <SectionBoundary label="library panel">
         <Suspense fallback={null}>
           <SpotifyOverlay
             playlists={library.playlists}
             playlistsLoading={library.playlistsLoading}
-            selectedPlaylistId={library.selectedPlaylist?.id ?? null}
+            selectedPlaylistId={
+              library.source?.kind === 'playlist' ? library.source.playlist.id : null
+            }
             onSelectPlaylist={library.selectPlaylist}
+            onSelectLikedSongs={library.selectLikedSongs}
+            userId={library.userId}
+            onAddToPlaylist={library.addTrackToPlaylist}
+            likedSelected={library.source?.kind === 'liked'}
+            onCreatePlaylist={library.createPlaylist}
             searchAll={library.searchAll}
             searchMore={library.searchMore}
             playTrack={library.playTrack}
@@ -167,8 +249,11 @@ export function SpotifySection({ active, showLyrics }: Props) {
             currentlyPlayingId={currentlyPlayingId}
             open={overlayOpen}
             onClose={closeOverlay}
+            albumRequest={albumRequest}
+            artistRequest={artistRequest}
           />
         </Suspense>
+        </SectionBoundary>
       </HoverOverlayPanel>
     </>
   );

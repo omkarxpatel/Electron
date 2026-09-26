@@ -31,6 +31,13 @@ const api = {
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
   },
 
+  /** Start the Spotify desktop client hidden, so there's a Connect device to
+   *  command without the user ever seeing Spotify's window. */
+  spotifyApp: {
+    launchHidden: (): Promise<{ ok: boolean; reason?: string }> =>
+      ipcRenderer.invoke('spotify-app:launch-hidden'),
+  },
+
   /**
    * Menu-bar bridge. The tray lives in main but has no Spotify session of its
    * own, so the renderer pushes now-playing up and receives transport
@@ -126,6 +133,81 @@ const api = {
     },
     dismissVersion(version: string): Promise<void> {
       return ipcRenderer.invoke('update:dismiss-version', version);
+    },
+  },
+
+  /**
+   * Machine capability + the persisted quality tier.
+   *
+   * `resolve` is called from the renderer on purpose — GPU feature status is
+   * wrong until a window has loaded, and this call happening at all proves
+   * one has. Returns `unknown`; the shape is declared in src/types/api.d.ts.
+   */
+  deviceProfile: {
+    resolve(info: {
+      glRenderer: string;
+      glVendor: string | null;
+      drawRevision: number;
+    }): Promise<unknown> {
+      return ipcRenderer.invoke('device-profile:resolve', info);
+    },
+    setTier(tier: string): Promise<unknown> {
+      return ipcRenderer.invoke('device-profile:set-tier', tier);
+    },
+    declineTest(trigger: string): Promise<unknown> {
+      return ipcRenderer.invoke('device-profile:decline-test', trigger);
+    },
+    recordCalibration(tier: string, calibration: unknown): Promise<unknown> {
+      return ipcRenderer.invoke('device-profile:record-calibration', tier, calibration);
+    },
+  },
+  /**
+   * Notch HUD bridge. Same shape as `tray` above and for the same reason: the
+   * panel is its own window with no Spotify session, so the main renderer
+   * pushes state up and takes commands back.
+   *
+   * `onState` / `onExpanded` are consumed by the notch window; `setState` /
+   * `onCommand` by the main one. Both live here because both windows load
+   * this one preload.
+   */
+  notch: {
+    setState(state: unknown): void {
+      ipcRenderer.send('notch:state', state);
+    },
+    onCommand(handler: (cmd: unknown) => void): () => void {
+      const wrapped = (_e: unknown, cmd: unknown): void => handler(cmd);
+      ipcRenderer.on('notch:command', wrapped);
+      return () => ipcRenderer.off('notch:command', wrapped);
+    },
+    send(cmd: unknown): void {
+      ipcRenderer.send('notch:command', cmd);
+    },
+    onState(handler: (state: unknown) => void): () => void {
+      const wrapped = (_e: unknown, state: unknown): void => handler(state);
+      ipcRenderer.on('notch:state', wrapped);
+      return () => ipcRenderer.off('notch:state', wrapped);
+    },
+    onExpanded(handler: (expanded: boolean) => void): () => void {
+      const wrapped = (_e: unknown, v: boolean): void => handler(v);
+      ipcRenderer.on('notch:expanded', wrapped);
+      return () => ipcRenderer.off('notch:expanded', wrapped);
+    },
+    onMetrics(handler: (metrics: unknown) => void): () => void {
+      const wrapped = (_e: unknown, m: unknown): void => handler(m);
+      ipcRenderer.on('notch:metrics', wrapped);
+      return () => ipcRenderer.off('notch:metrics', wrapped);
+    },
+    getEnabled(): Promise<boolean> {
+      return ipcRenderer.invoke('notch:get-enabled');
+    },
+    setEnabled(enabled: boolean): Promise<boolean> {
+      return ipcRenderer.invoke('notch:set-enabled', enabled);
+    },
+    /** Fires when the HUD is toggled from the tray menu, so Settings agrees. */
+    onEnabledChange(handler: (enabled: boolean) => void): () => void {
+      const wrapped = (_e: unknown, v: boolean): void => handler(v);
+      ipcRenderer.on('app-event:notch-enabled', wrapped);
+      return () => ipcRenderer.off('app-event:notch-enabled', wrapped);
     },
   },
 };

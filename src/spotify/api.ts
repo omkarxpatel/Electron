@@ -6,10 +6,12 @@
 
 import { getValidAccessToken, refreshAccessToken } from './auth';
 import type {
+  SavedTracksResponse,
   SpotifyAlbum,
   SpotifyArtist,
   SpotifyDevice,
   SpotifyPlaylist,
+  TopTimeRange,
   SpotifyPlaylistsResponse,
   SpotifyPlaylistTracksResponse,
   SpotifyPlaybackState,
@@ -94,6 +96,103 @@ export async function getPlaylist(playlistId: string): Promise<SpotifyPlaylist |
   );
 }
 
+/* ─── Playlist editing ─── */
+
+/** Both write endpoints answer with the playlist's new snapshot_id. */
+interface SnapshotResponse {
+  snapshot_id: string;
+}
+
+/** Max URIs Spotify accepts per add/remove call. */
+const PLAYLIST_EDIT_BATCH = 100;
+
+/**
+ * Append tracks to a playlist. Feb 2026 renamed the path from `/tracks` to
+ * `/items`; `/items` answers for pre-cutover client IDs too, so there is one
+ * spelling to maintain rather than two.
+ *
+ * Note the body key is `uris` here but `items` on the DELETE below — the two
+ * endpoints genuinely disagree, and sending `items` to this one adds nothing
+ * and still returns 201, so the mistake looks like success.
+ *
+ * Omitting `position` appends, which is where Spotify's own clients put new
+ * songs, so the track list's existing "appended since we paged" handling
+ * already covers it.
+ */
+export async function addPlaylistItems(
+  playlistId: string,
+  uris: string[],
+): Promise<string | null> {
+  if (uris.length === 0) return null;
+  if (uris.length > PLAYLIST_EDIT_BATCH) {
+    throw new Error(`addPlaylistItems: ${uris.length} URIs exceeds the ${PLAYLIST_EDIT_BATCH} limit`);
+  }
+  const data = await request<SnapshotResponse>(`/playlists/${playlistId}/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uris }),
+  });
+  return data?.snapshot_id ?? null;
+}
+
+/**
+ * Remove every occurrence of each URI from a playlist.
+ *
+ * "Every occurrence" is not a choice we're making. The old endpoint took a
+ * per-URI `positions` array to target one copy; the replacement accepts the
+ * field and ignores it, so a playlist holding the same song twice loses both.
+ * Callers must label the action for what it does — see the duplicate-aware
+ * label in SpotifyTrackList.
+ *
+ * `snapshotId` is optimistic concurrency: Spotify rejects the edit if the
+ * playlist moved on since we read it, rather than deleting whatever now sits
+ * where we think our track is.
+ */
+export async function removePlaylistItems(
+  playlistId: string,
+  uris: string[],
+  snapshotId?: string | null,
+): Promise<string | null> {
+  if (uris.length === 0) return null;
+  if (uris.length > PLAYLIST_EDIT_BATCH) {
+    throw new Error(`removePlaylistItems: ${uris.length} URIs exceeds the ${PLAYLIST_EDIT_BATCH} limit`);
+  }
+  const body: Record<string, unknown> = { items: uris.map((uri) => ({ uri })) };
+  if (snapshotId) body.snapshot_id = snapshotId;
+  const data = await request<SnapshotResponse>(`/playlists/${playlistId}/items`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return data?.snapshot_id ?? null;
+}
+
+/**
+ * Whether Spotify will accept an edit to this playlist. Has to be answered
+ * locally: a write to a playlist you only follow comes back as a 403 whose
+ * body is identical to the missing-scope 403, so there's no way to tell the
+ * two apart after the fact — and one is worth telling the user to reconnect
+ * over, the other isn't.
+ *
+ * `userId` null (the /me read hasn't landed, or failed) reads as "no", which
+ * greys the action out instead of offering an edit that would 403.
+ */
+export function canEditPlaylist(playlist: SpotifyPlaylist, userId: string | null): boolean {
+  if (!userId) return false;
+  return playlist.owner.id === userId || playlist.collaborative === true;
+}
+
+/** True when the error came back as a missing-scope 403 — i.e. the user is
+ *  signed in on a token issued before playlist-modify-* was requested and has
+ *  to reconnect. Worth telling them, because retrying never fixes it. */
+export function isMissingScopeError(err: unknown): boolean {
+  const msg = String(err);
+  // Spotify's wording is "Insufficient client scope"; matched loosely on
+  // `scope` so a reworded 403 still routes to the "reconnect" advice rather
+  // than a generic failure the user can only respond to by retrying.
+  return msg.includes('403') && /scope/i.test(msg);
+}
+
 export async function getPlaybackState(): Promise<SpotifyPlaybackState | null> {
   return request<SpotifyPlaybackState>('/me/player');
 }
@@ -136,6 +235,9 @@ export function invalidateQueueCache(): void {
   queueCachedPromise = null;
   queueCachedAt = 0;
 }
+
+/** Spotify's cap on `uris` in one play call. */
+export const PLAY_URIS_LIMIT = 100;
 
 /** `offsetTrackUri` picks the starting track *inside* the context by URI.
  *  An index-based `offset: { position }` can't be computed correctly from
@@ -267,20 +369,238 @@ export async function addToQueue(trackUri: string, deviceId?: string): Promise<v
   window.dispatchEvent(new CustomEvent(QUEUE_CHANGED_EVENT));
 }
 
-/* ─── Library (saved tracks) ─── */
+/* ─── Library (saved tracks, follows) ─── */
+
+/**
+ * Feb 2026 folded every per-type save endpoint into one `/me/library` that
+ * takes Spotify URIs where the old ones took ids. The `/me/tracks` writes and
+ * `/me/tracks/contains` still answer for client IDs created before the
+ * cutover, and 403 for every ID created since.
+ *
+ * Which population a given client ID belongs to isn't discoverable without
+ * asking, and guessing wrong silently breaks the heart button — it reports
+ * success and saves nothing. So: prefer the unified route, and if this
+ * account has no such route, remember that and use the legacy path for the
+ * rest of the session. Costs one wasted request, once, on old accounts.
+ *
+ * null = not yet determined.
+ */
+let unifiedLibraryAvailable: boolean | null = null;
+
+/** 404 means the route doesn't exist for this client ID. A 403 is something
+ *  else entirely — usually a missing `user-library-modify` scope — and must
+ *  surface rather than be silently retried against a path that will also
+ *  fail. */
+function isMissingRoute(err: unknown): boolean {
+  return String(err).includes('404');
+}
+
+function trackUri(id: string): string {
+  return `spotify:track:${id}`;
+}
+
+/** Try `/me/library`, falling back to whatever the pre-2026 call was. */
+async function libraryMutate(
+  method: 'PUT' | 'DELETE',
+  uris: string[],
+  legacy: () => Promise<unknown>,
+): Promise<void> {
+  if (unifiedLibraryAvailable !== false) {
+    try {
+      // `uris` goes in the QUERY STRING, not a JSON body. Sending it as a
+      // body — any shape: {uris}, {ids}, {items:[{uri}]} — answers 400
+      // "Missing required field: uris", which isMissingRoute() correctly
+      // declines to treat as a missing route, so it threw past the legacy
+      // fallback and every save/unsave failed. The heart button lit up
+      // optimistically and snapped straight back, looking like a dead
+      // control. Matches GET /me/library/contains, which reads ?uris= too.
+      await request(`/me/library?uris=${encodeURIComponent(uris.join(','))}`, { method });
+      unifiedLibraryAvailable = true;
+      return;
+    } catch (err) {
+      if (!isMissingRoute(err)) throw err;
+      unifiedLibraryAvailable = false;
+    }
+  }
+  await legacy();
+}
 
 export async function checkSavedTracks(ids: string[]): Promise<boolean[]> {
   if (ids.length === 0) return [];
+  if (unifiedLibraryAvailable !== false) {
+    try {
+      const uris = ids.map(trackUri).join(',');
+      const data = await request<boolean[]>(
+        `/me/library/contains?uris=${encodeURIComponent(uris)}`,
+      );
+      unifiedLibraryAvailable = true;
+      return data ?? [];
+    } catch (err) {
+      if (!isMissingRoute(err)) throw err;
+      unifiedLibraryAvailable = false;
+    }
+  }
   const data = await request<boolean[]>(`/me/tracks/contains?ids=${ids.join(',')}`);
   return data ?? [];
 }
 
 export async function saveTrack(id: string): Promise<void> {
-  await request(`/me/tracks?ids=${id}`, { method: 'PUT' });
+  await libraryMutate('PUT', [trackUri(id)], () =>
+    request(`/me/tracks?ids=${id}`, { method: 'PUT' }),
+  );
 }
 
 export async function removeSavedTrack(id: string): Promise<void> {
-  await request(`/me/tracks?ids=${id}`, { method: 'DELETE' });
+  await libraryMutate('DELETE', [trackUri(id)], () =>
+    request(`/me/tracks?ids=${id}`, { method: 'DELETE' }),
+  );
+}
+
+/** Test seam: the probe result is module state that would otherwise leak
+ *  between cases. Not called by the app. */
+export function __resetLibraryProbe(): void {
+  unifiedLibraryAvailable = null;
+}
+
+/* ─── Liked Songs ─── */
+
+/** Spotify's page cap for GET /me/tracks (playlists allow 100, this doesn't). */
+export const SAVED_TRACKS_PAGE = 50;
+
+/**
+ * A page of Liked Songs, newest first.
+ *
+ * This kept the `/me/tracks` path and its `items[].track` key through the Feb
+ * 2026 wave — only the *write* side (`PUT`/`DELETE /me/tracks`) and
+ * `/me/tracks/contains` moved under `/me/library`. So there's no dual-shape
+ * guard here, unlike the playlist reader.
+ */
+export async function getSavedTracks(
+  limit = SAVED_TRACKS_PAGE,
+  offset = 0,
+): Promise<SavedTracksResponse | null> {
+  return request<SavedTracksResponse>(`/me/tracks?limit=${limit}&offset=${offset}`);
+}
+
+/* ─── Top items (Stats) ─── */
+
+interface TopItemsResponse<T> {
+  items: T[];
+  total: number;
+  next: string | null;
+  offset: number;
+}
+
+/** Max /me/top will return in one page. */
+export const TOP_ITEMS_LIMIT = 50;
+
+/**
+ * Most-played tracks or artists over one of three fixed windows —
+ * `short_term` ≈ 4 weeks, `medium_term` ≈ 6 months, `long_term` ≈ all time.
+ * Needs the `user-top-read` scope.
+ *
+ * This is the only listening-history surface Spotify still exposes: the
+ * algorithmic feeds and /recommendations went away in Nov 2024, so anything
+ * resembling "your music" has to be built from these three lists.
+ */
+export async function getTopTracks(
+  timeRange: TopTimeRange,
+  limit = TOP_ITEMS_LIMIT,
+): Promise<SpotifyTrack[]> {
+  const data = await request<TopItemsResponse<SpotifyTrack>>(
+    `/me/top/tracks?time_range=${timeRange}&limit=${limit}`,
+  );
+  return data?.items ?? [];
+}
+
+export async function getTopArtists(
+  timeRange: TopTimeRange,
+  limit = TOP_ITEMS_LIMIT,
+): Promise<SpotifyArtist[]> {
+  const data = await request<TopItemsResponse<SpotifyArtist>>(
+    `/me/top/artists?time_range=${timeRange}&limit=${limit}`,
+  );
+  return data?.items ?? [];
+}
+
+/* ─── Playlist lifecycle ─── */
+
+/**
+ * Create a playlist owned by the signed-in user.
+ *
+ * Feb 2026 moved this off `POST /users/{user_id}/playlists`, which now 403s —
+ * the owner is taken from the token instead of the path.
+ */
+export async function createPlaylist(
+  name: string,
+  description?: string,
+  isPublic = false,
+): Promise<SpotifyPlaylist | null> {
+  return request<SpotifyPlaylist>('/me/playlists', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description: description ?? '', public: isPublic }),
+  });
+}
+
+/** Rename / re-describe / flip visibility. Answers 200 with an empty body. */
+export async function changePlaylistDetails(
+  playlistId: string,
+  details: { name?: string; description?: string; public?: boolean },
+): Promise<void> {
+  await request(`/playlists/${playlistId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(details),
+  });
+}
+
+/**
+ * Move `rangeLength` items starting at `rangeStart` so they land before
+ * `insertBefore`.
+ *
+ * The indices are positions in the playlist as Spotify holds it, not in our
+ * filtered `tracks` array — those diverge as soon as a null entry (a removed
+ * or local-only track) is dropped on read, so callers must map back to the
+ * raw position rather than passing a row index.
+ *
+ * `snapshotId` makes this a no-op instead of a scramble if the playlist moved
+ * under us between read and write.
+ */
+export async function reorderPlaylistItems(
+  playlistId: string,
+  rangeStart: number,
+  insertBefore: number,
+  snapshotId?: string | null,
+  rangeLength = 1,
+): Promise<string | null> {
+  const body: Record<string, unknown> = {
+    range_start: rangeStart,
+    insert_before: insertBefore,
+    range_length: rangeLength,
+  };
+  if (snapshotId) body.snapshot_id = snapshotId;
+  const data = await request<SnapshotResponse>(`/playlists/${playlistId}/items`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return data?.snapshot_id ?? null;
+}
+
+/**
+ * Remove a playlist from the user's library.
+ *
+ * Spotify has never had "delete a playlist" — unfollowing your own playlist
+ * is how deletion works, and it's what the desktop client's Delete does. Feb
+ * 2026 folded `DELETE /playlists/{id}/followers` into the unified
+ * `DELETE /me/library`, which takes URIs rather than ids.
+ */
+export async function unfollowPlaylist(playlistUri: string): Promise<void> {
+  const id = playlistUri.split(':').pop() ?? '';
+  await libraryMutate('DELETE', [playlistUri], () =>
+    request(`/playlists/${id}/followers`, { method: 'DELETE' }),
+  );
 }
 
 /* ─── Albums (saved + detail) ─── */
@@ -305,6 +625,48 @@ export interface AlbumWithTracks extends SpotifyAlbum {
 
 export async function getAlbum(id: string): Promise<AlbumWithTracks | null> {
   return request<AlbumWithTracks>(`/albums/${id}`);
+}
+
+/* ─── Artists ─── */
+
+/**
+ * One artist by id.
+ *
+ * The batch `GET /artists` went away in Feb 2026, so this is per-id only —
+ * fine here, since the artist page opens one at a time. `genres`,
+ * `popularity` and `followers` may all come back absent on a post-cutover
+ * client ID; the view treats each as optional rather than showing zeros.
+ */
+export async function getArtist(id: string): Promise<SpotifyArtist | null> {
+  return request<SpotifyArtist>(`/artists/${id}`);
+}
+
+interface ArtistAlbumsResponse {
+  items: SpotifyAlbum[];
+  total: number;
+  next: string | null;
+}
+
+/**
+ * An artist's own releases, newest first.
+ *
+ * This is what makes an artist page possible at all: `/artists/{id}/top-tracks`
+ * and `/artists/{id}/related-artists` were both removed, so a discography
+ * list is the only substantial thing left to show.
+ *
+ * `include_groups` excludes `appears_on` and `compilation`, which otherwise
+ * bury an artist's own records under every playlist compilation they were
+ * ever licensed to.
+ */
+export async function getArtistAlbums(id: string, limit = 50): Promise<SpotifyAlbum[]> {
+  const params = new URLSearchParams({
+    include_groups: 'album,single',
+    limit: String(limit),
+  });
+  const data = await request<ArtistAlbumsResponse>(`/artists/${id}/albums?${params.toString()}`);
+  const items = data?.items ?? [];
+  // Spotify returns these roughly grouped by type, not by date.
+  return [...items].sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''));
 }
 
 /* ─── Search ─── */

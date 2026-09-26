@@ -35,7 +35,14 @@ Verification here means:
    standard's published coefficient tables and the EBU Tech 3341 tones).
    Typecheck can't tell you a filter delivers the wrong curve; every case it
    guards shipped silently once already.
-3. Run the app and look at it. See below, because launching it has traps.
+3. `npm run check:quality` — if you touched `electron/deviceProfile.ts`,
+   `src/state/quality.ts` or `src/visualizers/drawRevision.ts`. Asserts the
+   frame-cap arithmetic against synthetic vsync traces, then boots a real
+   Electron (GPU status, screen metrics and powerMonitor don't exist under
+   node) for capability detection and every profile-invalidation path. The
+   failures it guards are silent by construction: nothing errors, the app just
+   runs at the wrong quality tier, or half the frame rate, forever.
+4. Run the app and look at it. See below, because launching it has traps.
 
 If you change the updater or the release pipeline, also run
 `node scripts/verify-release.mjs <tag> --remote-only` against a real tag.

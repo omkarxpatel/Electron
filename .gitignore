@@ -38,6 +38,7 @@ HANDOFF.md
 .claude-flow/
 
 # planning / audit working docs (internal — not for the public repo)
+/ADAPTIVE_QUALITY_PLAN.md
 /CLAUDE_CHANGES/
 /CODEX_CHANGES/
 /DEEP_REFACTOR_CANDIDATES.md

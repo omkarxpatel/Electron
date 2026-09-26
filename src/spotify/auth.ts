@@ -19,6 +19,20 @@ export const SCOPES = [
   // Without this /me/player/recently-played 403s. It seeds "now playing" on
   // launch when the poll has nothing cached yet.
   'user-read-recently-played',
+  // Add / remove playlist items. Spotify splits the permission by playlist
+  // visibility, not by operation, so both are needed — with only the -public
+  // scope, editing a private playlist 403s "Insufficient client scope" even
+  // though the user owns it.
+  //
+  // Adding a scope here does NOT upgrade an already-issued refresh token.
+  // Anyone signed in before this shipped keeps a scope-limited token and
+  // every write 403s until they disconnect and reconnect. `show_dialog` below
+  // is what makes that re-consent actually re-grant.
+  'playlist-modify-public',
+  'playlist-modify-private',
+  // /me/top/{tracks,artists} for the Stats view. Another scope means another
+  // reconnect — see the note above.
+  'user-top-read',
 ].join(' ');
 
 const TOKEN_URL = 'https://accounts.spotify.com/api/token';

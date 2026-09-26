@@ -1,0 +1,451 @@
+/*
+ * Notch HUD styles.
+ *
+ * The window is transparent and always the full expanded size; collapsing is
+ * purely visual here. Nothing may paint outside `.notch-panel`, or the
+ * transparent margin around it stops being invisible.
+ */
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  /* The panel sits over other apps' windows; a text selection drag across it
+     would be both useless and ugly. */
+  user-select: none;
+  cursor: default;
+}
+
+.notch-root {
+  position: relative;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Idle pill ──────────────────────────────────────────────────────────── */
+
+/*
+ * What's on screen when nobody is hovering. Sized to sit in the notch's own
+ * footprint, so the art and the level bars appear to flank the camera — the
+ * middle is left empty because that is where the physical notch is.
+ *
+ * Its height matches a notched Mac's 32pt menu bar. The width is a guess by
+ * necessity: Electron exposes no notch width, so this is sized to be a
+ * deliberate-looking pill on any machine rather than a failed impersonation
+ * of one particular notch. Keep it <= HOVER_TARGET_W in notchWindow.ts, or
+ * its edges won't respond to hover.
+ */
+.notch-idle-pill {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  /*
+   * Wider than the notch on purpose. At 232 the artwork and bars sat ~97pt
+   * either side of centre and a 14" notch is roughly ±95pt, so the hardware
+   * clipped both of them. 300 puts each indicator ~139pt out, clear of every
+   * model. Keep HOVER_TARGET_W in notchWindow.ts at or above this.
+   */
+  width: 300px;
+  /*
+   * EXACTLY the menu-bar band — never one pixel past it.
+   *
+   * That band is the physical notch on a notched Mac, and macOS reserves it
+   * (black) even for fullscreen apps, so anything drawn inside it costs the
+   * user nothing. Anything drawn BELOW it lands on real content: a 7px lip
+   * here sat on top of the browser's tab strip, and an earlier hardcoded
+   * 32px did the same on machines whose band is 24pt.
+   *
+   * The lozenge itself is invisible against the notch by design. What you
+   * see is the artwork and the level bars inside it, either side of the
+   * camera — which is exactly how boringNotch reads.
+   *
+   * Main measures the band and passes it in; CSS has no way to know it.
+   */
+  height: var(--notch-menubar-h, 32px);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 11px;
+  background: #000;
+  border-radius: 0 0 13px 13px;
+  /* Delayed: coming back before the panel has finished retracting shows both
+     shapes stacked for a frame or two. */
+  transition: opacity 160ms ease 150ms;
+}
+
+.notch-root[data-expanded='true'] .notch-idle-pill {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms ease;
+}
+
+/* Nothing playing: no state, so the pill has no content and would just be a
+   black bar parked under the notch for no reason. */
+.notch-idle-pill:empty {
+  opacity: 0;
+}
+
+.notch-idle-art {
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  object-fit: cover;
+  display: block;
+}
+
+.notch-idle-art-empty {
+  background: #222;
+}
+
+.notch-idle-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2.5px;
+  height: 11px;
+}
+
+.notch-idle-bars i {
+  width: 2.5px;
+  height: 100%;
+  border-radius: 1.5px;
+  background: color-mix(in oklab, var(--notch-accent) 55%, #d8d8de);
+  transform-origin: bottom center;
+  /* Paused: frozen low rather than hidden, so the pill keeps its shape. */
+  transform: scaleY(0.25);
+}
+
+.notch-idle-bars[data-playing='true'] i {
+  animation: notch-level 900ms ease-in-out infinite;
+}
+
+.notch-idle-bars[data-playing='true'] i:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.notch-idle-bars[data-playing='true'] i:nth-child(3) {
+  animation-delay: 320ms;
+}
+
+/* Transform-only so this composites on the GPU and never repaints the pill. */
+@keyframes notch-level {
+  0%,
+  100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.notch-panel {
+  /* Fixed, not 100%: the window is intentionally bigger so this has margin
+     to cast a shadow into. Flush to the top, because that edge is the bezel. */
+  width: 580px;
+  height: 188px;
+  align-self: flex-start;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  /*
+   * The top padding reserves the notch band. The camera is opaque hardware
+   * sitting over the middle of this panel, and without the reserve it ate
+   * the right-hand half of the title — text was rendering *underneath* the
+   * notch. Same reason boringNotch keeps its icon row up here and starts the
+   * music content below: nothing readable may occupy the band.
+   *
+   * Band height comes from main; the +12 is breathing room under it.
+   */
+  padding: calc(var(--notch-menubar-h, 32px) + 12px) 18px 14px;
+  cursor: pointer;
+  /*
+   * Ambient wash, album-derived. Both light sources sit LOW on purpose: the
+   * top strip has to stay pure black so it disappears against the physical
+   * notch, and a gradient reaching up there would outline the panel against
+   * the hardware. Neither sits far left either: the artwork covers 3-24% of
+   * the width and 23-87% of the height, and a light source behind it is a
+   * light source you cannot see. The artwork gets its own bloom instead, via
+   * the accent-tinted drop shadow on `.notch-art img`.
+   *
+   * Falls back to a neutral blue when "auto-tint from album art" is off — the
+   * HUD follows that setting rather than owning a second one.
+   */
+  background:
+    radial-gradient(
+      70% 80% at 44% 104%,
+      color-mix(in oklab, var(--notch-accent) 24%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      66% 72% at 94% 96%,
+      color-mix(in oklab, var(--notch-ambient) 30%, transparent),
+      transparent 74%
+    ),
+    #000;
+  box-shadow:
+    0 22px 46px -18px rgb(0 0 0 / 80%),
+    0 0 0 0.5px rgb(255 255 255 / 7%);
+  /* Square at the top: this edge IS the top of the screen, and rounding it
+     leaves two slivers of desktop showing through that read as a clipped
+     floating box rather than something hanging off the bezel. */
+  border-radius: 0 0 20px 20px;
+
+  transform-origin: top center;
+  will-change: transform, opacity;
+  /* Collapsing: quick and no overshoot — an elastic retract reads as a bug. */
+  transition:
+    opacity 140ms ease,
+    transform 240ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-radius 240ms ease;
+}
+
+/* Collapsed: the notch is physically black, so a black panel scaled into it
+   reads as "nothing there" without needing to know the notch's real width. */
+/*
+ * The collapsed size is the idle lozenge's exact silhouette — 300/580 wide by
+ * 32/188 tall, with its 13px corner — so the panel appears to grow out of the
+ * notch rather than fading in at some unrelated scale. The old 0.46/0.24 was
+ * eyeballed and matched nothing on screen, which is what made it feel loose.
+ */
+.notch-root[data-expanded='false'] .notch-panel {
+  opacity: 0;
+  transform: scale3d(0.5172, 0.1702, 1);
+  border-radius: 0 0 13px 13px;
+  pointer-events: none;
+}
+
+.notch-root[data-expanded='true'] .notch-panel {
+  opacity: 1;
+  transform: none;
+  /* Opening overshoots a touch; that tiny settle is most of what makes it
+     feel physical instead of linear. */
+  transition:
+    opacity 170ms ease,
+    transform 400ms cubic-bezier(0.22, 1.12, 0.36, 1),
+    border-radius 400ms ease;
+}
+
+/* Contents settle in just behind the container, so you read the shape opening
+   first and the detail second instead of everything arriving flat together. */
+.notch-art,
+.notch-info {
+  opacity: 0;
+  transform: translateY(7px);
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+}
+
+.notch-root[data-expanded='true'] .notch-art,
+.notch-root[data-expanded='true'] .notch-info {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 220ms ease 90ms,
+    transform 340ms cubic-bezier(0.22, 1, 0.36, 1) 90ms;
+}
+
+/* ── Album art ──────────────────────────────────────────────────────────── */
+
+.notch-art {
+  position: relative;
+  flex: 0 0 auto;
+  width: 120px;
+  height: 120px;
+}
+
+.notch-art img,
+.notch-art-empty {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
+  /* Sleeves with black backgrounds (and anything with transparency) vanish
+     into a pure-black panel. A near-black surface plus a hairline edge keeps
+     the square readable without looking like a border. */
+  background: #141416;
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 9%),
+    0 10px 26px -10px color-mix(in oklab, var(--notch-accent) 65%, transparent);
+}
+
+.notch-art-empty {
+  background: #1c1c1c;
+}
+
+.notch-badge {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  /* Reads as a sticker on the corner of the sleeve rather than part of it. */
+  box-shadow: 0 0 0 2.5px #000;
+}
+
+/* ── Text column ────────────────────────────────────────────────────────── */
+
+.notch-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.notch-title,
+.notch-artist,
+.notch-lyric {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notch-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: #fff;
+  line-height: 1.2;
+}
+
+.notch-artist {
+  margin-top: 1px;
+  font-size: 12px;
+  font-weight: 500;
+  /* `--notch-accent` comes from the visualizer's album palette, where it is
+     the GLOW colour and so deliberately saturated. Straight onto text that
+     turns a red album sleeve into a fire-alarm artist line. Pulled most of
+     the way to neutral: album-tinted, but never louder than the title. */
+  color: color-mix(in oklab, var(--notch-accent) 45%, #c9c9d0);
+  line-height: 1.25;
+}
+
+.notch-lyric {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #86868b;
+  line-height: 1.3;
+  /* Reserve the row even with no lyrics, so the transport controls don't jump
+     up and down as lines appear and disappear. */
+  min-height: 14px;
+}
+
+/* ── Progress ───────────────────────────────────────────────────────────── */
+
+.notch-progress {
+  margin-top: 7px;
+  /* Padding, not height: it widens the click target for seeking without
+     making the bar itself any thicker. */
+  padding: 5px 0;
+  cursor: pointer;
+}
+
+.notch-progress-track {
+  height: 3.5px;
+  border-radius: 2px;
+  background: #3a3a3d;
+  overflow: hidden;
+}
+
+.notch-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  /* Mostly white so it stays legible on any sleeve, with just enough album in
+     it to belong to the rest of the panel. */
+  background: color-mix(in oklab, var(--notch-accent) 30%, #f1f1f5);
+}
+
+.notch-times {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: #b9b9c0;
+}
+
+/* ── Transport ──────────────────────────────────────────────────────────── */
+
+.notch-transport {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+}
+
+.notch-btn {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: #d4d4d8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 120ms ease, transform 120ms ease;
+}
+
+.notch-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.notch-btn:hover {
+  color: #fff;
+}
+
+.notch-btn:active {
+  transform: scale(0.88);
+}
+
+.notch-btn-play {
+  color: #fff;
+}
+
+.notch-btn-play svg {
+  width: 21px;
+  height: 21px;
+}
+
+/* Fixed, not the album accent: "shuffle is on" has to mean the same thing on
+   every sleeve, and an accent-coloured one is invisible whenever the album
+   happens to be grey. */
+.notch-btn[data-on='true'] {
+  color: #ff453a;
+}
+
+.notch-btn-heart {
+  color: #6a6a6e;
+}
+
+.notch-btn-heart[data-on='true'] {
+  color: #ff4d6a;
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+
+.notch-idle {
+  width: 100%;
+  text-align: center;
+  font-size: 13px;
+  color: #6a6a6e;
+}

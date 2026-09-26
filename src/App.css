@@ -1117,6 +1117,8 @@
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  /* Containing block for .sp-track-notice. */
+  position: relative;
 }
 
 .sp-empty-state {
@@ -1143,16 +1145,28 @@
 
 .sp-track-header {
   display: flex;
-  align-items: flex-end;
-  gap: 18px;
+  /* Centred, not bottom-aligned. The text column is 113px with no description
+     and 160px with one, against a fixed 160px cover — bottom-aligning left a
+     47px dead gap above the eyebrow on every playlist without a description,
+     which is most of them. */
+  align-items: center;
+  gap: 26px;
   padding: 24px 28px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
 }
 
 .sp-track-header-cover {
-  width: 128px;
-  height: 128px;
+  /* 128px read as a thumbnail pinned to the bottom of a taller block. The
+     text column beside it measures 113px with no description and 160px with
+     a two-line one, so this matches the taller case and slightly overhangs
+     the shorter one — which reads as deliberate, where being short of it did
+     not. Tracking the column's height automatically was tried and reverted:
+     `align-self: stretch` sets the cross size, but in a flex row
+     `aspect-ratio` does not feed back into the main size, so the cover
+     stretched to 160 tall while staying 132 wide. */
+  width: 160px;
+  height: 160px;
   border-radius: 6px;
   object-fit: cover;
   flex-shrink: 0;
@@ -1267,6 +1281,32 @@
 .sp-track-playing-icon {
   color: var(--accent);
   font-size: 14px;
+}
+
+/* The album view is the only track table with a <thead>, and .sp-track-table
+   is table-layout:fixed — which takes every column width from the FIRST row.
+   That's the header, so the header cells size the columns and the body's
+   widths are ignored entirely. Unclassed <th>s left the # column auto-sized to
+   a huge share of the width, stranding the track numbers in the middle of it.
+   These carry the same widths as the matching <td>s; this one only has to
+   undo the <th> default centring. */
+.sp-track-head-title {
+  text-align: left;
+}
+
+/* Matches `.sp-track-row td`'s padding exactly. Without it the <th> had no
+   horizontal padding at all while the <td> had 12px, so the header sat 11px
+   off its own column AND "#" ended 2px from "Title", reading as "#Title".
+   The rest is just making a column header look like one — <th> defaults to
+   bold at body size, which came out heavier than the track names below it. */
+.sp-track-table thead th {
+  padding: 9px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .sp-track-title-cell {
@@ -1390,7 +1430,17 @@
   background: linear-gradient(135deg, var(--accent-soft-bg), var(--accent-soft-bg));
 }
 
-.sp-player-track {
+/* Both selectors, and the compound one is load-bearing.
+   `.sp-player-link` neutralises the button's native font with `font: inherit`,
+   and that shorthand carries font-size and font-weight along with the family.
+   The title button wears both classes and `.sp-player-link` is declared ~4700
+   lines further down at equal specificity, so the reset was quietly winning:
+   the song name rendered at the bar's inherited 16px/400 rather than 13px/500
+   — oversized, unweighted against the 11.5px artist line beneath it, and
+   ellipsised earlier than it needed to be. Measured, not guessed.
+   The bare selector still covers the non-button "—" placeholder. */
+.sp-player-track,
+.sp-player-track.sp-player-link {
   font-size: 13px;
   font-weight: 500;
   color: #e8e8e8;
@@ -1478,10 +1528,32 @@
   color: var(--accent-bright);
 }
 
+/* Smart Shuffle reads as active but distinct from plain shuffle — same accent
+ * family, dimmer, so the sparkle glyph is what carries the difference. */
+.sp-icon-btn-toggle[data-mode='smart'],
+.sp-icon-btn-toggle[data-mode='smart']:hover {
+  color: var(--accent);
+}
+
 .sp-icon-btn-toggle:disabled,
 .sp-icon-btn-heart:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* Marks a track Smart Shuffle spliced in that isn't in the open playlist. */
+.sp-suggested-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-bright);
+  background: color-mix(in srgb, var(--accent-bright) 16%, transparent);
+  vertical-align: 1px;
 }
 
 /* Heart button sits next to the track info; bright accent when saved. */
@@ -2087,6 +2159,10 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Positioning context for .sp-track-notice, which is absolute and would
+     otherwise anchor to the fixed overlay panel and land at the bottom of the
+     whole sheet instead of this view. Same reason .sp-track-view is relative. */
+  position: relative;
 }
 
 .sp-album-detail-header {
@@ -4428,7 +4504,10 @@
 .context-menu {
   position: fixed;
   z-index: 1000;
-  min-width: 168px;
+  /* ContextMenu clamps against MENU_W and sets it as an inline width. Without
+     border-box the 4px padding and 1px border land outside that, and the menu
+     hangs past the right edge by exactly the difference. */
+  box-sizing: border-box;
   padding: 4px;
   background: #181818;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -4460,14 +4539,152 @@
   transition: background 80ms ease;
 }
 
+/* Fallbacks are load-bearing, not belt-and-braces: --accent-* are declared on
+   .app, and this menu is portalled to document.body, which is outside it. The
+   bare var() references these replaced resolved to nothing, so menu rows had
+   no hover feedback at all. The cost is that the menu keeps Spotify green
+   instead of following a custom palette — moving the palette vars up to :root
+   is the fix for that, and is not this change. */
 .context-menu-item:hover:not(:disabled) {
-  background: var(--accent-soft-bg);
-  color: var(--accent-bright);
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  color: var(--accent-bright, #2ce568);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
 }
 
 .context-menu-item:disabled {
   color: #666;
   cursor: not-allowed;
+}
+
+/* Anchor for the submenu panel, which sits outside the row's own box but
+   has to stay a DOM descendant — the outside-click and outside-scroll
+   handlers both test for an ancestor with [data-context-menu]. */
+.context-menu-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.context-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu-caret {
+  flex: none;
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.55;
+}
+
+/* Keep the parent row lit while its panel is open, so the pointer sitting in
+   the submenu still shows where it came from. */
+.context-menu-item[data-submenu-open='true'] {
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  color: var(--accent-bright, #2ce568);
+}
+
+/* Height here feeds ContextMenu's SEPARATOR_H estimate (4 + 1 + 4). */
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.context-submenu {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  z-index: 1;
+  /* Same reason as .context-menu — SUBMENU_W has to be the outer width for
+     the flip calculation to hold. */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  margin-left: 2px;
+  background: #181818;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.context-submenu[data-flip-x='true'] {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
+}
+
+.context-submenu[data-flip-y='true'] {
+  top: auto;
+  bottom: 0;
+}
+
+.context-submenu-filter {
+  appearance: none;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 6px 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  color: #eee;
+  font: inherit;
+}
+
+.context-submenu-filter:focus {
+  outline: none;
+  border-color: var(--accent-bright, #2ce568);
+}
+
+.context-submenu-filter::placeholder {
+  color: #777;
+}
+
+.context-submenu-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.context-submenu-empty {
+  padding: 8px 12px;
+  color: #777;
+}
+
+/* Result line for the row-menu actions. Floats over the bottom of the track
+   list rather than shifting it — a list that jumps as you add songs makes the
+   next right-click land on the wrong row. */
+.sp-track-notice {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: 92%;
+  padding: 7px 14px;
+  background: rgba(24, 24, 24, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  color: #eee;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  animation: context-menu-in 120ms ease-out;
 }
 
 /* ============================================================
@@ -5236,4 +5453,949 @@
 :root[data-platform='win32'] .topbar {
   padding-left: 16px;
   padding-right: 150px;
+}
+
+/* ============================================================
+   Liked Songs, playlist CRUD, ⌘F filter and the Stats view.
+   ============================================================ */
+
+/* Stand-in cover for sources with no artwork of their own. */
+.sp-liked-cover,
+.sp-stats-cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #5038d6, #a13bd8);
+  color: #fff;
+}
+
+.sp-stats-cover {
+  background: linear-gradient(135deg, #1d7d4d, #2ce568);
+}
+
+.sp-library-pinned {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+
+.sp-library-pinned-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  color: #eee;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 90ms ease, border-color 90ms ease;
+}
+
+.sp-library-pinned-btn:hover,
+.sp-library-pinned-btn[data-selected='true'] {
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  border-color: var(--accent-border, rgba(29, 185, 84, 0.5));
+}
+
+.sp-library-pinned-icon {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+}
+
+.sp-library-pinned-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.sp-library-pinned-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sp-library-pinned-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-library-new-btn,
+.sp-library-new-input {
+  margin-left: auto;
+  padding: 5px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: #eee;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sp-library-new-btn:hover {
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  color: var(--accent-bright, #2ce568);
+}
+
+.sp-library-new-input {
+  cursor: text;
+  min-width: 150px;
+}
+
+.sp-library-new-input:focus {
+  outline: none;
+  border-color: var(--accent-bright, #2ce568);
+}
+
+/* ── Track-list header actions ── */
+
+.sp-track-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sp-track-header-action {
+  padding: 5px 12px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.72);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 90ms ease, color 90ms ease, border-color 90ms ease;
+}
+
+.sp-track-header-action:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+/* Overflow trigger for the playlist header. Circular so it reads as an icon
+   affordance next to the pill-shaped Play, rather than a third equal option —
+   Rename and Delete used to sit here as pills and wrapped onto a second line.
+   margin-top matches .sp-track-header-play so the two sit on one optical line. */
+.sp-track-header-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-top: 12px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.66);
+  cursor: pointer;
+  transition: background 90ms ease, color 90ms ease, border-color 90ms ease;
+}
+
+.sp-track-header-more:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+.sp-track-header-action-danger {
+  border-color: rgba(255, 96, 96, 0.55);
+  color: #ff8080;
+}
+
+.sp-track-header-action-danger:hover {
+  background: rgba(255, 96, 96, 0.14);
+  color: #ff9c9c;
+}
+
+.sp-track-header-rename {
+  width: 100%;
+  max-width: 520px;
+  margin: 0 0 2px;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--accent-bright, #2ce568);
+  border-radius: 6px;
+  color: #fff;
+  font: inherit;
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.sp-track-header-rename:focus {
+  outline: none;
+}
+
+/* ── ⌘F filter bar ── */
+
+.sp-track-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sp-track-filter-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--accent-bright, #2ce568);
+  border-radius: 6px;
+  color: #eee;
+  font: inherit;
+  font-size: 13px;
+}
+
+.sp-track-filter-input:focus {
+  outline: none;
+}
+
+.sp-track-filter-count {
+  flex: none;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-track-filter-close {
+  flex: none;
+  background: transparent;
+  border: 0;
+  color: rgba(255, 255, 255, 0.5);
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.sp-track-filter-close:hover {
+  color: #fff;
+}
+
+/* ── Drag to reorder ── */
+
+.sp-track-row[draggable='true'] {
+  cursor: grab;
+}
+
+.sp-track-row[data-dragging='true'] {
+  opacity: 0.4;
+}
+
+/* Box-shadow rather than border-top: a border would change the row's height
+   and shuffle every row below it as the pointer moves. */
+.sp-track-row[data-drop-target='true'] td {
+  box-shadow: inset 0 2px 0 var(--accent-bright, #2ce568);
+}
+
+/* ── Stats view ── */
+
+.sp-stats {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Carries the album-art tint behind the whole pane, the same wash the viz
+   banner and player bar already sit on. Two offset radials rather than a flat
+   fill so the colour has somewhere to fall off to — a uniform tint just looks
+   like a different shade of grey. Behind everything, and inert to pointers. */
+.sp-stats-wash {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(115% 62% at 12% -8%, var(--accent-bg, rgba(29, 185, 84, 0.18)), transparent 62%),
+    radial-gradient(85% 55% at 102% 4%, var(--accent-soft-bg, rgba(29, 185, 84, 0.15)), transparent 58%);
+}
+
+/* Everything else rides above the wash. */
+.sp-stats > *:not(.sp-stats-wash) {
+  position: relative;
+  z-index: 1;
+}
+
+.sp-stats-ranges {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 12px;
+}
+
+.sp-stats-range {
+  padding: 5px 13px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.65);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 90ms ease, color 90ms ease;
+}
+
+.sp-stats-range:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.sp-stats-range[data-active='true'] {
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  border-color: var(--accent-border, rgba(29, 185, 84, 0.5));
+  color: var(--accent-bright, #2ce568);
+}
+
+.sp-stats-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 18px 24px;
+}
+
+/* The overlay panel runs to ~1800px. Without a cap the genre bars and the
+   deepest-cut rows stretched the full width, which put a metre of dead space
+   between a label and its number and made every bar unreadable. Two columns
+   of ~480px is the widest these read well at. */
+.sp-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 14px;
+  max-width: 1040px;
+  align-items: start;
+}
+
+/* Spans every column. `1 / -1` rather than `span 2` so it still fills the row
+   when the grid collapses to one column on a narrow window. */
+.sp-stats-card-wide {
+  grid-column: 1 / -1;
+}
+
+.sp-stats-note {
+  margin: 14px 0 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Same construction as .viz-banner and the settings drawer: translucent dark
+   over the wash plus a blur, so the tint shows through instead of being
+   covered by an opaque panel. The inset highlight is what stops it reading as
+   a flat grey rectangle. */
+.sp-stats-card {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.055),
+    rgba(255, 255, 255, 0.022)
+  );
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 14px;
+  padding: 16px 18px 18px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+/* ── Hero ── */
+
+.sp-stats-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 22px;
+  align-items: start;
+  border-color: var(--accent-border, rgba(29, 185, 84, 0.5));
+  background: linear-gradient(
+    180deg,
+    var(--accent-soft-bg, rgba(29, 185, 84, 0.15)),
+    rgba(255, 255, 255, 0.022)
+  );
+}
+
+.sp-stats-hero-main {
+  min-width: 0;
+}
+
+.sp-stats-hero-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.sp-stats-hero-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Stacks under the hero text once the panel is too narrow to sit beside it. */
+@media (max-width: 900px) {
+  .sp-stats-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.sp-stats-heading {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.sp-stats-subheading {
+  margin: 18px 0 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* ── Mainstream score ── */
+
+.sp-stats-score {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.sp-stats-score-value {
+  flex: none;
+  width: 84px;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 40%,
+    var(--accent-soft-bg, rgba(29, 185, 84, 0.15)),
+    rgba(0, 0, 0, 0.25)
+  );
+  border: 2px solid var(--accent-border, rgba(29, 185, 84, 0.5));
+  color: var(--accent-bright, #2ce568);
+  font-size: 34px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  /* The one element on the page allowed to glow — it's the headline number. */
+  box-shadow: 0 0 26px var(--accent-glow, rgba(29, 215, 96, 0.4));
+  text-shadow: 0 0 18px var(--accent-glow, rgba(29, 215, 96, 0.4));
+}
+
+.sp-stats-score-label {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+
+.sp-stats-score-sub {
+  max-width: 460px;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.5;
+}
+
+.sp-stats-meter {
+  height: 6px;
+  max-width: 560px;
+  margin-top: 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.sp-stats-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent-bright, #2ce568);
+}
+
+/* ── Deepest cuts ── */
+
+.sp-stats-deep {
+  list-style: none;
+  margin: 0;
+  /* Capped because the hero's column is full-panel wide: unbounded, the
+     popularity score ended up a metre from the track it belongs to. */
+  max-width: 560px;
+  padding: 0;
+}
+
+.sp-stats-deep button {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  column-gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sp-stats-deep button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sp-stats-deep button:hover .sp-stats-deep-name {
+  color: var(--accent-bright, #2ce568);
+}
+
+.sp-stats-deep-name {
+  grid-column: 1;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-stats-deep-artist {
+  grid-column: 1;
+  grid-row: 2;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Spans both rows so the score sits centred against the two-line label
+   instead of hanging off the first one. */
+.sp-stats-deep-score {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Genres ── */
+
+.sp-stats-genres {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.sp-stats-genre {
+  display: grid;
+  grid-template-columns: minmax(0, 118px) 1fr 24px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.sp-stats-genre-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.sp-stats-genre-bar {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+.sp-stats-genre-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent, #1ED760);
+}
+
+.sp-stats-genre-count {
+  text-align: right;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Top lists ── */
+
+.sp-stats-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sp-stats-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.sp-stats-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sp-stats-rank {
+  flex: none;
+  width: 18px;
+  text-align: right;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-stats-avatar {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sp-stats-avatar-square {
+  border-radius: 4px;
+}
+
+.sp-stats-row-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-stats-row-play {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+}
+
+.sp-stats-row-play > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-stats-row-play:hover {
+  color: var(--accent-bright, #2ce568);
+}
+
+.sp-stats-row-artist {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.sp-stats-delta {
+  flex: none;
+  min-width: 36px;
+  text-align: right;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Palette-derived rather than fixed green/red/yellow, which fought every
+   album tint that wasn't green. The ▲ / ▼ glyph already carries direction, so
+   colour only has to separate "moved" from "didn't" and highlight new entries. */
+.sp-stats-delta[data-dir='up'] { color: var(--accent-bright, #2ce568); }
+.sp-stats-delta[data-dir='down'] { color: rgba(255, 255, 255, 0.34); }
+.sp-stats-delta[data-dir='same'] { color: rgba(255, 255, 255, 0.18); }
+
+.sp-stats-delta[data-dir='new'] {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  color: var(--accent-bright, #2ce568);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+/* ── Clickable now-playing title / artists ──
+   Buttons, not links: there is no URL, the overlay drills in. Styled to keep
+   looking like the text they replaced until hovered, so the player bar
+   doesn't turn into a row of blue links. */
+.sp-player-link {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-player-link:hover:not(:disabled) {
+  color: var(--accent-bright, #2ce568);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sp-player-link:disabled {
+  cursor: default;
+}
+
+/* Round, because it's a person rather than a record sleeve. */
+.sp-artist-avatar {
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* ── SectionBoundary ──
+   The failed-pane panel. Sized to fill whatever slot the pane occupied so a
+   flex/grid parent doesn't collapse around it. */
+.section-boundary-failed {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  text-align: center;
+}
+
+.section-boundary-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.section-boundary-message {
+  max-width: 420px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.4);
+  word-break: break-word;
+}
+
+.section-boundary-retry {
+  margin-top: 2px;
+  padding: 6px 14px;
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  border: 1px solid var(--accent-border, rgba(29, 185, 84, 0.5));
+  border-radius: 999px;
+  color: var(--accent-bright, #2ce568);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.section-boundary-retry:hover {
+  background: var(--accent-bg, rgba(29, 185, 84, 0.18));
+}
+
+/* ── Stats: overview tiles ── */
+
+.sp-stats-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(96px, 1fr));
+  gap: 9px;
+  align-content: start;
+}
+
+/* An odd number of tiles leaves the last one stranded beside a gap. Widening
+   it to fill the row reads as deliberate instead of broken — and `odd` means
+   this only kicks in when there actually is an orphan, so it stays correct
+   when the genres tile is absent on a post-2026 client ID. */
+.sp-stats-tile:last-child:nth-child(odd) {
+  grid-column: span 2;
+}
+
+.sp-stats-tile {
+  min-width: 104px;
+  padding: 10px 13px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+}
+
+.sp-stats-tile[data-accent='true'] {
+  background: var(--accent-soft-bg, rgba(29, 185, 84, 0.15));
+  border-color: var(--accent-border, rgba(29, 185, 84, 0.5));
+}
+
+.sp-stats-tile-value {
+  font-size: 21px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.sp-stats-tile[data-accent='true'] .sp-stats-tile-value {
+  color: var(--accent-bright, #2ce568);
+}
+
+.sp-stats-tile-label {
+  margin-top: 3px;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* ── Stats: release-era histogram ── */
+
+.sp-stats-eras {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  /* Was 140px, which left five small bars floating in a void. */
+  height: 104px;
+}
+
+.sp-stats-era {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+}
+
+/* Bottom-aligned so bars grow up from a shared baseline, with the count
+   riding directly on top of its own bar. Pinning the count to the top of the
+   column instead left a short bar's number floating unattached. */
+.sp-stats-era-track {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.sp-stats-era-bar {
+  display: block;
+  width: 100%;
+  max-width: 72px;
+  border-radius: 5px 5px 2px 2px;
+  background: var(--accent, #1ED760);
+  transition: opacity 90ms ease;
+}
+
+.sp-stats-era:hover .sp-stats-era-bar {
+  opacity: 0.8;
+}
+
+.sp-stats-era-count {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.sp-stats-era-label {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.4);
+  white-space: nowrap;
+}
+
+/* ── Stats: artist concentration ── */
+
+.sp-stats-conc {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.sp-stats-conc-value {
+  flex: none;
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-bright, #2ce568);
+}
+
+.sp-stats-conc-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ── Stats: biggest movers ── */
+
+.sp-stats-movers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sp-stats-mover {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.sp-stats-mover-arrow {
+  font-size: 9px;
+}
+
+.sp-stats-mover[data-dir='up'] .sp-stats-mover-arrow {
+  color: var(--accent-bright, #2ce568);
+}
+.sp-stats-mover[data-dir='down'] .sp-stats-mover-arrow {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.sp-stats-mover-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.sp-stats-mover-by {
+  color: rgba(255, 255, 255, 0.38);
+  white-space: nowrap;
 }

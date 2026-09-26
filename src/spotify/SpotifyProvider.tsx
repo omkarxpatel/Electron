@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { useSpotify } from './useSpotify';
-import type { SpotifyState } from './useSpotify';
+import type { SpotifyState, TrackSource } from './useSpotify';
 import type { SearchResults, SearchType } from './api';
 import type {
   SpotifyPlaybackState,
@@ -57,9 +57,13 @@ export interface LibraryContextValue {
   resetClientId: () => void;
 
   // Library state.
+  /** Signed-in user's Spotify id — decides which playlists are editable. */
+  userId: string | null;
   playlists: SpotifyPlaylist[];
   playlistsLoading: boolean;
-  selectedPlaylist: SpotifyPlaylist | null;
+  /** What the main track list is showing: a playlist, Liked Songs, or
+   *  nothing yet. */
+  source: TrackSource | null;
   tracks: SpotifyTrack[];
   tracksLoading: boolean;
   tracksTotal: number;
@@ -68,6 +72,7 @@ export interface LibraryContextValue {
   // Library actions.
   loadPlaylists: () => Promise<void>;
   selectPlaylist: (playlist: SpotifyPlaylist) => Promise<void>;
+  selectLikedSongs: () => Promise<void>;
   loadMoreTracks: () => Promise<void>;
   playTrack: (
     track: SpotifyTrack,
@@ -75,6 +80,8 @@ export interface LibraryContextValue {
   ) => Promise<void> | void;
   /** Start an artist / album / playlist URI from the top. */
   playContext: (contextUri: string) => Promise<void> | void;
+  /** Play an explicit URI list — used by Liked Songs, which has no context. */
+  playTracks: (uris: string[]) => Promise<void> | void;
   /** First page of results across all four types. Rejects with AbortError
    *  when `signal` fires so the caller can ignore a superseded query. */
   searchAll: (query: string, signal?: AbortSignal) => Promise<SearchResults>;
@@ -84,6 +91,16 @@ export interface LibraryContextValue {
     type: SearchType,
     offset: number,
   ) => Promise<SearchResults>;
+  /** Both reject on failure so the caller can tell the user — see the
+   *  notice line in SpotifyTrackList. */
+  addTrackToPlaylist: (playlistId: string, track: SpotifyTrack) => Promise<void>;
+  /** Removes from whichever source is open — the playlist, or Liked Songs. */
+  removeTrackFromSource: (track: SpotifyTrack) => Promise<void>;
+  createPlaylist: (name: string) => Promise<void>;
+  renamePlaylist: (playlistId: string, name: string, description?: string) => Promise<void>;
+  /** Unfollow, which is how Spotify models deleting your own playlist. */
+  deletePlaylist: (playlist: SpotifyPlaylist) => Promise<void>;
+  moveTrackInPlaylist: (from: number, to: number) => Promise<void>;
 }
 
 const LibraryContext = createContext<LibraryContextValue | null>(null);
@@ -146,20 +163,29 @@ export function SpotifyProvider({ children }: ProviderProps) {
       connect: spotify.connect,
       signOut: spotify.signOut,
       resetClientId: spotify.resetClientId,
+      userId: spotify.userId,
       playlists: spotify.playlists,
       playlistsLoading: spotify.playlistsLoading,
-      selectedPlaylist: spotify.selectedPlaylist,
+      source: spotify.source,
       tracks: spotify.tracks,
       tracksLoading: spotify.tracksLoading,
       tracksTotal: spotify.tracksTotal,
       tracksNextOffset: spotify.tracksNextOffset,
       loadPlaylists: spotify.loadPlaylists,
       selectPlaylist: spotify.selectPlaylist,
+      selectLikedSongs: spotify.selectLikedSongs,
       loadMoreTracks: spotify.loadMoreTracks,
       playTrack: spotify.playTrack,
       playContext: spotify.playContext,
+      playTracks: spotify.playTracks,
       searchAll: spotify.searchAll,
       searchMore: spotify.searchMore,
+      addTrackToPlaylist: spotify.addTrackToPlaylist,
+      removeTrackFromSource: spotify.removeTrackFromSource,
+      createPlaylist: spotify.createPlaylist,
+      renamePlaylist: spotify.renamePlaylist,
+      deletePlaylist: spotify.deletePlaylist,
+      moveTrackInPlaylist: spotify.moveTrackInPlaylist,
     }),
     [
       spotify.clientId,
@@ -170,20 +196,29 @@ export function SpotifyProvider({ children }: ProviderProps) {
       spotify.connect,
       spotify.signOut,
       spotify.resetClientId,
+      spotify.userId,
       spotify.playlists,
       spotify.playlistsLoading,
-      spotify.selectedPlaylist,
+      spotify.source,
       spotify.tracks,
       spotify.tracksLoading,
       spotify.tracksTotal,
       spotify.tracksNextOffset,
       spotify.loadPlaylists,
       spotify.selectPlaylist,
+      spotify.selectLikedSongs,
       spotify.loadMoreTracks,
       spotify.playTrack,
       spotify.playContext,
+      spotify.playTracks,
       spotify.searchAll,
       spotify.searchMore,
+      spotify.addTrackToPlaylist,
+      spotify.removeTrackFromSource,
+      spotify.createPlaylist,
+      spotify.renamePlaylist,
+      spotify.deletePlaylist,
+      spotify.moveTrackInPlaylist,
     ],
   );
 

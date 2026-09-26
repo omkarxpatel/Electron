@@ -1,4 +1,5 @@
 import type { ResolvedSettings } from '../state/settings';
+import type { QualityKnobs } from '../state/quality';
 import type { Palette } from './palettes';
 
 export interface VisualizerProps {
@@ -14,4 +15,8 @@ export interface VisualizerProps {
   /** Synthesized palette from album-art extraction. When non-null, overrides
    *  `settings.palette` in the worker's draw loop. */
   paletteOverride?: Palette | null;
+  /** Quality-tier knobs. Omitted means full quality — that's the right default
+   *  while the device profile is still resolving, and when there's no bridge
+   *  at all. See src/state/quality.ts. */
+  quality?: QualityKnobs;
 }

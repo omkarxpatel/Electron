@@ -11,13 +11,31 @@ import {
   Tray,
 } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
 import http from 'node:http';
-import { execSync } from 'node:child_process';
+import { execFile, execSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 // `isPackagedBuild` rather than `app.isPackaged`: productName is "Electron",
 // so the shipped binary is basename "electron" and Electron computes
 // isPackaged as permanently false in every release. See updater.ts.
 import { isPackagedBuild, setupAutoUpdater, teardownAutoUpdater } from './updater';
+import {
+  declineTest,
+  recordCalibration,
+  resolveProfile,
+  setTier,
+  type Calibration,
+  type QualityTier,
+  type RendererInfo,
+} from './deviceProfile';
+import {
+  initNotch,
+  isNotchEnabled,
+  notchActivationPolicyChanged,
+  setNotchEnabled,
+  type NotchCommand,
+} from './notchWindow';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -160,21 +178,45 @@ let systemAudioMuted = false;
  * menu and its shortcuts; hiding it on the way out keeps the app invisible
  * while it sits in the menu bar.
  */
-async function showWindow(): Promise<void> {
-  if (process.platform === 'darwin' && app.dock) {
-    try {
-      await app.dock.show();
-    } catch {
-      // Non-fatal — the window still shows, we just keep the previous
-      // dock state.
-    }
+/**
+ * Dock icon visible iff the window is up AND the notch HUD is off.
+ *
+ * The HUD half is not a style choice. Since macOS 10.14 a window may only
+ * float over ANOTHER app's fullscreen Space if the process is an accessory
+ * (`kProcessTransformToUIElementApplication`), and `app.dock.hide()` is how
+ * you get there. Keeping the dock icon means the HUD stops at the edge of a
+ * fullscreen Space — it simply isn't drawn, with nothing logged.
+ *
+ * So enabling the HUD costs the dock icon and the Cmd+Tab entry; the tray is
+ * the way back to the window. Turning the HUD off restores both, which is why
+ * this is computed rather than set once at startup.
+ */
+function syncDockVisibility(): void {
+  if (process.platform !== 'darwin' || !app.dock) return;
+  const wantDock =
+    !isNotchEnabled() && !!win && !win.isDestroyed() && win.isVisible();
+  if (wantDock) {
+    void app.dock.show().catch(() => {
+      // Non-fatal — the window is up either way, we just keep the old state.
+    });
+  } else {
+    app.dock.hide();
   }
+  notchActivationPolicyChanged();
+}
+
+async function showWindow(): Promise<void> {
   if (!win || win.isDestroyed()) {
     createWindow();
     return;
   }
   if (win.isMinimized()) win.restore();
   if (!win.isVisible()) win.show();
+  syncDockVisibility();
+  // An accessory app has no dock icon to click and no Cmd+Tab entry, so
+  // nothing else will bring this forward — win.focus() alone leaves it
+  // behind whatever the user was in.
+  app.focus({ steal: true });
   win.focus();
 }
 
@@ -183,7 +225,61 @@ async function showWindow(): Promise<void> {
  *  which is the whole point of hiding rather than quitting. */
 function hideWindow(): void {
   if (win && !win.isDestroyed() && win.isVisible()) win.hide();
-  if (process.platform === 'darwin' && app.dock) app.dock.hide();
+  syncDockVisibility();
+}
+
+/* ─── Notch HUD ─── */
+
+/** Its own file rather than a key in perf-profile.json: that file is
+ *  invalidated whenever the draw path's cost characteristics change, and
+ *  losing the user's HUD preference to a visualizer optimisation would be a
+ *  baffling bug to track down. */
+function notchPrefPath(): string {
+  return path.join(app.getPath('userData'), 'notch.json');
+}
+
+function readNotchPref(): boolean {
+  try {
+    const raw = JSON.parse(fs.readFileSync(notchPrefPath(), 'utf8')) as { enabled?: unknown };
+    return raw.enabled !== false;
+  } catch {
+    // No file yet, or unreadable. On by default — it is the feature.
+    return true;
+  }
+}
+
+function writeNotchPref(enabled: boolean): void {
+  try {
+    fs.writeFileSync(notchPrefPath(), JSON.stringify({ enabled }), 'utf8');
+  } catch (err) {
+    // A HUD that forgets its setting is worth less than a crashed app.
+    console.error('[main] could not persist notch preference', err);
+  }
+}
+
+function toggleNotch(enabled: boolean): void {
+  setNotchEnabled(enabled);
+  writeNotchPref(enabled);
+  syncDockVisibility();
+  refreshTray();
+  // Settings has the same switch. Without this the two disagree the moment
+  // either one is used — the same trap `app-event:login-item` already covers.
+  win?.webContents.send('app-event:notch-enabled', enabled);
+}
+
+/**
+ * Notch panel → main renderer. Same reasoning as `sendTransport`: the panel
+ * has no Spotify session, the renderer does.
+ */
+function sendNotchCommand(cmd: NotchCommand): void {
+  // Handled here, not in the renderer: showing the window is main's job and
+  // the renderer has no way to raise itself.
+  if (cmd.kind === 'activate') {
+    void showWindow();
+    return;
+  }
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('notch:command', cmd);
 }
 
 /* ─── Tray ─── */
@@ -253,6 +349,12 @@ function buildTrayMenu(): Electron.Menu {
       type: 'checkbox',
       checked: isLaunchAtLoginEnabled(),
       click: (item) => setLaunchAtLogin(item.checked),
+    },
+    {
+      label: 'Notch HUD',
+      type: 'checkbox',
+      checked: isNotchEnabled(),
+      click: (item) => toggleNotch(item.checked),
     },
     { type: 'separator' },
     {
@@ -514,6 +616,41 @@ ipcMain.on('app:version', (event) => {
   event.returnValue = app.getVersion();
 });
 
+const execFileAsync = promisify(execFile);
+
+/** `open` should return almost immediately; this only guards a wedged call. */
+const SPOTIFY_LAUNCH_TIMEOUT_MS = 10000;
+
+/**
+ * Start the Spotify desktop client without ever showing it.
+ *
+ * This app is a control surface: every transport call commands some other
+ * Spotify Connect device, so with Spotify not running there is nothing to
+ * command and the user has to go open it by hand — the exact trip the app
+ * exists to avoid.
+ *
+ * `-g` keeps focus on our window and `-j` starts Spotify hidden, so it comes
+ * up as a background process that never takes over the screen. Neither flag
+ * needs Accessibility permission. Hiding an *already visible* Spotify would
+ * need System Events and a TCC prompt, which is why this covers the launch
+ * case only.
+ */
+ipcMain.handle('spotify-app:launch-hidden', async (): Promise<{ ok: boolean; reason?: string }> => {
+  if (process.platform !== 'darwin') return { ok: false, reason: 'unsupported' };
+  try {
+    await execFileAsync('open', ['-gj', '-a', 'Spotify'], {
+      timeout: SPOTIFY_LAUNCH_TIMEOUT_MS,
+    });
+    return { ok: true };
+  } catch (err) {
+    // `open` exits non-zero when there's no such app. Separating that from a
+    // generic failure lets the renderer say "Spotify isn't installed" rather
+    // than something the user can't act on.
+    const notInstalled = /Unable to find application/i.test(String(err));
+    return { ok: false, reason: notInstalled ? 'not-installed' : 'failed' };
+  }
+});
+
 ipcMain.handle('shell:open-external', async (_event, url: string) => {
   if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {
     throw new Error(`Refusing to open disallowed URL`);
@@ -584,6 +721,13 @@ ipcMain.on('tray:now-playing', (_event, payload: unknown) => {
   refreshTray();
 });
 
+ipcMain.handle('notch:get-enabled', () => isNotchEnabled());
+
+ipcMain.handle('notch:set-enabled', (_event, enabled: unknown) => {
+  toggleNotch(enabled === true);
+  return isNotchEnabled();
+});
+
 ipcMain.handle('login-item:get', () => isLaunchAtLoginEnabled());
 
 ipcMain.handle('login-item:set', (_event, enabled: unknown) => {
@@ -596,6 +740,23 @@ ipcMain.handle('login-item:set', (_event, enabled: unknown) => {
 ipcMain.handle('window:hide', () => {
   hideWindow();
 });
+
+// ── Device performance profile ─────────────────────────────────────────────
+// Driven from the renderer rather than gathered at startup, deliberately:
+// app.getGPUFeatureStatus() reports software rasterisation for everything
+// until a window has finished loading, so resolving this at `whenReady()`
+// would pin every user to the lowest tier. The renderer invoking us is proof
+// that a window is up. See electron/deviceProfile.ts.
+ipcMain.handle('device-profile:resolve', (_event, info: RendererInfo) => resolveProfile(info));
+
+ipcMain.handle('device-profile:set-tier', (_event, tier: QualityTier) => setTier(tier));
+
+ipcMain.handle('device-profile:decline-test', (_event, token: string) => declineTest(token));
+
+ipcMain.handle(
+  'device-profile:record-calibration',
+  (_event, tier: QualityTier, calibration: Calibration) => recordCalibration(tier, calibration),
+);
 
 /**
  * Native About panel content. Triggered by the app-menu "About …" item.
@@ -773,6 +934,11 @@ app.whenReady().then(async () => {
   registerDisplayMediaHandler();
   createTray();
   createWindow(startHidden);
+  // After createWindow: the panel replays its last state on load, and the
+  // only thing that can produce that state is the renderer we just created.
+  initNotch(sendNotchCommand);
+  setNotchEnabled(readNotchPref());
+  syncDockVisibility();
   setupAutoUpdater();
 
   // Clicking the dock icon (or Cmd+Tabbing back) on macOS. If we still have
