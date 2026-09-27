@@ -15,6 +15,7 @@ import type { AiEffectTargets } from './audio/useAiEnhancer';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
 import { useAudioSource } from './audio/useAudioSource';
+import { useSinkVolumePin } from './audio/useSinkVolumePin';
 import { useAutoSelectDevices } from './audio/useAutoSelectDevices';
 import { useVisibility } from './hooks/useVisibility';
 import { PerfOverlay, useRenderCount } from './perf';
@@ -107,6 +108,14 @@ function AppContent() {
     eq.state.aiEnhance,
     0.08,
     aiEffectsRef,
+  );
+  // Hold the output device at unity while we're actually playing through it.
+  // The macOS slider only reaches the DEFAULT output device, so once system
+  // output is BlackHole nothing can reach our sink and it stays frozen at
+  // whatever level it held — a hard ceiling on how loud the app can get.
+  const sinkVolume = useSinkVolumePin(
+    audioOutput.outputDeviceId,
+    playthrough && !!audioSource.stream,
   );
   const library = useLibrary();
   // Subscribing to playback re-renders AppContent on each 1.5s poll, but
@@ -244,6 +253,7 @@ function AppContent() {
         onDisconnect={audioSource.disconnect}
         outputDeviceId={audioOutput.outputDeviceId}
         onSelectOutput={audioOutput.setOutputDevice}
+        sinkVolume={sinkVolume}
         panelOpen={panelOpen}
         onTogglePanel={handleTogglePanel}
         onEnterImmersive={handleEnterImmersive}

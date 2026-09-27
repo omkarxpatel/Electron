@@ -21,6 +21,15 @@ import { fileURLToPath } from 'node:url';
 // isPackaged as permanently false in every release. See updater.ts.
 import { isPackagedBuild, setupAutoUpdater, teardownAutoUpdater } from './updater';
 import {
+  getSinkVolumeState,
+  onSinkVolumeChange,
+  pinSinkToUnity,
+  restoreSink,
+  restoreSinkOnQuit,
+  restoreStalePin,
+  type SinkVolumeState,
+} from './deviceVolume';
+import {
   declineTest,
   recordCalibration,
   resolveProfile,
@@ -703,6 +712,22 @@ ipcMain.handle('system-audio:set-mute', (_event, mute: boolean) => {
 });
 
 /**
+ * Output-sink volume pinning. See electron/deviceVolume.ts — in short, the
+ * macOS slider can only reach the DEFAULT output device, so once system audio
+ * is routed through BlackHole the device we actually play out of is stuck at
+ * whatever level it happened to hold, capping how loud the app can get.
+ */
+ipcMain.handle('sink-volume:pin', (_event, deviceLabel: unknown) =>
+  pinSinkToUnity(typeof deviceLabel === 'string' ? deviceLabel : ''),
+);
+
+ipcMain.handle('sink-volume:restore', () => restoreSink());
+
+ipcMain.on('sink-volume:get-state', (event) => {
+  event.returnValue = getSinkVolumeState();
+});
+
+/**
  * Renderer → main now-playing mirror. The renderer is the only thing holding
  * a Spotify session, so the tray can't read playback itself; it gets told.
  * Coerced and length-capped here because this crosses the IPC boundary and
@@ -941,6 +966,15 @@ app.whenReady().then(async () => {
   syncDockVisibility();
   setupAutoUpdater();
 
+  // A pin file surviving from a previous run means we died holding someone's
+  // output device at 100%. Undo it before anything else can play through it.
+  void restoreStalePin();
+  onSinkVolumeChange((next: SinkVolumeState) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('sink-volume:state', next);
+    }
+  });
+
   // Clicking the dock icon (or Cmd+Tabbing back) on macOS. If we still have
   // a window object, just show it (preserves all state). If somehow the
   // window was destroyed, recreate.
@@ -959,6 +993,9 @@ app.on('before-quit', () => {
     authServer = null;
   }
   teardownAutoUpdater();
+  // Synchronous-ish: before-quit gives us no chance to await, so this spawns
+  // the helper detached rather than leaving the device pinned at 100%.
+  restoreSinkOnQuit();
 });
 
 app.on('window-all-closed', () => {

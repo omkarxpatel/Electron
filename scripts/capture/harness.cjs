@@ -38,6 +38,12 @@ ipcMain.on('app:version', (e) => {
 ipcMain.on('update:get-state', (e) => {
   e.returnValue = { kind: 'idle' };
 });
+// Sink-volume pinning reads its state synchronously at startup too. A
+// capture must never touch the real machine's audio devices, so this reports
+// 'idle' and the pin notice stays out of every screenshot.
+ipcMain.on('sink-volume:get-state', (e) => {
+  e.returnValue = { kind: 'idle' };
+});
 // Everything else: accept and return nothing. The renderer treats a rejected
 // or empty bridge call as "feature unavailable" and renders its default,
 // which for the quality tier is full quality — exactly what we want in a
@@ -49,6 +55,7 @@ const INVOKE = [
   'spotify-auth:listen', 'spotify-auth:cancel', 'system-audio:set-mute',
   'spotify-app:launch-hidden', 'update:check', 'update:state', 'update:install',
   'update:open-fallback', 'update:dismiss-version',
+  'sink-volume:pin', 'sink-volume:restore',
 ];
 for (const ch of INVOKE) ipcMain.handle(ch, () => null);
 for (const ch of ['tray:now-playing', 'notch:state', 'notch:command']) ipcMain.on(ch, () => {});

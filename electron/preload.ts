@@ -27,6 +27,34 @@ const api = {
       ipcRenderer.invoke('system-audio:set-mute', mute),
   },
 
+  /**
+   * Output-sink volume. The macOS slider only reaches the DEFAULT output
+   * device, so once system audio runs through BlackHole the sink we play out
+   * of is frozen at whatever level it held — a hard ceiling on our loudness.
+   * Main pins it to unity while Live is on and puts it back afterwards.
+   *
+   * `pin` takes the enumerateDevices() LABEL, not a deviceId: Chromium ids are
+   * per-origin salted hashes with no route back to a CoreAudio device.
+   *
+   * Returns `unknown`; the shape is declared once in src/types/api.d.ts.
+   */
+  sinkVolume: {
+    pin(deviceLabel: string): Promise<unknown> {
+      return ipcRenderer.invoke('sink-volume:pin', deviceLabel);
+    },
+    restore(): Promise<void> {
+      return ipcRenderer.invoke('sink-volume:restore');
+    },
+    getInitialState(): unknown {
+      return ipcRenderer.sendSync('sink-volume:get-state');
+    },
+    onState(handler: (state: unknown) => void): () => void {
+      const wrapped = (_e: unknown, state: unknown): void => handler(state);
+      ipcRenderer.on('sink-volume:state', wrapped);
+      return () => ipcRenderer.off('sink-volume:state', wrapped);
+    },
+  },
+
   shell: {
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
   },

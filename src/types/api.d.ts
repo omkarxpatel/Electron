@@ -22,6 +22,17 @@ export interface ElectronApi {
      */
     setMute(mute: boolean): Promise<void>;
   };
+  /**
+   * Output-sink volume pinning. Mirrors SinkVolumeState in
+   * electron/deviceVolume.ts — if you change that union, change this too.
+   */
+  sinkVolume: {
+    /** Takes the enumerateDevices() label, not a deviceId. */
+    pin(deviceLabel: string): Promise<SinkVolumeState>;
+    restore(): Promise<void>;
+    getInitialState(): SinkVolumeState;
+    onState(handler: (state: SinkVolumeState) => void): () => void;
+  };
   shell: {
     openExternal(url: string): Promise<void>;
   };
@@ -252,6 +263,22 @@ export type UpdateState =
       version?: string;
       releasePageUrl: string;
     };
+
+/**
+ * Mirror of SinkVolumeState in electron/deviceVolume.ts. Both this and the
+ * preload bridge have to move together with that union.
+ *
+ * `already-unity` and `unsupported` are separate from `pinned` on purpose: the
+ * UI should only claim it changed something when it actually did, and a device
+ * with no volume control at all is a state the user needs to see rather than a
+ * silent no-op.
+ */
+export type SinkVolumeState =
+  | { kind: 'idle' }
+  | { kind: 'pinned'; deviceName: string; originalVolume: number }
+  | { kind: 'already-unity'; deviceName: string }
+  | { kind: 'unsupported'; deviceName: string; reason: string }
+  | { kind: 'error'; deviceName: string; message: string };
 
 declare global {
   interface Window {

@@ -42,7 +42,13 @@ Verification here means:
    node) for capability detection and every profile-invalidation path. The
    failures it guards are silent by construction: nothing errors, the app just
    runs at the wrong quality tier, or half the frame rate, forever.
-4. Run the app and look at it. See below, because launching it has traps.
+4. `npm run check:sink-volume` — if you touched `electron/deviceVolume.ts` or
+   `build/helpers/avvolume.swift`. This is the only code in the app that can
+   leave the *machine* worse than it found it: pinning means we raised
+   someone's output device to 100%, and a broken restore strands it there.
+   The check drives the real helper against a real device and asserts every
+   crash-recovery path, then hands the device back.
+5. Run the app and look at it. See below, because launching it has traps.
 
 `npm run capture` renders the app into an offscreen window and photographs it
 with `webContents.capturePage()`, which reads that window's own buffer — no
@@ -127,6 +133,55 @@ A real fix for all of it is `build.mac.executableName`, which renames the binary
 without a migration or every user loses their settings and Spotify sign-in.
 
 ---
+
+## Landmine: the macOS volume slider can't reach our output device
+
+The slider only ever addresses the **default output device**. Point system
+output at BlackHole so we can tap it, and the device we play out of via
+`setSinkId` is no longer the default — so nothing in the UI can reach its
+volume. It stays frozen at whatever it held when the user switched away.
+
+Total output is `BlackHole_dB + sink_dB` and the slider only moves the first
+term, so the frozen value is a hard **ceiling** on how loud the app can ever
+get. This reads to a user as "it never gets loud enough, and wherever I was
+when I switched became the limit".
+
+It is much worse than it sounds, because the slider is not linear in dB.
+Measured on this machine:
+
+| Slider | MacBook Pro Speakers | AirPods |
+|---|---|---|
+| 100% | 0 dB | 0 dB |
+| 50% | −31.8 dB | −50 dB |
+| 20% | −50.8 dB | −80 dB |
+
+So a sink left at 20% is 50–80 dB down, not "a bit quiet".
+
+Two things that are easy to get wrong:
+
+- **BlackHole's volume is a real attenuator, not a nominal control.** A tone
+  played in at a setting reporting −12.0 dB came back at −11.97 dB. Lowering
+  the slider destroys signal before we ever capture it.
+- **Do not compensate for that in the audio graph.** Cancelling BlackHole's
+  attenuation digitally would leave the slider connected to nothing. Its
+  attenuation *is* the user's volume control, and should stay that way.
+
+`electron/deviceVolume.ts` fixes the other half: it holds the *sink* at unity
+while Live is on, so the slider's full range is usable again. `osascript -e
+"set volume output volume N"` cannot do this — it also only addresses the
+default device — which is why `build/helpers/avvolume.swift` exists. CoreAudio
+can set any device directly, with no need to switch the default device, mute,
+or restore, and no audio glitch.
+
+The original volume is written to disk **before** the device is touched, and
+recovered by `restoreStalePin()` on next launch. Keep that order. A stale pin
+is only honoured if the device is still sitting at the value we set; if the
+user has moved it since, their choice is newer and we drop the record.
+
+The helper matches devices by **name**, not id: Chromium's `enumerateDevices()`
+deviceIds are per-origin salted hashes with no route back to a CoreAudio
+device. It must also stay a **universal** binary — `build.mac.target` ships
+x64 too, and extraResources are copied verbatim per arch.
 
 ## Auto-update: how it works
 

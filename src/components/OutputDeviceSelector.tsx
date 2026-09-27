@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from 'react';
+import type { SinkVolumeState } from '../types/api';
 
 /**
  * Picks where the processed audio is sent (AudioContext.setSinkId).
@@ -12,11 +13,45 @@ import { memo, useEffect, useState } from 'react';
 interface Props {
   outputDeviceId: string | null;
   onSelect: (id: string | null) => void;
+  /** Whether this device's hardware volume is currently being held at unity.
+   *  Surfaced rather than done silently — we are changing a system setting
+   *  the user did not ask us to touch, so they get to see it. */
+  sinkVolume: SinkVolumeState;
+}
+
+/** One line of plain language about what we did (or couldn't do) to the
+ *  device's volume. `null` when there is nothing worth saying. */
+function pinNote(state: SinkVolumeState): { tone: string; text: string; detail: string } | null {
+  switch (state.kind) {
+    case 'pinned':
+      return {
+        tone: 'ok',
+        text: `Output held at 100% (was ${Math.round(state.originalVolume * 100)}%)`,
+        detail:
+          `macOS's volume slider only controls the default output device, which is ` +
+          `your capture device — so it can't reach ${state.deviceName}, and whatever ` +
+          `level that device was left at becomes a ceiling on how loud this app can ` +
+          `get. It's held at 100% while Live is on and restored when Live stops. ` +
+          `Use the menu bar slider to set volume as normal.`,
+      };
+    case 'unsupported':
+      return {
+        tone: 'warn',
+        text: 'Output level may be capped',
+        detail:
+          `${state.deviceName} ${state.reason}, so its level can't be lifted. If this ` +
+          `device sounds quiet, set its volume before selecting it as the system output.`,
+      };
+    case 'error':
+      return { tone: 'warn', text: "Couldn't set output level", detail: state.message };
+    default:
+      return null;
+  }
 }
 
 export const OutputDeviceSelector = memo(OutputDeviceSelectorImpl);
 
-function OutputDeviceSelectorImpl({ outputDeviceId, onSelect }: Props) {
+function OutputDeviceSelectorImpl({ outputDeviceId, onSelect, sinkVolume }: Props) {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [open, setOpen] = useState(false);
   const [permissionNeeded, setPermissionNeeded] = useState(false);
@@ -51,6 +86,7 @@ function OutputDeviceSelectorImpl({ outputDeviceId, onSelect }: Props) {
     }
   }
 
+  const note = pinNote(sinkVolume);
   const selected = devices.find((d) => d.deviceId === outputDeviceId);
   const buttonLabel = selected
     ? selected.label || `Output (${selected.deviceId.slice(0, 8)})`
@@ -68,6 +104,12 @@ function OutputDeviceSelectorImpl({ outputDeviceId, onSelect }: Props) {
         <span>{buttonLabel}</span>
         <span className="caret" aria-hidden>▾</span>
       </button>
+
+      {note && (
+        <div className={`sink-pin-note is-${note.tone}`} title={note.detail}>
+          {note.text}
+        </div>
+      )}
 
       {open && (
         <div className="source-dropdown" role="listbox">

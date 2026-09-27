@@ -2,7 +2,7 @@
   "name": "audio-visualizer",
   "productName": "Electron",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
   "homepage": "https://github.com/omkarxpatel/Electron",
   "repository": {
@@ -14,15 +14,18 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && electron-builder",
-    "build:unpack": "tsc --noEmit && vite build && electron-builder --dir",
-    "build:publish": "tsc --noEmit && vite build && electron-builder --publish=always",
-    "build:release": "tsc --noEmit && vite build && electron-builder --publish=never",
+    "build": "bash scripts/build-helper.sh && tsc --noEmit && vite build && electron-builder",
+    "build:unpack": "bash scripts/build-helper.sh && tsc --noEmit && vite build && electron-builder --dir",
+    "build:publish": "bash scripts/build-helper.sh && tsc --noEmit && vite build && electron-builder --publish=always",
+    "build:release": "bash scripts/build-helper.sh && tsc --noEmit && vite build && electron-builder --publish=never",
     "typecheck": "tsc --noEmit",
     "check:enhancer": "node scripts/check-enhancer.mjs",
     "check:quality": "node scripts/check-quality.mjs",
     "icon:gen": "bash scripts/build-icon.sh",
-    "capture": "node scripts/capture.mjs"
+    "capture": "node scripts/capture.mjs",
+    "helper": "bash scripts/build-helper.sh",
+    "predev": "bash scripts/build-helper.sh",
+    "check:sink-volume": "node scripts/check-sink-volume.mjs"
   },
   "dependencies": {
     "js-yaml": "^4.3.2",
@@ -133,6 +136,13 @@
         "to": "tray",
         "filter": [
           "*.png"
+        ]
+      },
+      {
+        "from": "build/helpers",
+        "to": "helpers",
+        "filter": [
+          "avvolume"
         ]
       }
     ]

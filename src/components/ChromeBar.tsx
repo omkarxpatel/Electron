@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { AudioSourceSelector } from './AudioSourceSelector';
 import { OutputDeviceSelector } from './OutputDeviceSelector';
 import type { SourceMode } from '../audio/useAudioSource';
+import type { SinkVolumeState } from '../types/api';
 
 /**
  * Top app bar: brand + audio source + audio output + settings gear.
@@ -23,6 +24,7 @@ interface Props {
   // Audio output
   outputDeviceId: string | null;
   onSelectOutput: (id: string | null) => void;
+  sinkVolume: SinkVolumeState;
   // Settings drawer
   panelOpen: boolean;
   onTogglePanel: () => void;
@@ -42,6 +44,7 @@ function ChromeBarImpl({
   onDisconnect,
   outputDeviceId,
   onSelectOutput,
+  sinkVolume,
   panelOpen,
   onTogglePanel,
   onEnterImmersive,
@@ -65,6 +68,7 @@ function ChromeBarImpl({
         <OutputDeviceSelector
           outputDeviceId={outputDeviceId}
           onSelect={onSelectOutput}
+          sinkVolume={sinkVolume}
         />
         <button
           className="icon-button"

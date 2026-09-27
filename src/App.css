@@ -4430,6 +4430,36 @@
   margin-left: 2px;
 }
 
+/* Pin notice under the output picker. We raise the chosen device's hardware
+   volume to unity while Live is on — a system-level change the user didn't ask
+   for — so it is stated rather than done quietly. Absolutely positioned so
+   appearing and disappearing never reflows the top bar. */
+.sink-pin-note {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 5px;
+  pointer-events: auto;
+  cursor: help;
+  border: 1px solid transparent;
+}
+
+.sink-pin-note.is-ok {
+  color: var(--accent);
+  background: var(--accent-soft-bg);
+  border-color: var(--accent-border);
+}
+
+.sink-pin-note.is-warn {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.25);
+}
+
 .source-dropdown {
   position: absolute;
   top: calc(100% + 4px);
