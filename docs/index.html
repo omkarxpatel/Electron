@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Electron — audio visualizer, system-wide EQ & Spotify control for macOS</title>
+<meta name="description" content="A free macOS app combining a 31-band system-wide EQ, a real-time audio visualizer, a Spotify control surface and a notch HUD. Runs entirely on your Mac — no servers, no telemetry.">
+<link rel="stylesheet" href="site.css">
+<meta property="og:title" content="Electron — audio visualizer, system-wide EQ & Spotify control for macOS">
+<meta property="og:description" content="31-band system-wide EQ, 13 real-time visualizers, Spotify control surface and a notch HUD. Free, local, no telemetry.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="screenshot.jpg">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="#top">Electron</a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#setup">Setup</a>
+      <a href="#notch">Notch HUD</a>
+      <a href="#updates">Updates</a>
+      <a href="#help">Help</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap" id="top">
+
+  <header class="hero">
+    <h1>Your Mac's audio,<br>rebuilt.</h1>
+    <p class="tag">A system-wide 31-band EQ, a real-time visualizer, a Spotify control surface and a notch HUD — in one window that runs entirely on your machine.</p>
+    <div class="pills">
+      <span class="pill">macOS 11+</span>
+      <span class="pill">Apple Silicon &amp; Intel</span>
+      <span class="pill">Free &amp; MIT licensed</span>
+      <span class="pill">No servers, no telemetry</span>
+    </div>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/omkarxpatel/Electron/releases/latest">Download for macOS</a>
+      <a class="btn btn-ghost" href="https://github.com/omkarxpatel/Electron">View on GitHub</a>
+    </div>
+    <p class="hero-note">Grab the <code>arm64</code> build for Apple Silicon, <code>x64</code> for Intel. Read <a href="#install">the install steps</a> first — the app is unsigned, and macOS needs one extra command.</p>
+    <img class="shot" src="screenshot.jpg" alt="Electron running: a 31-band EQ with a live response curve, the enhancer meter bridge, a Spotify playlist with synced lyrics, over the particle visualizer.">
+  </header>
+
+  <!-- ── Features ──────────────────────────────────────────────────── -->
+  <section id="features">
+    <h2>What it does</h2>
+    <p class="lede">Four tools that happen to share a window, because they all want the same audio stream.</p>
+
+    <div class="grid">
+
+      <div class="card">
+        <h3>Audio engine</h3>
+        <ul>
+          <li><strong>10 / 15 / 31-band EQ</strong> at ±12&nbsp;dB per band, with Flat, Bass, Vocal, Loudness and Rock presets.</li>
+          <li><strong>AI Enhance</strong> adapts the curve in real time to whatever is playing. Lock any band to keep your own value.</li>
+          <li>Bass / Mid / Treble shelves, ±12&nbsp;dB preamp, volume and L/R balance.</li>
+          <li><strong>Output meters</strong> in dBFS with peak hold — the top segments turn white past 0&nbsp;dBFS, where macOS starts clipping.</li>
+          <li>Route processed audio to any output, independent of the macOS default.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Visualizer</h3>
+        <ul>
+          <li><strong>13 styles</strong> — Spectrum, Ribbon, Radial, Dots, Mirror, Bars, Line, Filled, Particles, Silk, Scope, Bloom, Ripples.</li>
+          <li><strong>16 palettes</strong> plus a custom picker, each re-theming the whole interface.</li>
+          <li><strong>Auto-tint from album art</strong> — colours are sampled from the current cover and crossfade between tracks.</li>
+          <li>Glow, motion trail, sensitivity and smoothing controls.</li>
+          <li>Live FFT energy behind every EQ slider: current signal against unmodified.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Notch HUD <span class="new">New</span></h3>
+        <ul>
+          <li>A music panel that <strong>hangs from your MacBook's notch</strong> and stays on screen while you work in another app.</li>
+          <li>Hover to reveal artwork, title, the current lyric line, a scrubber and full transport.</li>
+          <li>Idle, it shows just the album thumbnail and level bars, tucked either side of the camera.</li>
+          <li>Colours follow the album art when auto-tint is on.</li>
+          <li><a href="#notch">One trade-off to know about →</a></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Spotify</h3>
+        <ul>
+          <li>Playlists, saved albums, search and a paginated track list.</li>
+          <li><strong>Synced lyrics</strong> where available, plain text otherwise.</li>
+          <li>Right-click any track to add it to a playlist, queue it, or copy its link.</li>
+          <li>Persistent player bar — transport, scrubber, volume. <code>Space</code> plays and pauses, <code>←</code>&nbsp;/&nbsp;<code>→</code> change track.</li>
+          <li><strong>Listening stats</strong> — top artists and tracks, genres, release eras, and how mainstream your taste runs.</li>
+          <li>Reopens the last playlist you had open.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Performance</h3>
+        <ul>
+          <li>The visualizer runs <strong>off the main thread</strong> on its own canvas, so the interface stays responsive.</li>
+          <li>The app <strong>measures your Mac on first run</strong> and picks a quality tier to match it.</li>
+          <li>Weaker machines get a lower render scale and a frame cap rather than a slideshow; nothing about the look changes.</li>
+          <li>Rendering pauses entirely while the window is hidden.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Privacy &amp; updates</h3>
+        <ul>
+          <li><strong>Nothing leaves your Mac</strong> except Spotify API calls and lyric lookups.</li>
+          <li>No accounts, no analytics, no crash reporting.</li>
+          <li>You supply your own Spotify Client ID; tokens stay local.</li>
+          <li>Updates <strong>ask before doing anything</strong> — install now, install on quit, or skip the version for good.</li>
+        </ul>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── Install ───────────────────────────────────────────────────── -->
+  <section id="install">
+    <h2>Install</h2>
+    <p class="lede">No Homebrew, no Node, no build step. One download and one Terminal command.</p>
+
+    <ol class="steps">
+      <li>
+        <strong>Download the DMG</strong>
+        Grab it from the <a href="https://github.com/omkarxpatel/Electron/releases/latest">latest release</a> and pick the file matching your Mac:
+        <ul>
+          <li><code>Electron-x.y.z-arm64.dmg</code> — Apple Silicon (M1, M2, M3, M4, M5…)</li>
+          <li><code>Electron-x.y.z-x64.dmg</code> — Intel Macs</li>
+        </ul>
+        <p style="margin:10px 0 0">Not sure which you have? Open the Apple menu → <strong>About&nbsp;This&nbsp;Mac</strong>. Anything listing an "Apple M" chip is arm64.</p>
+      </li>
+
+      <li>
+        <strong>Open the DMG and drag the app out</strong>
+        Drag <code>Electron</code> to your <strong>Downloads</strong> folder for now — <em>not</em> Applications yet. The next step is much easier from Downloads.
+      </li>
+
+      <li>
+        <strong>Clear the quarantine flag, then move it</strong>
+        <p>macOS will otherwise say <em>"Electron is damaged and can't be opened."</em> It isn't damaged — see below. Run these three lines in Terminal:</p>
+        <div class="code">
+          <button class="copy" type="button">Copy</button>
+<pre><code>xattr -cr ~/Downloads/Electron.app
+mv ~/Downloads/Electron.app /Applications/
+open /Applications/Electron.app</code></pre>
+        </div>
+        <p>That's the whole install.</p>
+      </li>
+    </ol>
+
+    <div class="note warn">
+      <span class="lbl">Why does it say "damaged"?</span>
+      <p>The app is <strong>unsigned</strong>. Signing requires the Apple Developer Program at $99/year, which is hard to justify for a free tool. macOS attaches a quarantine flag to anything a browser downloads, and for unsigned apps it reports that as "damaged" rather than anything more useful.</p>
+      <p style="margin-bottom:0"><code>xattr -cr</code> removes the flag. Nothing else about the app changes, and you only do it once per install. If you'd rather not run the command, you can build from source instead — <a href="#source">see below</a>.</p>
+    </div>
+
+    <div class="note">
+      <span class="lbl">Already dragged it to Applications?</span>
+      <p>Then <code>xattr</code> will fail with <code>Operation not permitted</code> — recent macOS blocks Terminal from touching apps in <code>/Applications</code>. Move it out, fix it, move it back:</p>
+      <div class="code">
+        <button class="copy" type="button">Copy</button>
+<pre><code>mv /Applications/Electron.app ~/Desktop/
+xattr -cr ~/Desktop/Electron.app
+mv ~/Desktop/Electron.app /Applications/</code></pre>
+      </div>
+      <p style="margin-bottom:0">Alternatively, grant Terminal permanent access under <strong>System Settings → Privacy &amp; Security → App Management</strong>, restart Terminal, and run <code>xattr -cr</code> in place.</p>
+    </div>
+  </section>
+
+  <!-- ── Setup ─────────────────────────────────────────────────────── -->
+  <section id="setup">
+    <h2>First-run setup</h2>
+    <p class="lede">Three things to wire up. The visualizer works immediately; the EQ and Spotify need a moment.</p>
+
+    <h3>1. macOS permissions</h3>
+    <p>macOS asks as you reach each feature — one click each. You can also grant them later under <strong>System Settings → Privacy &amp; Security</strong>.</p>
+    <ul>
+      <li><strong>Microphone</strong> — required to <em>list</em> your audio devices at all. macOS hides device names from apps without it, even if you never use a microphone.</li>
+      <li><strong>Screen Recording</strong> — only if you use the <strong>System Audio</strong> button to capture without a virtual driver. The video is discarded immediately; only the audio is used.</li>
+    </ul>
+
+    <h3>2. BlackHole 2ch — strongly recommended</h3>
+    <div class="note warn">
+      <span class="lbl">Install this one.</span>
+      <p style="margin-bottom:0">It's technically optional, but it's the only routing that makes Live mode work properly. Without it the processed audio gets re-captured by the OS and can feed back on itself.</p>
+    </div>
+    <p>BlackHole is a free virtual audio device. It lets the app capture system audio cleanly and send the processed signal back out to your speakers.</p>
+    <div class="code">
+      <button class="copy" type="button">Copy</button>
+<pre><code>brew install blackhole-2ch</code></pre>
+    </div>
+    <p>No Homebrew? Download the installer from <a href="https://existential.audio/blackhole/">existential.audio/blackhole</a>. <strong>Reboot once</strong> afterwards so macOS registers the driver.</p>
+    <p>Then set <strong>System Settings → Sound → Output</strong> to <strong>BlackHole 2ch</strong>. Your Mac goes silent — that's expected and correct. In the app's top bar:</p>
+    <ul>
+      <li><strong>Audio source</strong> → BlackHole 2ch <span style="color:var(--dim)">(auto-selected if installed)</span></li>
+      <li><strong>Output device</strong> → your real speakers or headphones</li>
+    </ul>
+    <p>Sound now flows through the app and the EQ'd result reaches your ears.</p>
+
+    <div class="note warn">
+      <span class="lbl">Never set both to BlackHole</span>
+      <p style="margin-bottom:0">If the output device is also BlackHole, the signal loops back into itself. You'll get silence or a loud whine. The output must be a <em>real</em> device.</p>
+    </div>
+
+    <h3>3. Spotify Client ID</h3>
+    <p>Free, about two minutes, and it never expires. You do this once per Mac.</p>
+    <ol>
+      <li>Open <a href="https://developer.spotify.com/dashboard">developer.spotify.com/dashboard</a> and sign in with your normal Spotify account.</li>
+      <li>Click <strong>Create app</strong>. Any name and description will do — they're private to you.</li>
+      <li>Under <strong>Settings → Edit</strong>, add this Redirect URI <em>exactly</em>:
+        <div class="code" style="margin-top:10px">
+          <button class="copy" type="button">Copy</button>
+<pre><code>http://127.0.0.1:8888/callback</code></pre>
+        </div>
+        It must be <code>127.0.0.1</code>, not <code>localhost</code> — Spotify dropped localhost in 2024.
+      </li>
+      <li>Tick the <strong>Web API</strong> box and save.</li>
+      <li>Copy the <strong>Client ID</strong> and paste it into the app's onboarding screen.</li>
+      <li>Click <strong>Connect to Spotify</strong>, authorise in your browser, and you're back.</li>
+    </ol>
+    <p style="color:var(--muted)">A Spotify <strong>Premium</strong> account is needed for playback control — that's Spotify's own restriction on their API, not this app's.</p>
+  </section>
+
+  <!-- ── Notch ─────────────────────────────────────────────────────── -->
+  <section id="notch">
+    <h2>The Notch HUD</h2>
+    <p class="lede">Music controls that live in the notch, so you can change track without leaving what you're doing.</p>
+
+    <p>Move your cursor to the notch and a panel drops down with the album art, track and artist, the current lyric line, a scrubber you can click to seek, and transport controls. Click anywhere on it that isn't a button to bring the main window forward. Move away and it folds back up into the notch.</p>
+    <p>Idle, it shows only the album thumbnail and a few level bars, positioned either side of the camera so the notch itself hides the rest.</p>
+
+    <div class="note warn">
+      <span class="lbl">It hides your Dock icon — and that's not a bug</span>
+      <p>With the HUD on, the app runs from the menu bar only: <strong>no Dock icon, and no Cmd+Tab entry</strong>.</p>
+      <p>macOS will only let a window float above <em>another</em> app's fullscreen Space if the app is registered as a background accessory, and giving up the Dock icon is how an app declares that. Keep the Dock icon and the HUD simply stops existing the moment you switch to a fullscreen window — which is most of when you'd want it.</p>
+      <p style="margin-bottom:0">Use the <strong>menu bar icon</strong> to reopen the main window. Turning the HUD off under <strong>Settings → Notch HUD</strong> restores the Dock icon and Cmd+Tab immediately.</p>
+    </div>
+
+    <p>No notch on your Mac? The panel still works — it sits at the top centre of the display and sizes itself to your menu bar instead.</p>
+  </section>
+
+  <!-- ── Updates ───────────────────────────────────────────────────── -->
+  <section id="updates">
+    <h2>Staying updated</h2>
+    <p class="lede">The app updates itself, and asks first every time.</p>
+
+    <p>It checks on launch and then hourly. When there's a new version you get three choices, and <strong>nothing downloads until you pick one</strong>:</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Choice</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Install now</strong></td><td>Downloads, verifies, swaps the app and relaunches it.</td></tr>
+          <tr><td><strong>Install on quit</strong></td><td>Downloads now, applies next time you close the app. Nothing more for you to do.</td></tr>
+          <tr><td><strong>Skip this version</strong></td><td>Stays skipped across relaunches. You'll be asked again at the next release.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>If an update fails</h3>
+    <p>Because the app is unsigned, the swap can occasionally be refused by macOS. The app tells you when this happens and links to the release page. A failed update is always rolled back — you'll never be left without a working app.</p>
+    <p>To update by hand, download the new DMG and repeat the <a href="#install">install steps</a>. Your settings, EQ curves and Spotify sign-in are kept: they live in <code>~/Library/Application&nbsp;Support/Electron</code>, separate from the app itself.</p>
+
+    <h3>Uninstalling</h3>
+    <p>Drag the app to the Trash. To remove your settings too:</p>
+    <div class="code">
+      <button class="copy" type="button">Copy</button>
+<pre><code>rm -rf ~/Library/Application\ Support/Electron</code></pre>
+    </div>
+    <p>BlackHole is a separate install — remove it with <code>brew uninstall blackhole-2ch</code>, or its own uninstaller. Remember to set <strong>System Settings → Sound → Output</strong> back to your speakers.</p>
+  </section>
+
+  <!-- ── Help ──────────────────────────────────────────────────────── -->
+  <section id="help">
+    <h2>Troubleshooting</h2>
+    <p class="lede">Nearly every report is one of the first three.</p>
+
+    <details>
+      <summary>I turned Live on but there's no sound</summary>
+      <div class="details-body">
+        <p>Work down this list in order.</p>
+        <ol>
+          <li><strong>Is anything playing?</strong> Toggle Live off. If you hear your music normally, audio is reaching macOS.</li>
+          <li><strong>Check the macOS output device.</strong> If the app's source is BlackHole, macOS output <em>must</em> be BlackHole 2ch. Your speakers going silent is correct.</li>
+          <li><strong>Check the app's Output device.</strong> It must be a real speaker or headphone — never BlackHole. Avoid "System default" here: if macOS is set to BlackHole, so is that.</li>
+          <li><strong>Is Live actually on?</strong> The orange dot, top right, needs to be lit. Otherwise the app is only visualising.</li>
+          <li><strong>Connected AirPods after launching?</strong> The picker doesn't re-route automatically. Choose them manually.</li>
+          <li><strong>Worked, then stopped?</strong> Disconnect and reconnect in the source picker. If that fails, relaunch.</li>
+        </ol>
+      </div>
+    </details>
+
+    <details>
+      <summary>A loud whine or echo when Live is on</summary>
+      <div class="details-body">
+        <p>Classic feedback loop: the output and the input are the same device. If your source is BlackHole, set <strong>Output device</strong> to real speakers or headphones.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>It's quieter than playing normally</summary>
+      <div class="details-body">
+        <p>The chain is unity-gain by default, so 100% volume should match direct playback exactly. To go louder:</p>
+        <ul>
+          <li><strong>Volume</strong> (Enhancer panel) runs to 250%, and is a literal multiplier — 200% really is twice as loud.</li>
+          <li><strong>Preamp</strong> adds ±12&nbsp;dB before the EQ.</li>
+          <li><strong>Bass / Mid / Treble</strong> add ±12&nbsp;dB each at their shelves.</li>
+        </ul>
+        <p style="margin-bottom:0">Modern pop and hip-hop is already mastered near 0&nbsp;dBFS and will clip past roughly 150%. That's the digital ceiling, not a fault. Quiet classical, podcasts and older recordings take 200%+ happily.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>"Electron is damaged and can't be opened"</summary>
+      <div class="details-body">
+        <p>Expected on first launch, and misleading — the app is unsigned, not damaged. Run <code>xattr -cr</code> on it <em>while it's still in Downloads</em>, then move it to Applications. Full commands are in <a href="#install">Install</a>.</p>
+        <p style="margin-bottom:0">Right-click → Open no longer works on macOS 15 and later. Use the command.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>"Operation not permitted" when running xattr</summary>
+      <div class="details-body">
+        <p>The app is already in <code>/Applications</code>, which recent macOS protects from Terminal. Move it to the Desktop, run <code>xattr -cr</code> there, move it back — the cleared flag travels with the file. Commands are in <a href="#install">Install</a>.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>My Dock icon disappeared</summary>
+      <div class="details-body">
+        <p>The Notch HUD is on. macOS requires background-accessory status for a window to float over fullscreen apps, and that means no Dock icon and no Cmd+Tab entry.</p>
+        <p style="margin-bottom:0">Reopen the window from the <strong>menu bar icon</strong>. To get the Dock icon back, turn off <strong>Settings → Notch HUD</strong>. <a href="#notch">More detail →</a></p>
+      </div>
+    </details>
+
+    <details>
+      <summary>Spotify won't connect</summary>
+      <div class="details-body">
+        <ul>
+          <li>The Redirect URI must be exactly <code>http://127.0.0.1:8888/callback</code> — not <code>localhost</code>.</li>
+          <li>Port 8888 must be free. Quit anything else using it.</li>
+          <li>If the browser opens but never comes back, the Redirect URI is wrong. Compare it character by character.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary>The audio device list is empty</summary>
+      <div class="details-body">
+        <p style="margin-bottom:0">macOS hides device names from apps without microphone permission, even when you only intend to use BlackHole. Allow it when prompted, or under <strong>System Settings → Privacy &amp; Security → Microphone</strong>.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>The "System Audio" button does nothing</summary>
+      <div class="details-body">
+        <p style="margin-bottom:0">macOS is waiting on Screen Recording permission without saying so. Enable <code>Electron</code> under <strong>System Settings → Privacy &amp; Security → Screen Recording</strong>, then try again.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>The window opened but I can't see it</summary>
+      <div class="details-body">
+        <p style="margin-bottom:0">It launched in the background. Use the menu bar icon, or <code>Cmd+Tab</code>. With the Notch HUD on there's no Dock icon or Cmd+Tab entry, so the menu bar icon is the way in.</p>
+      </div>
+    </details>
+
+    <h3>Still stuck?</h3>
+    <p><a href="https://github.com/omkarxpatel/Electron/issues">Open an issue on GitHub</a> with your macOS version, your Mac's chip, and what you expected to happen.</p>
+  </section>
+
+  <!-- ── Shortcuts ─────────────────────────────────────────────────── -->
+  <section id="shortcuts">
+    <h2>Shortcuts</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Action</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td><code>Space</code></td><td>Play / pause</td></tr>
+          <tr><td><code>←</code> / <code>→</code></td><td>Previous / next track</td></tr>
+          <tr><td><code>Esc</code></td><td>Clear the EQ band selection</td></tr>
+          <tr><td><code>Cmd+Shift+P</code></td><td>Toggle the performance overlay</td></tr>
+          <tr><td>Click a band's frequency label</td><td>Add it to a multi-band selection</td></tr>
+          <tr><td>Drag across band labels</td><td>Range-select bands</td></tr>
+          <tr><td>Drag a selected band</td><td>Move every selected band by the same amount</td></tr>
+          <tr><td>Drag the response curve</td><td>Pan the frequency / dB window</td></tr>
+          <tr><td>Double-click the curve</td><td>Reset the pan</td></tr>
+          <tr><td>Shift + drag a knob</td><td>Fine adjustment</td></tr>
+          <tr><td>Double-click a knob</td><td>Reset to default</td></tr>
+          <tr><td>Right-click a track</td><td>Add to playlist, queue, or copy link</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Source ────────────────────────────────────────────────────── -->
+  <section id="source">
+    <h2>Build from source</h2>
+    <p class="lede">An app you compile yourself isn't quarantined, so no <code>xattr</code> step.</p>
+    <div class="code">
+      <button class="copy" type="button">Copy</button>
+<pre><code>git clone https://github.com/omkarxpatel/Electron.git
+cd Electron
+npm install
+npm run dev            <span class="cmt"># run it</span>
+npm run build          <span class="cmt"># or build a DMG into release/</span></code></pre>
+    </div>
+    <p>Built on Electron 33, React 19, TypeScript and Vite, with the Web Audio API doing the signal work. macOS only — the capture chain uses ScreenCaptureKit and Core Audio, which have no portable equivalent.</p>
+    <p style="margin-bottom:0">MIT licensed. Issues and pull requests welcome on <a href="https://github.com/omkarxpatel/Electron">GitHub</a>.</p>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p>Electron — a free, local audio tool for macOS. MIT licensed.</p>
+    <p style="margin-bottom:0"><a href="https://github.com/omkarxpatel/Electron">GitHub</a> · <a href="https://github.com/omkarxpatel/Electron/releases/latest">Releases</a> · <a href="https://github.com/omkarxpatel/Electron/issues">Report an issue</a></p>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
