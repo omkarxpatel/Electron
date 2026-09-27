@@ -62,11 +62,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *  scene failed — the two things a capture run exists to tell you. */
 const say = (msg) => process.stderr.write(`${msg}\n`);
 
-function makeWindow(width, height) {
+function makeWindow(width, height, visible = false) {
   const w = new BrowserWindow({
     width,
     height,
-    show: false,
+    // Clips need the window composited or captureStream() produces a track
+    // that never delivers a frame. Parked far off-screen so it is still
+    // invisible to whoever is at the machine.
+    show: visible,
+    ...(visible ? { x: -4000, y: -4000 } : {}),
     frame: false,
     backgroundColor: '#0a0a0a',
     webPreferences: {
@@ -101,57 +105,56 @@ async function waitForApp(win, timeoutMs = 15000) {
   }
 }
 
-/** Burst of frames, written to disk rather than held in memory: a few
- *  seconds at retina resolution is hundreds of MB as raw PNG buffers. */
-async function shootClip(win, scene) {
-  const { frames = 50, intervalMs = 50, width } = scene.clip;
-  const dir = path.join(outDir, `.frames-${scene.name}`);
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.mkdirSync(dir, { recursive: true });
-  let size = null;
-  for (let i = 0; i < frames; i++) {
-    let img = await win.webContents.capturePage();
-    if (width) img = img.resize({ width, quality: 'good' });
-    size = img.getSize();
-    fs.writeFileSync(path.join(dir, `f${String(i).padStart(3, '0')}.png`), img.toPNG());
-    await sleep(intervalMs);
-  }
-  return { dir, size, frames, fps: Math.round(1000 / intervalMs) };
-}
+/*
+ * Clips are recorded INSIDE the renderer, off the visualiser's own canvas.
+ *
+ * The obvious approach — capturePage in a loop — cannot produce usable video.
+ * Measured against the real app: 110 frames took 14.8s, i.e. 7 fps, because
+ * each capture waits on a compositor that is already busy drawing. Encoding
+ * 7 fps of samples at any higher rate is what made the first clip look
+ * laggy: choppy from the sample rate, and sped up on top of it.
+ *
+ * canvas.captureStream() taps the canvas directly and runs in real time, so
+ * six seconds of wall clock gives six seconds of smooth video. It works even
+ * though the app transfers that canvas to a worker, which was the one thing
+ * worth checking first.
+ *
+ * The trade-off is that it records the canvas and nothing else — no
+ * surrounding chrome. For a visualiser clip that is the subject anyway.
+ */
+async function recordCanvas(win, scene) {
+  const { seconds = 6, fps = 30, selector = 'canvas', bitrate = 2_600_000 } = scene.clip;
+  const res = await win.webContents.executeJavaScript(`(async () => {
+    // Largest canvas: the app also has the EQ curve and the wave strip, and
+    // the visualiser is always the biggest of them.
+    const c = [...document.querySelectorAll(${JSON.stringify(selector)})]
+      .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+    if (!c) throw new Error('no canvas matched ${selector}');
+    const stream = c.captureStream(${fps});
+    if (!stream.getVideoTracks().length) throw new Error('canvas stream has no video track');
+    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9' : 'video/webm';
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: ${bitrate} });
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    const stopped = new Promise((r) => (rec.onstop = r));
+    rec.start();
+    await new Promise((r) => setTimeout(r, ${seconds * 1000}));
+    rec.stop();
+    await stopped;
+    const bytes = new Uint8Array(await new Blob(chunks, { type: 'video/webm' }).arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return { b64: btoa(bin), w: c.width, h: c.height };
+  })()`);
 
-async function encodeClip(name, burst) {
-  const enc = new BrowserWindow({
-    // Shown, but parked far off-screen. A window with show:false never
-    // composites, and canvas.captureStream() then yields no frames at all —
-    // MediaRecorder stops cleanly and hands back a zero-byte file.
-    show: true,
-    x: -4000,
-    y: -4000,
-    width: 640,
-    height: 400,
-    frame: false,
-    skipTaskbar: true,
-    focusable: false,
-    webPreferences: {
-      // file:// frames would otherwise taint the canvas, and a tainted canvas
-      // cannot be captureStream()'d — which is the entire encoder.
-      webSecurity: false,
-      backgroundThrottling: false,
-    },
-  });
-  await enc.loadFile(path.join(__dirname, 'encoder.html'));
-  const b64 = await enc.webContents.executeJavaScript(
-    `encode(${JSON.stringify(burst.dir)}, ${burst.frames}, ${burst.fps}, ${burst.size.width}, ${burst.size.height})`,
-  );
-  if (!b64) {
-    enc.destroy();
-    throw new Error('encoder produced no data (MediaRecorder returned nothing)');
-  }
-  const file = path.join(outDir, `${name}.webm`);
-  fs.writeFileSync(file, Buffer.from(b64, 'base64'));
-  enc.destroy();
-  fs.rmSync(burst.dir, { recursive: true, force: true });
-  return { name, file, width: burst.size.width, height: burst.size.height, bytes: fs.statSync(file).size };
+  if (!res || !res.b64) throw new Error('recorder returned no data');
+  const file = path.join(outDir, `${scene.name}.webm`);
+  fs.writeFileSync(file, Buffer.from(res.b64, 'base64'));
+  say(`[capture] ${scene.name}: ${seconds}s of ${res.w}x${res.h} canvas at ${fps} fps`);
+  return { name: scene.name, file, width: res.w, height: res.h, bytes: fs.statSync(file).size };
 }
 
 async function shoot(win, name, scale) {
@@ -176,7 +179,7 @@ app.whenReady().then(async () => {
    // Per-scene isolation: one broken scene must not cost the whole run.
    let win = null;
    try {
-    win = makeWindow(scene.width, scene.height);
+    win = makeWindow(scene.width, scene.height, !!scene.clip);
     const page = scene.page === 'notch' ? 'notch.html' : 'index.html';
     // Each scene starts from empty storage so a previous scene's seeded
     // settings cannot leak into it.
@@ -213,8 +216,7 @@ app.whenReady().then(async () => {
 
     await sleep(scene.settleMs ?? 2500);
     if (scene.clip) {
-      const burst = await shootClip(win, scene);
-      results.push(await encodeClip(scene.name, burst));
+      results.push(await recordCanvas(win, scene));
     } else {
       results.push(await shoot(win, scene.name, scene.scale));
     }

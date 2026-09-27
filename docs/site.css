@@ -240,6 +240,11 @@ code:not(pre code) {
 .clip {
   margin: 0 0 12px;
   box-shadow: 0 24px 60px -28px rgb(0 0 0 / 90%);
+  /* Pinned to the clip's own ratio. The poster is a 16:10 still and the clip
+     is wider, so without this the block resizes the moment playback starts
+     and everything below it jumps. */
+  aspect-ratio: 1640 / 848;
+  object-fit: cover;
 }
 
 .gallery {

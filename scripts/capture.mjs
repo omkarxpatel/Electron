@@ -89,11 +89,14 @@ const SCENES = [
     // Motion, for the site. WebM because Chromium can encode it with no
     // external tool; a GIF for the README needs ffmpeg (see the header).
     name: 'visuals-only-clip',
-    width: 1280, height: 800,
+    // Smaller than the stills on purpose. The canvas backing store is this
+    // times devicePixelRatio, and the renderer could only push ~12 fps of
+    // particles across 2560x1424 — the clip was smooth-speed but choppy.
+    width: 820, height: 512,
     capture: { settings: { waveformStyle: 'particles', palette: 'aurora', glow: 0.65, sensitivity: 1.7 } },
     prepare: `window.__cap.click('[aria-label="Visuals only"]')`,
     settleMs: 3500,
-    clip: { frames: 60, intervalMs: 50, width: 1280 },
+    clip: { seconds: 6, fps: 30, bitrate: 1_700_000 },
   },
   {
     name: 'visualizer-bars',
@@ -237,6 +240,10 @@ rmSync(resultsFile, { force: true });
 for (const s of shot) {
   console.log(`  ✓ ${s.name.padEnd(20)} ${s.width}x${s.height}  ${(s.bytes / 1024).toFixed(0)} kB`);
 }
+// Clip sample rates are worth seeing on every run, not only on failure:
+// encoding at the wrong rate is invisible in the file listing and obvious
+// only once someone watches it.
+for (const l of stderr.filter((l) => l.includes(' fps'))) console.log(`    ${l.replace('[capture] ', '')}`);
 
 const missing = scenes.filter((s) => !shot.some((r) => r.name === s.name));
 if (missing.length) {
