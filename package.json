@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit",
     "check:enhancer": "node scripts/check-enhancer.mjs",
     "check:quality": "node scripts/check-quality.mjs",
-    "icon:gen": "bash scripts/build-icon.sh"
+    "icon:gen": "bash scripts/build-icon.sh",
+    "capture": "node scripts/capture.mjs"
   },
   "dependencies": {
     "js-yaml": "^4.3.2",

@@ -44,6 +44,31 @@ Verification here means:
    runs at the wrong quality tier, or half the frame rate, forever.
 4. Run the app and look at it. See below, because launching it has traps.
 
+`npm run capture` renders the app into an offscreen window and photographs it
+with `webContents.capturePage()`, which reads that window's own buffer — no
+Screen Recording permission, and nothing else on the display can appear in the
+output. Useful for checking a UI change without asking anyone for a
+screenshot, and it is where `docs/media/` comes from.
+
+It does NOT run `electron/main.ts`: that would trip `killStaleInstances()` and
+kill whatever dev instance is running. `scripts/capture/harness.cjs` is a
+minimal host that serves the same renderer and stubs the IPC the preload
+expects. A shim injected ahead of the app bundle replaces
+`getUserMedia`/`enumerateDevices` with a synthesised stream and answers every
+Spotify and lyrics request from fixtures, so a capture needs no microphone, no
+BlackHole, no network and no account — and never reads the real profile.
+
+```bash
+npm run capture                      # every scene into docs/media/
+npm run capture -- --only hero       # one scene
+npm run capture -- --no-build        # reuse the existing dist/
+```
+
+Scenes live at the top of `scripts/capture.mjs`. Two things to know when
+adding one: `av.settings.v3` is nested, so per-style knobs are declared flat
+in a scene and split into `profiles.*` by the shim; and an invalid palette id
+crashes the renderer outright rather than falling back.
+
 If you change the updater or the release pipeline, also run
 `node scripts/verify-release.mjs <tag> --remote-only` against a real tag.
 

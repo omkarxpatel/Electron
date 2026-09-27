@@ -130,6 +130,11 @@ export function SettingsPanel({
   onReconnectSpotify,
   onSignOutSpotify,
 }: Props) {
+  // Two-step confirm rather than a confirm() dialog, matching the playlist
+  // delete in SpotifyTrackList: this wipes both stage profiles and there is
+  // no undo, and it sits one stray click below the Spotify sign-out button.
+  const [confirmingReset, setConfirmingReset] = useState(false);
+
   return (
     <aside className={`settings-panel ${open ? 'is-open' : ''}`} aria-hidden={!open}>
       <header className="panel-header">
@@ -391,9 +396,30 @@ export function SettingsPanel({
           <AboutSection />
         </Section>
 
-        <button className="reset-button" onClick={reset}>
-          Reset to defaults
-        </button>
+        {confirmingReset ? (
+          <div className="reset-confirm">
+            <button
+              className="reset-button reset-button-danger"
+              onClick={() => {
+                setConfirmingReset(false);
+                reset();
+              }}
+            >
+              Really reset?
+            </button>
+            <button className="reset-button" onClick={() => setConfirmingReset(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className="reset-button"
+            onClick={() => setConfirmingReset(true)}
+            title="Restores every visualizer setting — both the banner and fullscreen profiles — to their defaults. There is no undo."
+          >
+            Reset to defaults
+          </button>
+        )}
       </div>
     </aside>
   );
@@ -503,6 +529,37 @@ function MenuBarSection() {
   );
 }
 
+/** Both feedback buttons land here. There is no backend to receive a report,
+ *  so they open a pre-filled GitHub issue in the user's browser instead —
+ *  same repo `build.publish` in package.json already points at. */
+const ISSUES_URL = 'https://github.com/omkarxpatel/Electron/issues/new';
+
+/**
+ * Pre-fills the environment line, because it is the thing every bug report
+ * gets asked for afterwards and the thing a user is least able to answer.
+ * All three values are synchronous renderer state — no IPC round-trip, so
+ * the browser opens on the click rather than a tick later.
+ */
+function openIssue(kind: 'bug' | 'feedback'): Promise<void> {
+  const env = [
+    `App ${window.api.app.version} (${window.api.app.arch})`,
+    `Electron ${window.api.electronVersion}`,
+    window.api.platform,
+  ].join(' · ');
+
+  const body =
+    kind === 'bug'
+      ? `**What happened?**\n\n\n**What did you expect instead?**\n\n\n**Steps to reproduce**\n1. \n2. \n\n---\n${env}\n`
+      : `**What would you like to see?**\n\n\n**Why would it help?**\n\n\n---\n${env}\n`;
+
+  const params = new URLSearchParams({
+    title: kind === 'bug' ? '[Bug] ' : '[Feedback] ',
+    labels: kind === 'bug' ? 'bug' : 'enhancement',
+    body,
+  });
+  return window.api.shell.openExternal(`${ISSUES_URL}?${params.toString()}`);
+}
+
 /**
  * Version + auto-update status mirror of the main-process state machine.
  * Renders the same state the top-bar UpdateBanner renders, but in a denser
@@ -545,6 +602,25 @@ function AboutSection() {
           disabled={state.kind === 'checking' || state.kind === 'downloading'}
         >
           {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+        </button>
+      </div>
+
+      <div className="settings-about-action">
+        <button
+          type="button"
+          className="settings-spotify-btn"
+          onClick={() => void openIssue('bug')}
+          title="Opens a pre-filled GitHub issue in your browser, with your app version and architecture already filled in."
+        >
+          Report a bug
+        </button>
+        <button
+          type="button"
+          className="settings-spotify-btn"
+          onClick={() => void openIssue('feedback')}
+          title="Opens a pre-filled GitHub issue in your browser to suggest an idea or improvement."
+        >
+          Send feedback
         </button>
       </div>
 

@@ -734,6 +734,32 @@
   color: #ffcfcf;
 }
 
+/* Two-step reset confirm. The armed half is red at rest, not only on hover,
+ * so "this is the destructive one" is legible before the pointer lands —
+ * and Cancel drops the inherited red hover so the safe option doesn't read
+ * as the dangerous one. */
+.reset-confirm {
+  display: flex;
+  gap: 8px;
+}
+
+.reset-confirm .reset-button {
+  flex: 1;
+  width: auto;
+}
+
+.reset-button-danger {
+  background: rgba(255, 107, 107, 0.15);
+  border-color: rgba(255, 107, 107, 0.4);
+  color: #ffcfcf;
+}
+
+.reset-confirm .reset-button:not(.reset-button-danger):hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+}
+
 /* ============================================================
    Main area (the chunk between topbar and player bar)
    ============================================================ */
