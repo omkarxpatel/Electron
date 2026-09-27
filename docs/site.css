@@ -227,6 +227,51 @@ code:not(pre code) {
   color: #e4e4ec;
 }
 
+/* ── Media ───────────────────────────────────────────────────────────── */
+
+.media {
+  width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  display: block;
+  background: #000;
+}
+
+.clip {
+  margin: 0 0 12px;
+  box-shadow: 0 24px 60px -28px rgb(0 0 0 / 90%);
+}
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 13px;
+  margin-bottom: 8px;
+}
+
+figure { margin: 0; }
+
+figcaption {
+  margin-top: 7px;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+figcaption b { color: var(--muted); font-weight: 600; }
+
+/* The notch panel is captured on transparency, so it needs something behind
+   it or the rounded underside is invisible against the page. */
+.notch-shot {
+  background: linear-gradient(180deg, #000 0%, #101014 100%);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  padding: 0 0 18px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.notch-shot img { width: 100%; display: block; }
+
 /* ── Callouts ────────────────────────────────────────────────────────── */
 
 .note {

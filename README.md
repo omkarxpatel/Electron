@@ -12,7 +12,9 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
 
 > macOS 11 Big Sur or later. Tested on Apple Silicon and Intel.
 
-<img width="1512" alt="Electron running: 31-band EQ with live curve, the enhancer meter bridge, a Spotify playlist and synced lyrics, over the particle visualizer" src="docs/screenshot.jpg" />
+<img alt="Electron running: the 31-band EQ with its live response curve and output meters, a playlist with synced lyrics alongside, and the bar visualizer across the banner" src="docs/media/hero.png" />
+
+> There is a **[product site](https://omkarxpatel.github.io/Electron/)** too, if you would rather read this with pictures.
 
 ---
 
@@ -24,6 +26,7 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
   - [BlackHole 2ch — heavily recommended](#2-blackhole-2ch--heavily-recommended)
   - [Spotify Client ID](#3-spotify-client-id)
 - [Features](#features)
+- [The Notch HUD](#the-notch-hud)
 - [Mouse / keyboard cheatsheet](#mouse--keyboard-cheatsheet)
 - [Troubleshooting](#troubleshooting)
   - [Install / launch issues](#install--launch-issues) — "damaged" error, right-click → Open, hidden window
@@ -169,6 +172,18 @@ You only do this once per Mac.
 - Move any selected band's slider and they all move by the same dB delta.
 - Click outside / `Esc` clears.
 
+**Notch HUD**
+- A music panel that hangs from the MacBook notch and stays on screen while you work in another app.
+- Hover for artwork, title, the current lyric line, a click-to-seek scrubber and transport; click the panel to bring the main window forward.
+- At rest it shows only the album thumbnail and level bars, either side of the camera.
+- Colours follow the album art when auto-tint is on.
+- **Turning it on hides the Dock icon** — see [The Notch HUD](#the-notch-hud) for why.
+
+**Performance**
+- The visualizer runs off the main thread on an `OffscreenCanvas`, so the interface stays responsive while it draws.
+- The app measures the machine on first run and picks a quality tier to match — render scale and an optional frame cap. Weaker Macs get fewer pixels rather than fewer frames, and nothing about the look changes.
+- Rendering stops entirely while the window is hidden.
+
 **Spotify**
 - PKCE OAuth (no client secret needed).
 - Playlist browser + paginated track list + saved-albums view.
@@ -176,6 +191,8 @@ You only do this once per Mac.
 - The last playlist you opened is reopened on the next launch.
 - Persistent player bar with transport, scrubber, volume.
 - Live lyrics (synced when available, plain otherwise).
+- Right-click any track for add-to-playlist, add-to-queue and copy-link.
+- **Listening stats** — top artists and tracks, genres, release eras, and a mainstream score, with rank movement since last time.
 - Reconnect / sign out from Settings.
 
 **Updates**
@@ -186,10 +203,37 @@ You only do this once per Mac.
 
 ---
 
+## The Notch HUD
+
+<img alt="The notch panel expanded: album art, track and artist, the current lyric line, a scrubber and transport controls" src="docs/media/notch-expanded.png" />
+
+Move the cursor to the notch and this drops down. Click anywhere on it that isn't a
+control to bring the main window forward; move away and it folds back up. At rest
+only the album thumbnail and a few level bars show, tucked either side of the camera.
+
+No notch on your Mac? It still works — the panel sits at the top centre of the
+display and sizes itself to your menu bar instead.
+
+### It hides your Dock icon, and that is not a bug
+
+With the HUD on, the app runs from the menu bar only: **no Dock icon, and no
+Cmd+Tab entry**.
+
+macOS will only let a window float above *another* app's fullscreen Space if the
+process is registered as a background accessory, and giving up the Dock icon is how
+an app declares that. Keep the Dock icon and the HUD stops existing the moment you
+switch to a fullscreen window — which is most of when you would want it.
+
+Use the **menu-bar icon** to reopen the main window. Turning the HUD off under
+**Settings → Notch HUD** restores the Dock icon and Cmd+Tab immediately.
+
 ## Mouse / keyboard cheatsheet
 
 | Action | Result |
 |---|---|
+| `Space` | Play / pause |
+| `←` / `→` | Previous / next track |
+| Right-click a track | Add to playlist, add to queue, copy link |
 | Drag the EQ response curve | Pan the visible frequency / dB window |
 | Double-click the curve | Reset pan |
 | Click a band's freq label (e.g. "1k") | Toggle into multi-select |
@@ -273,6 +317,12 @@ If audio still feels quieter than direct playback at 100%, check:
 
 **Live mode feedback (loud whining / echo)**
 The output device and input source are routed through the same path. If your input is BlackHole, your output must NOT be BlackHole. Set the **Output device** dropdown to a real device.
+
+**My Dock icon disappeared**
+The Notch HUD is on. macOS requires background-accessory status for a window to float
+over fullscreen apps, and that means no Dock icon and no Cmd+Tab entry. Reopen the
+window from the **menu-bar icon**; turn off **Settings → Notch HUD** to get the Dock
+icon back. See [The Notch HUD](#the-notch-hud).
 
 **Spotify won't connect**
 - Redirect URI in your Spotify dashboard must be exactly `http://127.0.0.1:8888/callback`. Not `localhost` — Spotify deprecated localhost in 2024.

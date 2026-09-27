@@ -9,7 +9,7 @@
 <meta property="og:title" content="Electron — audio visualizer, system-wide EQ & Spotify control for macOS">
 <meta property="og:description" content="31-band system-wide EQ, 13 real-time visualizers, Spotify control surface and a notch HUD. Free, local, no telemetry.">
 <meta property="og:type" content="website">
-<meta property="og:image" content="screenshot.jpg">
+<meta property="og:image" content="media/hero.png">
 </head>
 <body>
 
@@ -20,6 +20,7 @@
       <a href="#features">Features</a>
       <a href="#install">Install</a>
       <a href="#setup">Setup</a>
+      <a href="#visualizers">Visuals</a>
       <a href="#notch">Notch HUD</a>
       <a href="#updates">Updates</a>
       <a href="#help">Help</a>
@@ -43,7 +44,7 @@
       <a class="btn btn-ghost" href="https://github.com/omkarxpatel/Electron">View on GitHub</a>
     </div>
     <p class="hero-note">Grab the <code>arm64</code> build for Apple Silicon, <code>x64</code> for Intel. Read <a href="#install">the install steps</a> first — the app is unsigned, and macOS needs one extra command.</p>
-    <img class="shot" src="screenshot.jpg" alt="Electron running: a 31-band EQ with a live response curve, the enhancer meter bridge, a Spotify playlist with synced lyrics, over the particle visualizer.">
+    <img class="shot" src="media/hero.png" alt="Electron running: a 31-band EQ with its live response curve and output meters, a playlist with synced lyrics alongside, and the bar visualizer across the banner.">
   </header>
 
   <!-- ── Features ──────────────────────────────────────────────────── -->
@@ -119,6 +120,34 @@
       </div>
 
     </div>
+  </section>
+
+  <!-- ── Visualizers ───────────────────────────────────────────────── -->
+  <section id="visualizers">
+    <h2>Thirteen ways to watch it</h2>
+    <p class="lede">Every style reacts to whatever your Mac is playing. Visuals-only mode hides the rest of the interface and gives the whole window over to it.</p>
+
+    <video class="media clip" autoplay loop muted playsinline
+           poster="media/visuals-only.png" aria-label="The particle visualizer reacting to music in visuals-only mode.">
+      <source src="media/visuals-only-clip.webm" type="video/webm">
+    </video>
+    <p style="color:var(--dim);font-size:13.5px;margin-bottom:30px">Particles, aurora palette, visuals-only mode.</p>
+
+    <div class="gallery">
+      <figure>
+        <img class="media" src="media/visualizer-bars.png" alt="The bar visualizer in the ember palette.">
+        <figcaption><b>Bars</b> · ember</figcaption>
+      </figure>
+      <figure>
+        <img class="media" src="media/visualizer-radial.png" alt="The radial visualizer in the cyberpunk palette.">
+        <figcaption><b>Radial</b> · cyberpunk</figcaption>
+      </figure>
+      <figure>
+        <img class="media" src="media/visualizer-silk.png" alt="The silk visualizer in the ocean palette.">
+        <figcaption><b>Silk</b> · ocean</figcaption>
+      </figure>
+    </div>
+    <p style="color:var(--dim);font-size:13.5px;margin:0">Also: Spectrum, Ribbon, Dots, Mirror, Line, Filled, Scope, Bloom and Ripples — across 16 palettes, or one you pick yourself.</p>
   </section>
 
   <!-- ── Install ───────────────────────────────────────────────────── -->
@@ -233,8 +262,16 @@ mv ~/Desktop/Electron.app /Applications/</code></pre>
     <h2>The Notch HUD</h2>
     <p class="lede">Music controls that live in the notch, so you can change track without leaving what you're doing.</p>
 
+    <div class="notch-shot">
+      <img src="media/notch-expanded.png" alt="The notch panel expanded, showing album art, track and artist, the current lyric line, a scrubber and transport controls.">
+    </div>
+
     <p>Move your cursor to the notch and a panel drops down with the album art, track and artist, the current lyric line, a scrubber you can click to seek, and transport controls. Click anywhere on it that isn't a button to bring the main window forward. Move away and it folds back up into the notch.</p>
-    <p>Idle, it shows only the album thumbnail and a few level bars, positioned either side of the camera so the notch itself hides the rest.</p>
+    <p>Idle, it shows only the album thumbnail and a few level bars, positioned either side of the camera so the notch itself hides the rest:</p>
+
+    <div class="notch-shot">
+      <img src="media/notch-idle.png" alt="The notch at rest: a small album thumbnail on the left of the camera and animated level bars on the right.">
+    </div>
 
     <div class="note warn">
       <span class="lbl">It hides your Dock icon — and that's not a bug</span>

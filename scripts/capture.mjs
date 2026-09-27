@@ -40,6 +40,26 @@ const only = flag('only', null)?.split(',').map((s) => s.trim());
 // each scene opens already in the right state — no clicking, no transitions
 // to wait out.
 
+// Artwork for the notch scenes. SVG is fine HERE specifically: the panel is
+// told its accent colour over IPC and never samples the image, so the canvas
+// tainting that rules SVG out in fixtures.js does not apply. Generating it
+// here keeps the scene self-contained.
+const NOTCH_ART =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#5aa9e6"/><stop offset="1" stop-color="#16263f"/>
+      </linearGradient></defs>
+      <rect width="320" height="320" fill="url(#g)"/>
+      <g fill="none" stroke="#fff" stroke-opacity=".26">
+        <circle cx="128" cy="150" r="52" stroke-width="18"/>
+        <circle cx="180" cy="196" r="88" stroke-width="26"/>
+        <circle cx="96" cy="112" r="124" stroke-width="14"/>
+      </g>
+    </svg>`.replace(/\s+/g, ' '),
+  );
+
 const SCENES = [
   {
     name: 'hero',
@@ -101,7 +121,7 @@ const SCENES = [
       ['notch:state', {
         title: 'Paper Lanterns',
         artist: 'Violet Hours',
-        artUrl: null,
+        artUrl: NOTCH_ART,
         accent: '#5aa9e6',
         ambient: '#2b4a7a',
         isPlaying: true,
@@ -124,7 +144,7 @@ const SCENES = [
     send: [
       ['notch:metrics', { menuBarHeight: 32 }],
       ['notch:state', {
-        title: 'Paper Lanterns', artist: 'Violet Hours', artUrl: null,
+        title: 'Paper Lanterns', artist: 'Violet Hours', artUrl: NOTCH_ART,
         accent: '#5aa9e6', ambient: '#2b4a7a', isPlaying: true,
         progressMs: 96000, durationMs: 202000, shuffle: true, saved: true, lyrics: null,
       }],
