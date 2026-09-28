@@ -325,6 +325,28 @@ function destroy(): void {
   win = null;
 }
 
+/**
+ * Tear the panel down without changing the user's preference.
+ *
+ * Quitting closes every BrowserWindow anyway, but this panel is always-on-top
+ * and floats over other Spaces, so the gap between "user asked to quit" and
+ * "Electron got round to this window" is a gap where a HUD belonging to a
+ * closing app is still sitting over whatever they switched to. Closing it
+ * first makes the app disappear all at once.
+ *
+ * Deliberately not `setNotchEnabled(false)`: that would leave `enabled`
+ * false, and the next launch reads the persisted pref, not this.
+ */
+export function shutdownNotch(): void {
+  if (hoverTimer) {
+    clearInterval(hoverTimer);
+    hoverTimer = null;
+  }
+  expanded = false;
+  if (win && !win.isDestroyed()) win.destroy();
+  win = null;
+}
+
 export function isNotchEnabled(): boolean {
   return enabled;
 }

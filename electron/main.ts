@@ -43,6 +43,7 @@ import {
   isNotchEnabled,
   notchActivationPolicyChanged,
   setNotchEnabled,
+  shutdownNotch,
   type NotchCommand,
 } from './notchWindow';
 
@@ -55,14 +56,6 @@ const RELEASES_URL = `${REPO_URL}/releases`;
 let win: BrowserWindow | null = null;
 let authServer: http.Server | null = null;
 let tray: Tray | null = null;
-
-/**
- * True once a real quit is under way. The window's `close` handler hides the
- * window instead of destroying it (see `createWindow`), so this flag is what
- * distinguishes "user hit X" from "user picked Quit" — without it there'd be
- * no way to actually exit.
- */
-let isQuitting = false;
 
 /** Mirror of the renderer's now-playing state, pushed over IPC. Drives the
  *  tray menu's labels and Play/Pause wording while the window is hidden. */
@@ -371,10 +364,7 @@ function buildTrayMenu(): Electron.Menu {
       // keys); the working Cmd+Q is the app menu's `role: 'quit'`.
       label: `Quit ${app.name}`,
       accelerator: 'Command+Q',
-      click: () => {
-        isQuitting = true;
-        app.quit();
-      },
+      click: () => app.quit(),
     },
   );
 
@@ -464,22 +454,24 @@ function createWindow(startHidden = false) {
   });
 
   /**
-   * X-button hides the window; the app keeps running in the menu bar. Quit is
-   * via the tray's Quit item or Cmd+Q (both set `isQuitting` first).
+   * X-button quits the app outright — window, notch HUD and all.
    *
-   * History worth knowing: this used to be close = quit, because hide-on-close
-   * once left the visualizer worker's OffscreenCanvas holding its GPU surface
-   * and the window came back black. The renderer now pauses that worker on
-   * `visibilitychange` (see WaveformVisualizer's `active` gate), and `role:
-   * 'minimize'` in the Window menu has been exercising the identical
-   * hidden-renderer path all along. If the black-window hang ever returns,
-   * this handler is the first thing to revert.
+   * This used to hide the window and leave the app in the menu bar. With the
+   * notch HUD that read as the app refusing to close: the window vanished and
+   * a panel belonging to it stayed on screen, over every Space, with no
+   * obvious way to get rid of it.
+   *
+   * Staying resident is still available and now has to be asked for, which is
+   * the honest way round: Settings → "Hide to menu bar", or simply switching
+   * to another app. Both keep the HUD alive, which is what it is for.
+   *
+   * Older history worth keeping: hide-on-close once left the visualizer
+   * worker's OffscreenCanvas holding its GPU surface and the window came back
+   * black. The renderer now pauses that worker on `visibilitychange` (see
+   * WaveformVisualizer's `active` gate), so the hidden path is safe — it is
+   * simply no longer what X does.
    */
-  win.on('close', (e) => {
-    if (isQuitting) return;
-    e.preventDefault();
-    hideWindow();
-  });
+  win.on('close', () => app.quit());
 
   // Block renderer-initiated new windows. The only legitimate "open externally"
   // path is the allowlisted `shell:open-external` IPC handler.
@@ -984,10 +976,12 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
-  // Set here too, not just in the tray's Quit item: Cmd+Q, the App menu's
-  // Quit, and a logout-initiated shutdown all arrive this way, and the
-  // window's `close` handler would otherwise veto them.
-  isQuitting = true;
+  // Cmd+Q, the App menu's Quit, the tray's Quit and a logout-initiated
+  // shutdown all arrive here.
+  //
+  // Notch first, before anything slower: it floats above other Spaces, so a
+  // panel left behind is the most visible part of a quit still in progress.
+  shutdownNotch();
   if (authServer) {
     authServer.close();
     authServer = null;
