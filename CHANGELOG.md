@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.3
+
+- Fixed "Couldn't set output level" on AirPods and other Bluetooth headphones, which stopped 1.4.0's full-volume fix from working on them at all.
+- Turning Live on no longer makes things suddenly louder. Your volume setting is moved onto the menu bar slider rather than simply raised, so the level stays where it was — the slider just works across its full range now.
+
 ## 1.4.2
 
 - Update prompts now say what's new and what's fixed, instead of only a version number.
