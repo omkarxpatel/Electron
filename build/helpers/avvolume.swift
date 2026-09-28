@@ -149,22 +149,56 @@ private func outputDevices() -> [OutputDevice] {
     }
 }
 
-/// Match on name, because that is the only identifier the renderer has:
-/// Chromium's enumerateDevices() deviceIds are per-origin salted hashes, not
-/// CoreAudio UIDs, so they cannot be mapped back to a device here.
+/// Chromium and CoreAudio do not agree on device names, so matching has to be
+/// fuzzy. Name is nonetheless the only identifier available: Chromium's
+/// enumerateDevices() deviceIds are per-origin salted hashes with no route
+/// back to a CoreAudio device.
+///
+/// The two disagree in three separate ways, all seen on one machine:
+///   "MacBook Pro Speakers"  -> "MacBook Pro Speakers (Built-in)"   suffix
+///   "BlackHole 2ch"         -> "Default - BlackHole 2ch (Virtual)" prefix
+///   "Omkar's AirPods New"   -> "AirPods"                           shortened
+/// The last one is why a prefix match is not enough — Chromium SHORTENS
+/// Bluetooth names rather than decorating them.
+private func normalized(_ raw: String) -> String {
+    var text = raw.lowercased()
+    // CoreAudio uses a typographic apostrophe in names taken from the account
+    // name; Chromium does not always agree.
+    text = text.replacingOccurrences(of: "\u{2019}", with: "'")
+    if text.hasPrefix("default - ") { text = String(text.dropFirst("default - ".count)) }
+    text = text.replacingOccurrences(of: #"\s*\([^)]*\)\s*$"#, with: "",
+                                     options: .regularExpression)
+    return text.trimmingCharacters(in: .whitespaces)
+}
+
 private func findOutput(named name: String) -> OutputDevice {
     let devices = outputDevices()
-    if let exact = devices.first(where: { $0.name == name }) { return exact }
-    // Chromium appends a transport suffix to some labels ("MacBook Pro
-    // Speakers (Built-in)"), so fall back to a prefix match before giving up.
-    if let prefixed = devices.first(where: { name.hasPrefix($0.name) }) { return prefixed }
-    fail("no output device named \(name)")
+    let target = normalized(name)
+    let inventory = devices.map { $0.name }.joined(separator: ", ")
+
+    let exact = devices.filter { normalized($0.name) == target }
+    if exact.count == 1 { return exact[0] }
+    if exact.count > 1 { fail("\(name) matches more than one output device: \(inventory)") }
+
+    // Containment in EITHER direction, to cover both decoration and shortening.
+    let loose = devices.filter {
+        let candidate = normalized($0.name)
+        guard !candidate.isEmpty, !target.isEmpty else { return false }
+        return candidate.contains(target) || target.contains(candidate)
+    }
+    if loose.count == 1 { return loose[0] }
+    // Never guess. Pinning the wrong device would set a device the user is not
+    // even listening through to full volume.
+    if loose.count > 1 {
+        fail("\(name) ambiguously matches: \(loose.map { $0.name }.joined(separator: ", "))")
+    }
+    fail("no output device named \(name) (available: \(inventory))")
 }
 
 // ── Entry point ──────────────────────────────────────────────────────
 
 let args = Array(CommandLine.arguments.dropFirst())
-guard let command = args.first else { fail("usage: avvolume list|get <name>|set <name> <scalar>") }
+guard let command = args.first else { fail("usage: avvolume list|default|get <name>|set <name> <scalar>") }
 
 switch command {
 case "list":
@@ -180,6 +214,20 @@ case "list":
             "isDefaultOutput": device.id == current,
         ]
     }])
+
+case "default":
+    // Whatever the menu-bar slider is currently attached to. Pinning the sink
+    // has to move attenuation onto THIS device, so it needs naming.
+    let current = defaultOutputID()
+    let devices = outputDevices()
+    guard let device = devices.first(where: { $0.id == current }) else {
+        fail("no default output device")
+    }
+    let volume = readVolume(device.id)
+    emit(["name": device.name,
+          "uid": device.uid,
+          "hasVolumeControl": volume != nil,
+          "volume": volume.map { Double($0) } as Any])
 
 case "get":
     guard args.count >= 2 else { fail("usage: avvolume get <name>") }

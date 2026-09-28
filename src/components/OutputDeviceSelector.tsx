@@ -26,13 +26,21 @@ function pinNote(state: SinkVolumeState): { tone: string; text: string; detail: 
     case 'pinned':
       return {
         tone: 'ok',
-        text: `Output held at 100% (was ${Math.round(state.originalVolume * 100)}%)`,
+        text: state.compensatedDevice
+          ? `Output held at 100% — volume moved to the slider`
+          : `Output held at 100% (was ${Math.round(state.originalVolume * 100)}%)`,
         detail:
-          `macOS's volume slider only controls the default output device, which is ` +
-          `your capture device — so it can't reach ${state.deviceName}, and whatever ` +
-          `level that device was left at becomes a ceiling on how loud this app can ` +
-          `get. It's held at 100% while Live is on and restored when Live stops. ` +
-          `Use the menu bar slider to set volume as normal.`,
+          `macOS's volume slider only controls the default output device, so it ` +
+          `can't reach ${state.deviceName} — and whatever level that device was ` +
+          `left at becomes a ceiling on how loud this app can get. ` +
+          `${state.deviceName} was raised from ${Math.round(state.originalVolume * 100)}% ` +
+          `to 100%` +
+          (state.compensatedDevice
+            ? `, and ${state.compensatedDevice} was turned down by the same amount so ` +
+              `nothing suddenly got louder. The menu bar slider now sets your volume ` +
+              `over its full range.`
+            : `. Use the menu bar slider to set volume as normal.`) +
+          ` ${state.deviceName} is restored when Live stops.`,
       };
     case 'unsupported':
       return {

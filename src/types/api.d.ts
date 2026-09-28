@@ -275,7 +275,14 @@ export type UpdateState =
  */
 export type SinkVolumeState =
   | { kind: 'idle' }
-  | { kind: 'pinned'; deviceName: string; originalVolume: number }
+  | {
+      kind: 'pinned';
+      deviceName: string;
+      originalVolume: number;
+      /** The device the menu-bar slider controls, turned down by the same
+       *  amount the sink was turned up so the pin isn't a loudness jump. */
+      compensatedDevice?: string;
+    }
   | { kind: 'already-unity'; deviceName: string }
   | { kind: 'unsupported'; deviceName: string; reason: string }
   | { kind: 'error'; deviceName: string; message: string };

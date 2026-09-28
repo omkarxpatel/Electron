@@ -146,18 +146,26 @@ term, so the frozen value is a hard **ceiling** on how loud the app can ever
 get. This reads to a user as "it never gets loud enough, and wherever I was
 when I switched became the limit".
 
-It is much worse than it sounds, because the slider is not linear in dB.
-Measured on this machine:
+It is much worse than it sounds, because the slider is not linear in dB. What
+the HAL reports for the built-in speakers, via
+`kAudioDevicePropertyVolumeScalarToDecibels`:
 
-| Slider | MacBook Pro Speakers | AirPods |
-|---|---|---|
-| 100% | 0 dB | 0 dB |
-| 50% | −31.8 dB | −50 dB |
-| 20% | −50.8 dB | −80 dB |
+| Slider | MacBook Pro Speakers |
+|---|---|
+| 100% | 0 dB |
+| 50% | −31.8 dB |
+| 20% | −50.8 dB |
 
-So a sink left at 20% is 50–80 dB down, not "a bit quiet".
+So a sink left at 20% is ~50 dB down, not "a bit quiet".
 
-Two things that are easy to get wrong:
+**Do not trust those numbers on Bluetooth.** The same property claims a 0 to
+−100 dB range for AirPods, but `kAudioDevicePropertyVolumeDecibels` reports
+**−0.0 dB while the device sits at scalar 0.5** — both cannot be true.
+Bluetooth volume goes out as an AVRCP absolute-volume byte and the earbuds
+apply their own curve, so the HAL's dB is nominal. Only the BlackHole figures
+below were confirmed acoustically; treat any Bluetooth dB as decorative.
+
+Three things that are easy to get wrong:
 
 - **BlackHole's volume is a real attenuator, not a nominal control.** A tone
   played in at a setting reporting −12.0 dB came back at −11.97 dB. Lowering
@@ -165,6 +173,18 @@ Two things that are easy to get wrong:
 - **Do not compensate for that in the audio graph.** Cancelling BlackHole's
   attenuation digitally would leave the slider connected to nothing. Its
   attenuation *is* the user's volume control, and should stay that way.
+
+- **Raising the sink is a loudness jump into someone's headphones.** Found the
+  hard way: AirPods at 50% with BlackHole at 100% meant pinning alone went
+  straight to full scale in the user's ears. So `deviceVolume.ts` *moves* the
+  attenuation instead of removing it — sink up to unity, and the device the
+  slider controls down by the same number of slider points. Points, not dB,
+  precisely because Bluetooth dB is nominal (above), and both ends of the sum
+  use the same slider metaphor so points are the comparable unit.
+
+  That compensating move is **one-way**. By the time Live stops the user has
+  been working that slider, so restoring our remembered value would be both a
+  surprise and — with the sink dropping at the same moment — possibly louder.
 
 `electron/deviceVolume.ts` fixes the other half: it holds the *sink* at unity
 while Live is on, so the slider's full range is usable again. `osascript -e
@@ -180,7 +200,23 @@ user has moved it since, their choice is newer and we drop the record.
 
 The helper matches devices by **name**, not id: Chromium's `enumerateDevices()`
 deviceIds are per-origin salted hashes with no route back to a CoreAudio
-device. It must also stay a **universal** binary — `build.mac.target` ships
+device. Matching has to be fuzzy, because the two disagree in three different
+ways — all three present on one machine:
+
+```
+CoreAudio                 Chromium
+"MacBook Pro Speakers" -> "MacBook Pro Speakers (Built-in)"    suffixed
+"BlackHole 2ch"        -> "Default - BlackHole 2ch (Virtual)"  prefixed
+"Omkar's AirPods New"  -> "AirPods"                            SHORTENED
+```
+
+The third is why a prefix match is not enough; it shipped in v1.4.0 and made
+the feature fail outright on AirPods. Containment in either direction covers
+all three. When more than one device matches, the helper errors rather than
+guessing — pinning the wrong device would put something the user isn't even
+listening through at full volume.
+
+It must also stay a **universal** binary — `build.mac.target` ships
 x64 too, and extraResources are copied verbatim per arch.
 
 ## Auto-update: how it works

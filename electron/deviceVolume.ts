@@ -50,11 +50,22 @@ const TARGET_SCALAR = 1;
  *  volume to 1/16 steps, as several do. */
 const SCALAR_EPSILON = 0.02;
 
+/** Never drive the slider device to silence while compensating. A muted menu
+ *  bar reads as "the app broke my sound" even when the arithmetic was right. */
+const COMPENSATION_FLOOR = 0.05;
+
 const HELPER_TIMEOUT_MS = 4000;
 
 export type SinkVolumeState =
   | { kind: 'idle' }
-  | { kind: 'pinned'; deviceName: string; originalVolume: number }
+  | {
+      kind: 'pinned';
+      deviceName: string;
+      originalVolume: number;
+      /** The device the menu-bar slider controls, which we turned DOWN by the
+       *  same amount we turned the sink up. Absent if no move was needed. */
+      compensatedDevice?: string;
+    }
   /** The device works but was already at unity, so there was nothing to do.
    *  Tracked separately so the UI can say "nothing to fix" rather than
    *  implying we changed something. */
@@ -71,6 +82,9 @@ interface PinRecord {
    *  "the user has since changed it themselves". */
   pinnedTo: number;
   pinnedAt: string;
+  /** What we did to the slider device, recorded for the UI and for diagnosis.
+   *  Deliberately NOT restored — see restoreSinkImpl(). */
+  compensation?: { deviceName: string; originalVolume: number; setTo: number };
 }
 
 let state: SinkVolumeState = { kind: 'idle' };
@@ -202,13 +216,13 @@ async function pinSinkToUnityImpl(deviceLabel: string): Promise<SinkVolumeState>
   // Switching sinks: put the previous one back before taking the next.
   if (state.kind === 'pinned') await restoreSinkImpl();
 
-  const current = await runHelper(['get', deviceLabel]);
-  if (current.error) {
-    setState({ kind: 'error', deviceName: deviceLabel, message: current.error });
+  const sink = await runHelper(['get', deviceLabel]);
+  if (sink.error) {
+    setState({ kind: 'error', deviceName: deviceLabel, message: sink.error });
     return state;
   }
-  const name = current.name ?? deviceLabel;
-  if (!current.hasVolumeControl || typeof current.volume !== 'number') {
+  const name = sink.name ?? deviceLabel;
+  if (!sink.hasVolumeControl || typeof sink.volume !== 'number') {
     setState({
       kind: 'unsupported',
       deviceName: name,
@@ -216,34 +230,106 @@ async function pinSinkToUnityImpl(deviceLabel: string): Promise<SinkVolumeState>
     });
     return state;
   }
-  if (current.volume >= TARGET_SCALAR - SCALAR_EPSILON) {
+
+  // What the menu-bar slider is actually attached to. If that IS our sink,
+  // the slider already reaches it and there is no ceiling to lift — this is
+  // the ordinary "not using BlackHole" case, and it needs no message.
+  const slider = await runHelper(['default']);
+  if (!slider.error && slider.uid && slider.uid === sink.uid) {
+    setState({ kind: 'idle' });
+    return state;
+  }
+
+  if (sink.volume >= TARGET_SCALAR - SCALAR_EPSILON) {
     setState({ kind: 'already-unity', deviceName: name });
     return state;
   }
+
+  /* ── Why we do not simply raise the sink and stop ──
+   *
+   * Raising the sink is a loudness jump the user did not ask for, delivered
+   * to whatever is on their head. Observed: AirPods sitting at 50% while
+   * BlackHole was at 100%, so pinning alone would have gone straight to full
+   * scale in someone's ears.
+   *
+   * So the attenuation is MOVED rather than removed: the sink goes to unity
+   * and the slider device comes down by the same number of slider points.
+   * Total loudness is about what it was, the ceiling is gone, and the slider
+   * ends up sitting roughly where the combined level was — which is also the
+   * position the user expects to see.
+   *
+   * Slider points, not dB. dB would be exact, but only where it is reported
+   * honestly, and Bluetooth devices do not report it honestly: these AirPods
+   * report -0.0 dB while sitting at scalar 0.5. Both ends of this sum use the
+   * same macOS slider metaphor, so points are the unit that is actually
+   * comparable across them.
+   */
+  if (slider.error || !slider.hasVolumeControl || typeof slider.volume !== 'number') {
+    setState({
+      kind: 'unsupported',
+      deviceName: name,
+      reason:
+        'the volume slider is attached to a device with no volume control, so ' +
+        "raising this one would only make things suddenly louder",
+    });
+    return state;
+  }
+
+  const sliderName = slider.name ?? 'system output';
+  const compensated = Math.min(
+    TARGET_SCALAR,
+    Math.max(COMPENSATION_FLOOR, slider.volume - (TARGET_SCALAR - sink.volume)),
+  );
 
   // Disk before device: if we crash between these two lines the worst case is
   // a restore of a value that was never changed, which is harmless. The other
   // order can strand the device at 100%.
   writePinRecord({
     deviceName: name,
-    originalVolume: current.volume,
+    originalVolume: sink.volume,
     pinnedTo: TARGET_SCALAR,
     pinnedAt: new Date().toISOString(),
+    compensation: { deviceName: sliderName, originalVolume: slider.volume, setTo: compensated },
   });
+
+  // Slider down BEFORE sink up, so the intermediate state is quieter than
+  // where we started rather than louder.
+  const lowered = await runHelper(['set', sliderName, String(compensated)]);
+  if (lowered.error) {
+    clearPinRecord();
+    setState({ kind: 'error', deviceName: name, message: lowered.error });
+    return state;
+  }
 
   const applied = await runHelper(['set', name, String(TARGET_SCALAR)]);
   if (applied.error) {
+    // Undo the compensating move so a failure leaves nothing behind.
+    await runHelper(['set', sliderName, String(slider.volume)]);
     clearPinRecord();
     setState({ kind: 'error', deviceName: name, message: applied.error });
     return state;
   }
 
-  setState({ kind: 'pinned', deviceName: name, originalVolume: current.volume });
+  setState({
+    kind: 'pinned',
+    deviceName: name,
+    originalVolume: sink.volume,
+    compensatedDevice: sliderName,
+  });
   return state;
 }
 
-/** Put the pinned device back where we found it. Safe to call when nothing
- *  is pinned. */
+/**
+ * Put the sink back where we found it. Safe to call when nothing is pinned.
+ *
+ * The compensating move on the slider device is deliberately NOT undone. That
+ * device is the one the user's volume slider controls, so by the time Live
+ * stops they have very likely been adjusting it — it is theirs now, and its
+ * current position is what they have been listening at. Restoring it to our
+ * remembered value would be both a surprise and, since the sink is dropping
+ * back down at the same moment, a possible jump upward. Leaving it alone can
+ * only ever be the quieter choice.
+ */
 async function restoreSinkImpl(): Promise<void> {
   if (process.platform !== 'darwin') return;
   const record = state.kind === 'pinned'

@@ -55,6 +55,11 @@ if (typeof originalVolume !== 'number') {
   process.exit(1);
 }
 
+// Pinning now also moves the device the volume slider is attached to, so this
+// check borrows that one as well and has to hand both back.
+const slider = helper('default');
+const originalSlider = slider.volume;
+
 const harness = `
 const { app } = require('electron');
 const fs = require('fs');
@@ -64,10 +69,13 @@ const { execFileSync } = require('child_process');
 
 const HELPER = ${JSON.stringify(realHelper)};
 const DEVICE = ${JSON.stringify(DEVICE)};
+const SLIDER = ${JSON.stringify(slider.name || '')};
 const results = [];
 const near = (a, b) => Math.abs(a - b) < 0.02;
 const read = () => JSON.parse(execFileSync(HELPER, ['get', DEVICE], { encoding: 'utf8' })).volume;
 const write = (v) => execFileSync(HELPER, ['set', DEVICE, String(v)]);
+const readSlider = () => JSON.parse(execFileSync(HELPER, ['get', SLIDER], { encoding: 'utf8' })).volume;
+const writeSlider = (v) => execFileSync(HELPER, ['set', SLIDER, String(v)]);
 const pinFile = () => path.join(app.getPath('userData'), 'sink-volume-pin.json');
 const readPin = () => { try { return JSON.parse(fs.readFileSync(pinFile(), 'utf8')); } catch { return null; } };
 const ok = (name, pass, detail) => results.push({ name, pass, detail });
@@ -76,12 +84,24 @@ app.whenReady().then(async () => {
   try {
     // ── pin raises the device and records where it came from ──
     write(0.4);
+    writeSlider(1);
     let state = await dv.pinSinkToUnity(DEVICE);
     ok('pin raises the sink to unity', near(read(), 1), 'device at ' + read());
     ok('pin reports the original volume', state.kind === 'pinned' && near(state.originalVolume, 0.4),
        JSON.stringify(state));
     ok('pin writes the original to disk', readPin() && near(readPin().originalVolume, 0.4),
        JSON.stringify(readPin()));
+
+    // ── the raise must not be a loudness jump: the slider device comes down
+    //    by the same number of points the sink went up (1.0 - 0.6 = 0.4) ──
+    ok('pin lowers the slider device to compensate', near(readSlider(), 0.4),
+       'slider at ' + readSlider());
+    ok('pin names the compensated device', state.compensatedDevice === SLIDER,
+       JSON.stringify(state));
+    ok('pin records the compensation', readPin().compensation
+       && near(readPin().compensation.originalVolume, 1), JSON.stringify(readPin()));
+    ok('compensation never drives the slider to silence', readSlider() > 0,
+       'slider at ' + readSlider());
 
     // ── re-pinning must not clobber the saved original with our own 1.0 ──
     await dv.pinSinkToUnity(DEVICE);
@@ -93,6 +113,10 @@ app.whenReady().then(async () => {
     ok('restore returns the device to its original', near(read(), 0.4), 'device at ' + read());
     ok('restore clears the pin file', readPin() === null);
     ok('restore leaves state idle', dv.getSinkVolumeState().kind === 'idle');
+    // One-way on purpose: by now the user has been using that slider, and
+    // putting it back up while the sink drops could only be louder.
+    ok('restore leaves the slider device alone', near(readSlider(), 0.4),
+       'slider at ' + readSlider());
 
     // ── a device already at unity is left alone ──
     write(1);
@@ -119,6 +143,13 @@ app.whenReady().then(async () => {
     ok('a sink the user has since changed is not overwritten', near(read(), 0.65),
        'device at ' + read());
     ok('but the obsolete record is dropped', readPin() === null);
+
+    // ── a sink the slider already reaches needs no pin at all ──
+    await dv.restoreSink();
+    state = await dv.pinSinkToUnity(SLIDER);
+    ok('pinning the device the slider already controls is a no-op',
+       state.kind === 'idle', JSON.stringify(state));
+    ok('and writes no pin file', readPin() === null);
 
     // ── a device that does not exist ──
     state = await dv.pinSinkToUnity('Definitely Not A Device');
@@ -159,8 +190,12 @@ try {
   try {
     execFileSync(realHelper, ['set', DEVICE, String(originalVolume)]);
     console.log(`\nrestored ${DEVICE} to ${originalVolume}`);
+    if (typeof originalSlider === 'number' && slider.name) {
+      execFileSync(realHelper, ['set', slider.name, String(originalSlider)]);
+      console.log(`restored ${slider.name} to ${originalSlider}`);
+    }
   } catch (err) {
-    console.error(`COULD NOT RESTORE ${DEVICE} to ${originalVolume}:`, err.message);
+    console.error('COULD NOT RESTORE a device volume:', err.message);
     failed++;
   }
   rmSync(work, { recursive: true, force: true });
