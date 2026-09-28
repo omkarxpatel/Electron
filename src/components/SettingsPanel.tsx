@@ -405,7 +405,7 @@ export function SettingsPanel({
                 reset();
               }}
             >
-              Really reset?
+              Confirm
             </button>
             <button className="reset-button" onClick={() => setConfirmingReset(false)}>
               Cancel
@@ -540,6 +540,17 @@ const ISSUES_URL = 'https://github.com/omkarxpatel/Electron/issues/new';
  * All three values are synchronous renderer state — no IPC round-trip, so
  * the browser opens on the click rather than a tick later.
  */
+/** Never let the rejection vanish. Main REFUSES urls outside its allowlist by
+ *  throwing, and these callers used to `void` the promise — so when the
+ *  allowlist and the URL disagreed, the buttons did nothing and said nothing.
+ *  A console error is not much, but it is the difference between a five
+ *  minute fix and a mystery. */
+function openIssueOrWarn(kind: 'bug' | 'feedback'): void {
+  openIssue(kind).catch((err) => {
+    console.error(`[settings] could not open the ${kind} issue page`, err);
+  });
+}
+
 function openIssue(kind: 'bug' | 'feedback'): Promise<void> {
   const env = [
     `App ${window.api.app.version} (${window.api.app.arch})`,
@@ -609,7 +620,7 @@ function AboutSection() {
         <button
           type="button"
           className="settings-spotify-btn"
-          onClick={() => void openIssue('bug')}
+          onClick={() => openIssueOrWarn('bug')}
           title="Opens a pre-filled GitHub issue in your browser, with your app version and architecture already filled in."
         >
           Report a bug
@@ -617,7 +628,7 @@ function AboutSection() {
         <button
           type="button"
           className="settings-spotify-btn"
-          onClick={() => void openIssue('feedback')}
+          onClick={() => openIssueOrWarn('feedback')}
           title="Opens a pre-filled GitHub issue in your browser to suggest an idea or improvement."
         >
           Send feedback

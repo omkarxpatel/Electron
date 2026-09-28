@@ -30,7 +30,21 @@ const md = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');
 
 // Heading for this version, up to the next h2 or the end of file.
 const lines = md.split('\n');
-const start = lines.findIndex((l) => l.trim() === `## ${version}`);
+const heading = `## ${version}`;
+
+// Two sessions each adding a section for the same version is not
+// hypothetical — it has happened. Without this the extractor silently takes
+// the first one and the release ships somebody else's notes.
+const duplicates = lines.filter((l) => l.trim() === heading).length;
+if (duplicates > 1) {
+  console.error(
+    `::error::CHANGELOG.md has ${duplicates} "## ${version}" sections. ` +
+      `Merge them — only the first would be published.`,
+  );
+  process.exit(1);
+}
+
+const start = lines.findIndex((l) => l.trim() === heading);
 if (start === -1) {
   console.error(
     `::error::CHANGELOG.md has no "## ${version}" section. Add one before tagging — ` +

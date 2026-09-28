@@ -599,12 +599,27 @@ function isAllowedExternalUrl(url: string): boolean {
   try { parsed = new URL(url); } catch { return false; }
   if (parsed.protocol !== 'https:') return false;
   if (parsed.host === 'accounts.spotify.com' || parsed.host === 'developer.spotify.com') return true;
-  // GitHub URLs needed by the update checker — release pages + DMG download
-  // links. Scope to this project's repo only so the allowlist doesn't double
-  // as a generic GitHub-anywhere primitive.
+  /*
+   * This project's repo, and nothing else on GitHub, so the allowlist never
+   * becomes a generic open-anything primitive.
+   *
+   * It used to permit only `/releases`, which quietly broke both feedback
+   * buttons in Settings: they build `/issues/new?...`, the handler threw
+   * "Refusing to open disallowed URL", and the renderer discarded the
+   * rejection with `void`. The buttons did nothing at all, with no error
+   * anywhere the user or the console would show it.
+   *
+   * Derived from REPO_URL rather than written out again — two copies of the
+   * repo path is how the previous version came to disagree with the URLs the
+   * app actually builds.
+   *
+   * Matched as an exact path or a path prefix ending in "/", never a bare
+   * `startsWith`: `/omkarxpatel/ElectronEvil` would satisfy that.
+   */
+  const repoPath = new URL(REPO_URL).pathname.replace(/\/$/, '');
   if (
     parsed.host === 'github.com' &&
-    parsed.pathname.startsWith('/omkarxpatel/Electron/releases')
+    (parsed.pathname === repoPath || parsed.pathname.startsWith(`${repoPath}/`))
   ) {
     return true;
   }
