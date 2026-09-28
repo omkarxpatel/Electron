@@ -8,6 +8,10 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.8 (silent)
+
+- The note explaining that your output device is being held at 100% now appears inside the output menu, instead of floating under it all the time. Opening the menu is where you'd look for it anyway.
+
 ## 1.4.7 (prompt)
 
 - The update prompt is now part of the app instead of a macOS alert, and it lists what's in the release. The notes used to appear in a strip along the top, where longer ones were cut off mid-sentence.

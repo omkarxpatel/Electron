@@ -1271,7 +1271,13 @@
 }
 
 .sp-track-row {
-  cursor: pointer;
+  /* Not `pointer`: a single click does nothing now. Playing is the play
+   * button or a double-click, and a hand cursor over the whole row would
+   * promise a click target that isn't there. */
+  cursor: default;
+  /* Double-click to play would otherwise also select the title text. */
+  user-select: none;
+  -webkit-user-select: none;
   transition: background 80ms ease;
   height: 56px; /* explicit row height keeps each row's hitbox matched to its visible block */
 }
@@ -1307,6 +1313,47 @@
 .sp-track-playing-icon {
   color: var(--accent);
   font-size: 14px;
+}
+
+/* Number ⇄ play button, swapped on hover in the same slot. Both are in normal
+ * flow rather than absolutely positioned, so they inherit the cell's
+ * right-alignment and its two different padding rules (the right column
+ * overrides them) without either having to be restated here. */
+.sp-track-play-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #ffffff;
+  cursor: pointer;
+  outline: none;
+  vertical-align: middle;
+}
+
+.sp-track-row:hover .sp-track-number,
+.sp-track-row:focus-within .sp-track-number {
+  display: none;
+}
+
+/* focus-within, so tabbing to the button reveals it instead of leaving a
+ * focused control invisible. */
+.sp-track-row:hover .sp-track-play-btn,
+.sp-track-row:focus-within .sp-track-play-btn {
+  display: inline-flex;
+}
+
+.sp-track-play-btn:hover {
+  transform: scale(1.15);
+}
+
+.sp-track-play-btn:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 3px;
+  border-radius: 2px;
 }
 
 /* The album view is the only track table with a <thead>, and .sp-track-table
@@ -4673,22 +4720,31 @@
   color: #fff;
 }
 
-/* Pin notice under the output picker. We raise the chosen device's hardware
-   volume to unity while Live is on — a system-level change the user didn't ask
-   for — so it is stated rather than done quietly. Absolutely positioned so
-   appearing and disappearing never reflows the top bar. */
+/* Pin notice, shown inside the output menu.
+   We raise the chosen device's hardware volume to unity while Live is on — a
+   system setting the user didn't ask us to touch — so it is stated rather
+   than done quietly. It lives in the menu because that is where someone goes
+   when they're asking "why is my output like this?"; as a floating badge
+   under the button it was permanent furniture for a one-time explanation. */
 .sink-pin-note {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  white-space: nowrap;
-  font-size: 10px;
-  line-height: 1;
-  padding: 4px 8px;
-  border-radius: 5px;
-  pointer-events: auto;
-  cursor: help;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-radius: 6px;
   border: 1px solid transparent;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.sink-pin-note-text {
+  font-weight: 600;
+}
+
+.sink-pin-note-detail {
+  opacity: 0.75;
 }
 
 .sink-pin-note.is-ok {

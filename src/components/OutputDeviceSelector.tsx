@@ -19,36 +19,35 @@ interface Props {
   sinkVolume: SinkVolumeState;
 }
 
-/** One line of plain language about what we did (or couldn't do) to the
- *  device's volume. `null` when there is nothing worth saying. */
-function pinNote(state: SinkVolumeState): { tone: string; text: string; detail: string } | null {
+/** What we did to this device's volume, or couldn't. `null` when there is
+ *  nothing worth saying. Written to be READ, not hovered — it sits in the
+ *  menu now, so it has to be short enough to take in at a glance. */
+function pinNote(
+  state: SinkVolumeState,
+): { tone: string; text: string; detail: string } | null {
   switch (state.kind) {
-    case 'pinned':
+    case 'pinned': {
+      const was = `${Math.round(state.originalVolume * 100)}%`;
       return {
         tone: 'ok',
-        text: state.compensatedDevice
-          ? `Output held at 100% — volume moved to the slider`
-          : `Output held at 100% (was ${Math.round(state.originalVolume * 100)}%)`,
+        text: 'Output held at 100%',
         detail:
-          `macOS's volume slider only controls the default output device, so it ` +
-          `can't reach ${state.deviceName} — and whatever level that device was ` +
-          `left at becomes a ceiling on how loud this app can get. ` +
-          `${state.deviceName} was raised from ${Math.round(state.originalVolume * 100)}% ` +
-          `to 100%` +
+          `Raised from ${was} because the menu bar slider can't reach this ` +
+          `device while your system output goes somewhere else — its level was ` +
+          `capping how loud the app could get.` +
           (state.compensatedDevice
-            ? `, and ${state.compensatedDevice} was turned down by the same amount so ` +
-              `nothing suddenly got louder. The menu bar slider now sets your volume ` +
-              `over its full range.`
-            : `. Use the menu bar slider to set volume as normal.`) +
-          ` ${state.deviceName} is restored when Live stops.`,
+            ? ` ${state.compensatedDevice} was turned down to match, so nothing got louder.`
+            : '') +
+          ' Restored when Live stops.',
       };
+    }
     case 'unsupported':
       return {
         tone: 'warn',
         text: 'Output level may be capped',
         detail:
-          `${state.deviceName} ${state.reason}, so its level can't be lifted. If this ` +
-          `device sounds quiet, set its volume before selecting it as the system output.`,
+          `${state.reason}, so it can't be lifted. If this device sounds quiet, ` +
+          `set its volume before you point system output elsewhere.`,
       };
     case 'error':
       return { tone: 'warn', text: "Couldn't set output level", detail: state.message };
@@ -113,14 +112,18 @@ function OutputDeviceSelectorImpl({ outputDeviceId, onSelect, sinkVolume }: Prop
         <span className="caret" aria-hidden>▾</span>
       </button>
 
-      {note && (
-        <div className={`sink-pin-note is-${note.tone}`} title={note.detail}>
-          {note.text}
-        </div>
-      )}
-
       {open && (
         <div className="source-dropdown" role="listbox">
+          {/* Inside the menu rather than under the button. Floating below the
+              button it sat over the window permanently, which is a lot of
+              standing furniture for something you only need when you're
+              wondering what happened to your output level. */}
+          {note && (
+            <div className={`sink-pin-note is-${note.tone}`}>
+              <span className="sink-pin-note-text">{note.text}</span>
+              <span className="sink-pin-note-detail">{note.detail}</span>
+            </div>
+          )}
           {permissionNeeded ? (
             <button className="source-row" onClick={requestPermission}>
               Grant audio access to list devices
