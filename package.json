@@ -2,7 +2,7 @@
   "name": "audio-visualizer",
   "productName": "Electron",
   "private": true,
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
   "homepage": "https://github.com/omkarxpatel/Electron",
   "repository": {
@@ -25,7 +25,8 @@
     "capture": "node scripts/capture.mjs",
     "helper": "bash scripts/build-helper.sh",
     "predev": "bash scripts/build-helper.sh",
-    "check:sink-volume": "node scripts/check-sink-volume.mjs"
+    "check:sink-volume": "node scripts/check-sink-volume.mjs",
+    "notes": "node scripts/release-notes.mjs"
   },
   "dependencies": {
     "js-yaml": "^4.3.2",

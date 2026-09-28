@@ -35,9 +35,26 @@ upload() {
   return 1
 }
 
+# The app fetches this alongside the feed so its update prompt can say what
+# the release contains. Same text as the release body, so the two can't drift.
+NOTES="release/release-notes.md"
+if node scripts/release-notes.mjs "$TAG" > "$NOTES" 2>/dev/null; then
+  echo "release notes extracted for ${TAG#v}"
+else
+  # Not fatal here — the workflow already failed the build on a missing
+  # section long before this point. If we somehow get here anyway, a release
+  # with no notes beats no release at all; the app treats them as optional.
+  echo "no CHANGELOG section for ${TAG#v}; publishing without notes" >&2
+  rm -f "$NOTES"
+fi
+
 if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   echo "creating release $TAG"
-  gh release create "$TAG" --repo "$REPO" --title "${TAG#v}" --generate-notes
+  if [ -f "$NOTES" ]; then
+    gh release create "$TAG" --repo "$REPO" --title "${TAG#v}" --notes-file "$NOTES"
+  else
+    gh release create "$TAG" --repo "$REPO" --title "${TAG#v}" --generate-notes
+  fi
 fi
 
 # Artifacts first, update metadata last.
@@ -45,5 +62,9 @@ for file in release/*.dmg release/*.zip release/*.blockmap; do
   [ -e "$file" ] || continue
   upload "$file"
 done
+
+# Before latest-mac.yml: once the feed lands the app starts offering this
+# version, and it should never advertise notes that aren't uploaded yet.
+[ -f "$NOTES" ] && upload "$NOTES"
 
 upload "release/latest-mac.yml"

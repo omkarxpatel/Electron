@@ -62,6 +62,32 @@ const NOTCH_ART =
 
 const SCENES = [
   {
+    // Proves the update prompt renders CHANGELOG.md content. The banner only
+    // appears for actionable states, so the scene pushes one in over the same
+    // channel main uses.
+    name: 'update-prompt',
+    width: 1100, height: 420,
+    capture: { settings: { waveformStyle: 'bars', palette: 'aurora' } },
+    send: [
+      ['update:state', {
+        kind: 'available',
+        version: '1.4.2',
+        releasePageUrl: 'https://github.com/omkarxpatel/Electron/releases',
+        releaseNotes: [
+          '## 1.4.2',
+          '',
+          '- Update prompts now say what changed.',
+          '- **Fixed** the notch panel getting stuck open above every app.',
+          '- Live mode reaches full volume again.',
+          '- Playlists open at the top instead of keeping the old scroll position.',
+          '- A fifth entry that should be summarised rather than listed.',
+          '- And a sixth.',
+        ].join('\n'),
+      }],
+    ],
+    settleMs: 1800,
+  },
+  {
     name: 'hero',
     width: 1440, height: 900, scale: 1,
     capture: {

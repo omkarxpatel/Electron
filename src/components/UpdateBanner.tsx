@@ -44,6 +44,43 @@ function UpdateBannerImpl() {
   );
 }
 
+/** How many bullets the banner shows before deferring to the release page. */
+const MAX_NOTES = 4;
+
+/**
+ * Release notes as a short list.
+ *
+ * The notes arrive as the raw CHANGELOG.md section, so this strips the list
+ * markers and drops anything that isn't a bullet — headings, blank lines, the
+ * occasional paragraph. Rendered as plain text, never as markdown: this
+ * string comes off the network, and the banner is not worth an HTML sink.
+ */
+function ReleaseNotes({ notes }: { notes?: string }) {
+  if (!notes) return null;
+  const items = notes
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('- ') || l.startsWith('* '))
+    .map((l) => l.slice(2).replace(/\*\*/g, '').trim())
+    .filter(Boolean);
+
+  if (items.length === 0) return null;
+  const shown = items.slice(0, MAX_NOTES);
+
+  return (
+    <ul className="update-banner-notes">
+      {shown.map((item, i) => (
+        <li key={i}>{item}</li>
+      ))}
+      {items.length > shown.length && (
+        <li className="update-banner-notes-more">
+          and {items.length - shown.length} more
+        </li>
+      )}
+    </ul>
+  );
+}
+
 function BannerContent({ state }: { state: UpdateState }) {
   // Stable callbacks per render — these are tiny so memoization wouldn't
   // pay off; the parent banner re-renders on each state push anyway.
@@ -76,6 +113,7 @@ function BannerContent({ state }: { state: UpdateState }) {
             <span className="update-banner-sub">
               Choose Download to install it, or skip this version.
             </span>
+            <ReleaseNotes notes={state.releaseNotes} />
           </div>
           <div className="update-banner-actions">
             <button
@@ -143,6 +181,7 @@ function BannerContent({ state }: { state: UpdateState }) {
               Restart now, or it installs automatically next time you quit.
               Spotify auth and settings are preserved.
             </span>
+            <ReleaseNotes notes={state.releaseNotes} />
           </div>
           <div className="update-banner-actions">
             <button

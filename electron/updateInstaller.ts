@@ -42,6 +42,11 @@ import yaml from 'js-yaml';
 const execFileAsync = promisify(execFile);
 
 const CHANNEL_FILE = 'latest-mac.yml';
+/** Published beside the feed by scripts/publish-release.sh. */
+const NOTES_FILE = 'release-notes.md';
+/** Enough for a dozen bullets. The prompt shows a handful; this only stops a
+ *  malformed or enormous file being held in memory and shipped to the UI. */
+const NOTES_MAX_BYTES = 8 * 1024;
 const PROGRESS_INTERVAL_MS = 250;
 
 export interface RemoteUpdate {
@@ -49,6 +54,10 @@ export interface RemoteUpdate {
   zipUrl: string;
   sha512: string;
   size: number;
+  /** Markdown bullets from CHANGELOG.md, or undefined when the release
+   *  predates release notes or the file could not be read. Always optional:
+   *  an update the user cannot read about is still an update worth taking. */
+  notes?: string;
 }
 
 export interface DownloadProgress {
@@ -146,7 +155,27 @@ export async function fetchLatestUpdate(repoUrl: string): Promise<RemoteUpdate> 
     zipUrl: `${repoUrl}/releases/latest/download/${match.url}`,
     sha512: match.sha512,
     size: match.size,
+    notes: await fetchReleaseNotes(repoUrl),
   };
+}
+
+/**
+ * The release's notes, or undefined.
+ *
+ * Deliberately never throws. Every release before 1.4.2 has no notes asset at
+ * all, so a 404 here is the normal case for a while yet — and an update that
+ * cannot describe itself must still be offered rather than reported as a
+ * failed check.
+ */
+async function fetchReleaseNotes(repoUrl: string): Promise<string | undefined> {
+  try {
+    const res = await net.fetch(`${repoUrl}/releases/latest/download/${NOTES_FILE}`);
+    if (!res.ok) return undefined;
+    const text = (await res.text()).slice(0, NOTES_MAX_BYTES).trim();
+    return text.length > 0 ? text : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Downloads to a temp dir and verifies the hash. Returns the zip's path. */

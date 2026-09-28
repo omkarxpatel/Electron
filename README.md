@@ -196,7 +196,7 @@ You only do this once per Mac.
 - Reconnect / sign out from Settings.
 
 **Updates**
-- Checks for a new version on launch, then hourly.
+- Checks for a new version on launch, then hourly, and the prompt lists what changed.
 - When one is found it asks first: install now, install when you quit, or skip this version. Nothing downloads until you answer, and a skipped version stays skipped across launches.
 - "Install when you quit" needs nothing further from you — the update is applied the next time you close the app.
 - Because the app is unsigned, the swap can occasionally fail on recent macOS. If that happens the app says so and points you at the release page for a manual download.

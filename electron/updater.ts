@@ -307,6 +307,7 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
     broadcast({
       kind: 'available',
       version: update.version,
+      releaseNotes: update.notes,
       releasePageUrl: releasePageUrlFor(update.version),
     });
     await promptForUpdate(update);
@@ -395,6 +396,7 @@ async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<
     broadcast({
       kind: 'downloaded',
       version: update.version,
+      releaseNotes: update.notes,
       releasePageUrl: releasePageUrlFor(update.version),
     });
 
