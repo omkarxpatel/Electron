@@ -100,6 +100,22 @@ const HOVER_POLL_MS = 55;
  *  on the way to a button collapses it out from under the pointer. */
 const COLLAPSE_GRACE_MS = 220;
 
+/**
+ * How often the panel is told what state it should be in, regardless of
+ * whether it changed.
+ *
+ * Main is the only owner of `expanded`, and it used to send ONLY on a
+ * transition. One dropped or mistimed message and the two disagree forever:
+ * main believes it is collapsed so it never sends `false` again, while the
+ * panel is still drawn open — and, because collapsing also sets
+ * `setIgnoreMouseEvents(true)`, open AND unclickable, floating above every
+ * Space with no way to dismiss it.
+ *
+ * Re-asserting once a second makes that self-healing. One boolean per second
+ * is nothing next to the frame traffic this window already carries.
+ */
+const REASSERT_MS = 1000;
+
 // ── Module state ───────────────────────────────────────────────────────────
 
 let win: BrowserWindow | null = null;
@@ -107,6 +123,7 @@ let enabled = false;
 let expanded = false;
 let hoverTimer: NodeJS.Timeout | null = null;
 let leftAt = 0;
+let lastAssertAt = 0;
 /** Last state pushed by the renderer, replayed when the window (re)loads so a
  *  reload doesn't leave the panel blank until the next Spotify poll. */
 let lastState: NotchState | null = null;
@@ -185,12 +202,19 @@ export function notchActivationPolicyChanged(): void {
   reassertLevel();
 }
 
-function setExpanded(next: boolean): void {
-  if (!win || win.isDestroyed() || expanded === next) return;
+/** Push the current state to the panel, whether or not it changed. */
+function applyExpanded(next: boolean): void {
+  if (!win || win.isDestroyed()) return;
   expanded = next;
   // Click-through while collapsed, so the menu bar underneath keeps working.
   win.setIgnoreMouseEvents(!next);
   win.webContents.send('notch:expanded', next);
+  lastAssertAt = Date.now();
+}
+
+function setExpanded(next: boolean): void {
+  if (expanded === next) return;
+  applyExpanded(next);
 }
 
 function pollHover(): void {
@@ -212,6 +236,12 @@ function pollHover(): void {
     leftAt = 0;
     setExpanded(true);
   }
+}
+
+/** Runs on the same timer as the hover poll — see REASSERT_MS. */
+function reassertExpanded(): void {
+  if (Date.now() - lastAssertAt < REASSERT_MS) return;
+  applyExpanded(expanded);
 }
 
 /** The idle shape has to sit in the menu-bar band exactly, and that band is
@@ -359,7 +389,10 @@ export function setNotchEnabled(next: boolean): void {
     return;
   }
   create();
-  hoverTimer = setInterval(pollHover, HOVER_POLL_MS);
+  hoverTimer = setInterval(() => {
+    pollHover();
+    reassertExpanded();
+  }, HOVER_POLL_MS);
 }
 
 /**
