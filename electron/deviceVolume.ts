@@ -50,22 +50,11 @@ const TARGET_SCALAR = 1;
  *  volume to 1/16 steps, as several do. */
 const SCALAR_EPSILON = 0.02;
 
-/** Never drive the slider device to silence while compensating. A muted menu
- *  bar reads as "the app broke my sound" even when the arithmetic was right. */
-const COMPENSATION_FLOOR = 0.05;
-
 const HELPER_TIMEOUT_MS = 4000;
 
 export type SinkVolumeState =
   | { kind: 'idle' }
-  | {
-      kind: 'pinned';
-      deviceName: string;
-      originalVolume: number;
-      /** The device the menu-bar slider controls, which we turned DOWN by the
-       *  same amount we turned the sink up. Absent if no move was needed. */
-      compensatedDevice?: string;
-    }
+  | { kind: 'pinned'; deviceName: string; originalVolume: number }
   /** The device works but was already at unity, so there was nothing to do.
    *  Tracked separately so the UI can say "nothing to fix" rather than
    *  implying we changed something. */
@@ -82,9 +71,6 @@ interface PinRecord {
    *  "the user has since changed it themselves". */
   pinnedTo: number;
   pinnedAt: string;
-  /** What we did to the slider device, recorded for the UI and for diagnosis.
-   *  Deliberately NOT restored — see restoreSinkImpl(). */
-  compensation?: { deviceName: string; originalVolume: number; setTo: number };
 }
 
 let state: SinkVolumeState = { kind: 'idle' };
@@ -245,41 +231,29 @@ async function pinSinkToUnityImpl(deviceLabel: string): Promise<SinkVolumeState>
     return state;
   }
 
-  /* ── Why we do not simply raise the sink and stop ──
+  /* ── Why we raise it and stop ──
    *
-   * Raising the sink is a loudness jump the user did not ask for, delivered
-   * to whatever is on their head. Observed: AirPods sitting at 50% while
-   * BlackHole was at 100%, so pinning alone would have gone straight to full
-   * scale in someone's ears.
+   * An earlier version also turned the slider device DOWN by the same number
+   * of slider points, so the pin wasn't a loudness jump. That was wrong, and
+   * wrong in the direction that matters: with a sink at 37% it drove BlackHole
+   * from 75% to 12%, which on its measured ~64 dB taper is about -56 dB —
+   * near silence. The app started almost inaudible, which is the very problem
+   * this file exists to fix.
    *
-   * So the attenuation is MOVED rather than removed: the sink goes to unity
-   * and the slider device comes down by the same number of slider points.
-   * Total loudness is about what it was, the ceiling is gone, and the slider
-   * ends up sitting roughly where the combined level was — which is also the
-   * position the user expects to see.
+   * The unit was the mistake. Slider points are only comparable between two
+   * devices if their tapers are, and they are not: BlackHole spans ~64 dB
+   * while a Bluetooth sink applies its own much gentler curve. dB would be the
+   * right unit and is not available either, because Bluetooth devices report
+   * nominal values (these AirPods claimed -0.0 dB at scalar 0.5). With no
+   * honest unit, any compensation is guesswork, and guessing quiet is as bad
+   * as guessing loud.
    *
-   * Slider points, not dB. dB would be exact, but only where it is reported
-   * honestly, and Bluetooth devices do not report it honestly: these AirPods
-   * report -0.0 dB while sitting at scalar 0.5. Both ends of this sum use the
-   * same macOS slider metaphor, so points are the unit that is actually
-   * comparable across them.
+   * So we touch exactly one device and always put it back. Raising the sink
+   * does make things louder — that is the point, it is the cap being removed —
+   * and the menu bar slider is right there, working over its full range, if
+   * it went further than wanted. That adjustment then sticks, because the
+   * slider's device is one we never touch.
    */
-  if (slider.error || !slider.hasVolumeControl || typeof slider.volume !== 'number') {
-    setState({
-      kind: 'unsupported',
-      deviceName: name,
-      reason:
-        'the volume slider is attached to a device with no volume control, so ' +
-        "raising this one would only make things suddenly louder",
-    });
-    return state;
-  }
-
-  const sliderName = slider.name ?? 'system output';
-  const compensated = Math.min(
-    TARGET_SCALAR,
-    Math.max(COMPENSATION_FLOOR, slider.volume - (TARGET_SCALAR - sink.volume)),
-  );
 
   // Disk before device: if we crash between these two lines the worst case is
   // a restore of a value that was never changed, which is harmless. The other
@@ -289,46 +263,26 @@ async function pinSinkToUnityImpl(deviceLabel: string): Promise<SinkVolumeState>
     originalVolume: sink.volume,
     pinnedTo: TARGET_SCALAR,
     pinnedAt: new Date().toISOString(),
-    compensation: { deviceName: sliderName, originalVolume: slider.volume, setTo: compensated },
   });
-
-  // Slider down BEFORE sink up, so the intermediate state is quieter than
-  // where we started rather than louder.
-  const lowered = await runHelper(['set', sliderName, String(compensated)]);
-  if (lowered.error) {
-    clearPinRecord();
-    setState({ kind: 'error', deviceName: name, message: lowered.error });
-    return state;
-  }
 
   const applied = await runHelper(['set', name, String(TARGET_SCALAR)]);
   if (applied.error) {
-    // Undo the compensating move so a failure leaves nothing behind.
-    await runHelper(['set', sliderName, String(slider.volume)]);
     clearPinRecord();
     setState({ kind: 'error', deviceName: name, message: applied.error });
     return state;
   }
 
-  setState({
-    kind: 'pinned',
-    deviceName: name,
-    originalVolume: sink.volume,
-    compensatedDevice: sliderName,
-  });
+  setState({ kind: 'pinned', deviceName: name, originalVolume: sink.volume });
   return state;
 }
 
 /**
  * Put the sink back where we found it. Safe to call when nothing is pinned.
  *
- * The compensating move on the slider device is deliberately NOT undone. That
- * device is the one the user's volume slider controls, so by the time Live
- * stops they have very likely been adjusting it — it is theirs now, and its
- * current position is what they have been listening at. Restoring it to our
- * remembered value would be both a surprise and, since the sink is dropping
- * back down at the same moment, a possible jump upward. Leaving it alone can
- * only ever be the quieter choice.
+ * One device in, one device out. That symmetry is what makes launching twice
+ * behave like launching once — the version that also moved the slider device
+ * had no way back, so every launch re-applied the same subtraction and walked
+ * the system volume down to nothing.
  */
 async function restoreSinkImpl(): Promise<void> {
   if (process.platform !== 'darwin') return;

@@ -174,17 +174,29 @@ Three things that are easy to get wrong:
   attenuation digitally would leave the slider connected to nothing. Its
   attenuation *is* the user's volume control, and should stay that way.
 
-- **Raising the sink is a loudness jump into someone's headphones.** Found the
-  hard way: AirPods at 50% with BlackHole at 100% meant pinning alone went
-  straight to full scale in the user's ears. So `deviceVolume.ts` *moves* the
-  attenuation instead of removing it — sink up to unity, and the device the
-  slider controls down by the same number of slider points. Points, not dB,
-  precisely because Bluetooth dB is nominal (above), and both ends of the sum
-  use the same slider metaphor so points are the comparable unit.
+- **Do not try to offset the raise by turning the slider device down.** This
+  was tried, in v1.4.5 through v1.4.8, and it is the worst bug this feature has
+  had. The reasoning was sound — raising the sink makes things louder, so lower
+  the other end by the same number of slider points — but the unit is not real.
+  Points are only comparable between two devices if their tapers are, and they
+  are not: BlackHole spans ~64 dB while a Bluetooth sink applies its own much
+  gentler curve. With a sink at 37% it drove BlackHole from 75% to 12%, about
+  -56 dB, and the app started very nearly silent.
 
-  That compensating move is **one-way**. By the time Live stops the user has
-  been working that slider, so restoring our remembered value would be both a
-  surprise and — with the sink dropping at the same moment — possibly louder.
+  dB would be the right unit and is not available either, for the reason
+  above: Bluetooth devices report nominal dB. With no honest unit, any
+  compensation is a guess, and guessing quiet is as bad as guessing loud.
+
+  It also could not round-trip. We restore the sink on quit but had no way to
+  restore the slider, so every launch re-applied the same subtraction and
+  walked the system volume down to the floor over a few runs.
+
+  **Touch one device, and always put it back.** Raising the sink does make
+  things louder; that is the cap being removed, which is the entire point. The
+  menu bar slider is right there over its full range if it went too far, and
+  that adjustment sticks because the slider's device is one we never touch.
+  `check:sink-volume` asserts the round trip over three cycles — that is the
+  assertion that would have caught this.
 
 `electron/deviceVolume.ts` fixes the other half: it holds the *sink* at unity
 while Live is on, so the slider's full range is usable again. `osascript -e

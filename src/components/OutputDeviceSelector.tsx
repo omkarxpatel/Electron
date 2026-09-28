@@ -20,34 +20,26 @@ interface Props {
 }
 
 /** What we did to this device's volume, or couldn't. `null` when there is
- *  nothing worth saying. Written to be READ, not hovered — it sits in the
- *  menu now, so it has to be short enough to take in at a glance. */
+ *  nothing worth saying. Written to be read at a glance in the menu, so it
+ *  stays to two short sentences however tempting the detail is. */
 function pinNote(
   state: SinkVolumeState,
 ): { tone: string; text: string; detail: string } | null {
   switch (state.kind) {
-    case 'pinned': {
-      const was = `${Math.round(state.originalVolume * 100)}%`;
+    case 'pinned':
       return {
         tone: 'ok',
         text: 'Output held at 100%',
         detail:
-          `Raised from ${was} because the menu bar slider can't reach this ` +
-          `device while your system output goes somewhere else — its level was ` +
-          `capping how loud the app could get.` +
-          (state.compensatedDevice
-            ? ` ${state.compensatedDevice} was turned down to match, so nothing got louder.`
-            : '') +
-          ' Restored when Live stops.',
+          `Raised from ${Math.round(state.originalVolume * 100)}% — the menu bar ` +
+          `slider can't reach this device, so its level was capping the app. ` +
+          `Restored when Live stops.`,
       };
-    }
     case 'unsupported':
       return {
         tone: 'warn',
         text: 'Output level may be capped',
-        detail:
-          `${state.reason}, so it can't be lifted. If this device sounds quiet, ` +
-          `set its volume before you point system output elsewhere.`,
+        detail: `${state.reason}, so it can't be lifted.`,
       };
     case 'error':
       return { tone: 'warn', text: "Couldn't set output level", detail: state.message };

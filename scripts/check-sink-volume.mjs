@@ -92,15 +92,12 @@ app.whenReady().then(async () => {
     ok('pin writes the original to disk', readPin() && near(readPin().originalVolume, 0.4),
        JSON.stringify(readPin()));
 
-    // ── the raise must not be a loudness jump: the slider device comes down
-    //    by the same number of points the sink went up (1.0 - 0.6 = 0.4) ──
-    ok('pin lowers the slider device to compensate', near(readSlider(), 0.4),
-       'slider at ' + readSlider());
-    ok('pin names the compensated device', state.compensatedDevice === SLIDER,
-       JSON.stringify(state));
-    ok('pin records the compensation', readPin().compensation
-       && near(readPin().compensation.originalVolume, 1), JSON.stringify(readPin()));
-    ok('compensation never drives the slider to silence', readSlider() > 0,
+    // ── the pin must touch the SINK and nothing else ──
+    // An earlier version also turned the slider device down to offset the
+    // raise. It had no way back, so every launch re-applied the subtraction
+    // and walked the system volume to near-silence: with a sink at 37% it put
+    // BlackHole at 12%. One device in, one device out.
+    ok('pin leaves the slider device alone', near(readSlider(), 1),
        'slider at ' + readSlider());
 
     // ── re-pinning must not clobber the saved original with our own 1.0 ──
@@ -113,10 +110,22 @@ app.whenReady().then(async () => {
     ok('restore returns the device to its original', near(read(), 0.4), 'device at ' + read());
     ok('restore clears the pin file', readPin() === null);
     ok('restore leaves state idle', dv.getSinkVolumeState().kind === 'idle');
-    // One-way on purpose: by now the user has been using that slider, and
-    // putting it back up while the sink drops could only be louder.
-    ok('restore leaves the slider device alone', near(readSlider(), 0.4),
+    ok('restore leaves the slider device alone', near(readSlider(), 1),
        'slider at ' + readSlider());
+
+    // ── pin/restore must be a round trip, or repeated launches drift ──
+    // This is the regression that shipped: each cycle has to land exactly
+    // where the previous one started, for both devices.
+    write(0.4);
+    writeSlider(0.8);
+    for (let i = 0; i < 3; i++) {
+      await dv.pinSinkToUnity(DEVICE);
+      await dv.restoreSink();
+    }
+    ok('three pin/restore cycles leave the sink where they found it',
+       near(read(), 0.4), 'sink at ' + read());
+    ok('three pin/restore cycles leave the slider where they found it',
+       near(readSlider(), 0.8), 'slider at ' + readSlider());
 
     // ── a device already at unity is left alone ──
     write(1);

@@ -8,6 +8,12 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.10 (prompt)
+
+- Fixed the app starting at almost no volume. Holding your output device at 100% was being offset by turning your system volume down, and that offset was re-applied on every launch until the slider was at the floor.
+- Live may now be noticeably louder when you turn it on, which is the output cap actually being lifted. The menu bar slider covers the full range if it goes further than you want, and that stays put.
+- The note in the output menu explaining the held level is shorter.
+
 ## 1.4.9 (prompt)
 
 - Clicking a song no longer starts it. Hover a row and its number turns into a play button, or double-click anywhere on the row — the same as Spotify. Reading a list, right-clicking a track or dragging one to reorder no longer risks replacing what you're listening to.
