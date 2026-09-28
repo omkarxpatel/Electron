@@ -313,6 +313,50 @@ Also:
 
 ---
 
+## Update classification
+
+Every `CHANGELOG.md` version heading must declare how that release reaches
+users:
+
+```
+## 1.4.4 (silent)
+## 1.4.4 (prompt)
+```
+
+`scripts/release-notes.mjs --check` fails the release without one, and the
+workflow runs it before it builds anything. There is deliberately no default:
+a `silent` release installs itself, which is not a decision to inherit by
+forgetting to think about it.
+
+**`silent`** — the user has nothing to decide and nothing to learn:
+
+- bug fixes, crash fixes, performance work
+- wrong or misleading copy
+- anything whose note reads "fixed X" and changes nothing they rely on
+
+**`prompt`** — everything else, and in particular:
+
+- new features, or new UI they would otherwise have to stumble across
+- changed behaviour of something that already worked, even if it's better now
+- anything touching persisted settings, a migration, or Spotify sign-in
+- anything that needs a new macOS permission
+- anything you would want them to be able to *skip* if it went wrong
+
+Mixed release? It's `prompt`. The class describes the whole release, not one
+commit — a release is what installs.
+
+What `silent` actually does: downloads without asking, then applies itself
+either on the next quit, or once `powerMonitor` reports the machine
+unattended for 10 minutes **and** no audio is playing through the app. Both
+conditions are load-bearing. Keyboard idleness alone is wrong by design here
+— the notch HUD exists so people can listen while working in another app, and
+they may not have touched a key for an hour. The renderer reports the audio
+half over `update:set-activity` because main cannot see it.
+
+Every failure path in `fetchInstallClass` resolves to `prompt`: a 404, bad
+JSON, an unknown string. Being wrong that way costs one dialog; being wrong
+the other way is an unannounced restart.
+
 ## Commit attribution
 
 **Commits here are authored by Omkar alone. Never add a `Co-Authored-By: Claude ...` trailer,

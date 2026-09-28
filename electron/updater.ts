@@ -1,4 +1,4 @@
-import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, app, dialog, ipcMain, powerMonitor, shell } from 'electron';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -42,6 +42,29 @@ const RELEASES_URL = `${REPO_URL}/releases`;
 
 const SKIP_FILE_NAME = 'update-skip.json';
 
+/* ── Silent delivery ──
+ *
+ * A release marked `silent` in its CHANGELOG heading installs without asking.
+ * The point is that the user never has to find a moment for it, so we have to
+ * find one for them, and the bar for "now is fine" is high: restarting the app
+ * out from under someone mid-song would be far worse than a dialog.
+ *
+ * Two moments qualify. The first is quit, which needs no logic — the staged
+ * update is applied by the existing `will-quit` handler. The second is the
+ * machine being genuinely unattended, which is what the poll below watches
+ * for, because an app that is never quit would otherwise never update.
+ */
+
+/** No keyboard or mouse for this long. `powerMonitor` reports real input
+ *  idleness, which is a far better signal than our own window state: it means
+ *  nobody is at the machine, so a restart is invisible rather than merely
+ *  well-timed. */
+const IDLE_INSTALL_SECONDS = 10 * 60;
+
+/** How often to re-check that. A minute is far below the idle threshold, so
+ *  the install lands within a minute of the machine going quiet. */
+const IDLE_POLL_INTERVAL_MS = 60_000;
+
 const PERIODIC_CHECK_INTERVAL_MS = 60 * 60 * 1000;  // 1 hr
 const INITIAL_CHECK_DELAY_MS = 8 * 1000;            // 8 s after ready
 const NETWORK_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
@@ -62,6 +85,16 @@ export type UpdateState =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'up-to-date'; checkedAt: number }
+  | {
+      /** A newer version exists but the user asked not to be told about it.
+       *  Distinct from 'up-to-date' because saying "Up to date" here is a
+       *  lie — the update is deferred, not absent. The banner still stays
+       *  hidden; only the Settings status tells the truth. */
+      kind: 'skipped';
+      version: string;
+      checkedAt: number;
+      releasePageUrl: string;
+    }
   | { kind: 'available'; version: string; releaseNotes?: string; releasePageUrl: string }
   | {
       kind: 'downloading';
@@ -104,6 +137,18 @@ let promptedForVersion: string | null = null;
 // Set when the user picked "Install now" — the restart happens once the
 // download lands, not at click time.
 let installWhenDownloaded = false;
+
+/** Set when a staged update arrived via the silent path, so the idle poll
+ *  knows it is allowed to restart us. Never set for a prompted update: the
+ *  user answered that question themselves and the answer wasn't "whenever". */
+let silentInstallArmed = false;
+
+/** Renderer's word on whether audio is actually playing through us. The one
+ *  thing `powerMonitor` cannot see: someone listening with the window in the
+ *  background is not idle, however long since they touched the keyboard. */
+let audioActive = false;
+
+let idlePollTimer: NodeJS.Timeout | null = null;
 
 // ── Skipped-version persistence ────────────────────────────────────────────
 // Kept on disk, not just in memory: an install prompt that reappears on every
@@ -299,7 +344,12 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
     lastSeenVersion = update.version;
     if (isSkipped(update.version)) {
       log('info', `v${update.version} matches dismissed version; suppressing UI`);
-      broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
+      broadcast({
+        kind: 'skipped',
+        version: update.version,
+        checkedAt: Date.now(),
+        releasePageUrl: releasePageUrlFor(update.version),
+      });
       return;
     }
 
@@ -310,10 +360,77 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
       releaseNotes: update.notes,
       releasePageUrl: releasePageUrlFor(update.version),
     });
-    await promptForUpdate(update);
+    if (update.installClass === 'silent') {
+      await beginSilentUpdate(update);
+    } else {
+      await promptForUpdate(update);
+    }
   } catch (err) {
     handleError(err);
   }
+}
+
+/**
+ * Take a `silent` release without asking: download, stage, and let it land
+ * either on the next quit or the next time the machine is unattended.
+ *
+ * Deliberately still pre-flights the bundle. A release we cannot install is
+ * worth telling the user about however it was classified — silent means "you
+ * don't need to decide", not "say nothing when it fails".
+ */
+async function beginSilentUpdate(update: RemoteUpdate): Promise<void> {
+  if (promptedForVersion === update.version) return;
+  promptedForVersion = update.version;
+
+  const target = await findReplaceableBundle();
+  if (!target.ok) {
+    log('warn', `cannot replace this bundle: ${target.reason}`);
+    broadcast({
+      kind: 'manual-fallback',
+      reason: target.reason,
+      version: update.version,
+      releasePageUrl: releasePageUrlFor(update.version),
+    });
+    return;
+  }
+
+  // Never restart the moment it finishes downloading — that is the one thing
+  // a silent update must not do. It waits for quit or for genuine idleness.
+  installWhenDownloaded = false;
+  silentInstallArmed = true;
+  log('info', `v${update.version} is a silent release; downloading without prompting`);
+  await startDownload(update, target.bundlePath);
+}
+
+/**
+ * Apply a silently-staged update if nobody would notice.
+ *
+ * Both conditions matter. `powerMonitor` says whether anyone has touched the
+ * machine; `audioActive` says whether we are making sound, which is the case
+ * `powerMonitor` gets wrong — the notch HUD exists precisely so people can
+ * listen while working in another app, and they have not touched a key in an
+ * hour.
+ */
+function maybeInstallWhileIdle(): void {
+  if (!silentInstallArmed || stagedUpdate === null) return;
+  if (audioActive) return;
+  if (powerMonitor.getSystemIdleTime() < IDLE_INSTALL_SECONDS) return;
+
+  log('info', 'machine idle and silent; applying staged update now');
+  silentInstallArmed = false;
+  stopIdlePoll();
+  triggerInstall();
+}
+
+function startIdlePoll(): void {
+  if (idlePollTimer !== null) return;
+  idlePollTimer = setInterval(maybeInstallWhileIdle, IDLE_POLL_INTERVAL_MS);
+}
+
+function stopIdlePoll(): void {
+  if (idlePollTimer === null) return;
+  clearInterval(idlePollTimer);
+  idlePollTimer = null;
 }
 
 /** Ask once per version, before downloading anything, and act on the answer.
@@ -364,7 +481,12 @@ async function promptForUpdate(update: RemoteUpdate): Promise<void> {
     writeSkippedVersion(update.version);
     pendingUpdate = null;
     log('info', `v${update.version} skipped by user; not downloading`);
-    broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
+    broadcast({
+      kind: 'skipped',
+      version: update.version,
+      checkedAt: Date.now(),
+      releasePageUrl: releasePageUrlFor(update.version),
+    });
     return;
   }
 
@@ -393,6 +515,8 @@ async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<
     stagedUpdate = await stageUpdate(zipPath, stageRoot, bundlePath);
     consecutiveFailures = 0;
     log('info', `v${update.version} staged at ${stagedUpdate.appPath}`);
+    // Only now is there something for the idle poll to apply.
+    if (silentInstallArmed) startIdlePoll();
     broadcast({
       kind: 'downloaded',
       version: update.version,
@@ -492,6 +616,8 @@ async function clearStaged(): Promise<void> {
   const staged = stagedUpdate;
   stagedUpdate = null;
   installWhenDownloaded = false;
+  silentInstallArmed = false;
+  stopIdlePoll();
   try {
     await discardStagedUpdate(staged);
   } catch (err) {
@@ -534,9 +660,22 @@ export function setupAutoUpdater(): void {
       void clearStaged();
       pendingUpdate = null;
       log('info', `Suppressing UI for v${suppressUntilNewerThan} until a newer release`);
-      broadcast({ kind: 'up-to-date', checkedAt: Date.now() });
+      broadcast({
+        kind: 'skipped',
+        version: suppressUntilNewerThan,
+        checkedAt: Date.now(),
+        releasePageUrl: releasePageUrlFor(suppressUntilNewerThan),
+      });
     }
   });
+  // The renderer is the only thing that knows whether sound is coming out of
+  // us, and a silent restart must not interrupt it. Reported rather than
+  // inferred: `powerMonitor` sees an untouched keyboard and calls that idle,
+  // which is exactly wrong for someone listening via the notch HUD.
+  ipcMain.on('update:set-activity', (_e, active: unknown) => {
+    audioActive = active === true;
+  });
+
   // Sync IPC so the renderer can hydrate its initial state at preload time
   // (avoids a flash of empty UI before the first 'update:state' broadcast).
   ipcMain.on('update:get-state', (event) => {
@@ -562,6 +701,7 @@ export function setupAutoUpdater(): void {
 
 export function teardownAutoUpdater(): void {
   clearRetryTimer();
+  stopIdlePoll();
   if (periodicCheckTimer !== null) {
     clearInterval(periodicCheckTimer);
     periodicCheckTimer = null;

@@ -35,7 +35,11 @@ function UpdateBannerImpl() {
   const state = useUpdateState();
 
   // Idle + up-to-date render nothing — banner is for *actionable* states.
-  if (state.kind === 'idle' || state.kind === 'up-to-date') return null;
+  // 'skipped' is hidden for the same reason 'up-to-date' is: the user asked
+  // not to be nagged. It differs only in what Settings reports.
+  if (state.kind === 'idle' || state.kind === 'up-to-date' || state.kind === 'skipped') {
+    return null;
+  }
 
   return (
     <div className="update-banner" data-state={state.kind} role="status">

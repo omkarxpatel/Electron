@@ -135,6 +135,15 @@ function AppContent() {
     localStorage.setItem(PLAYTHROUGH_KEY, String(playthrough));
   }, [playthrough]);
 
+  // Tell main whether sound is actually coming out of us. A release marked
+  // `silent` may restart the app once the machine goes unattended, and
+  // "unattended" is measured from keyboard and mouse — which says nothing
+  // about someone listening with the window in the background.
+  const audioActive = playthrough && !!audioSource.stream;
+  useEffect(() => {
+    window.api.update.setActivity(audioActive);
+  }, [audioActive]);
+
   // Reflect Live state in the window title so a glance at the macOS title bar
   // (or Cmd+Tab preview) tells the user whether audio is currently being
   // processed through the EQ chain. Restores on unmount.

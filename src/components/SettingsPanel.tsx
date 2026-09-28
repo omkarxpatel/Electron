@@ -758,6 +758,7 @@ function formatStateSummary(state: UpdateState): string {
     case 'idle': return 'Idle';
     case 'checking': return 'Checking…';
     case 'up-to-date': return `Up to date · last checked ${formatRelative(state.checkedAt)}`;
+    case 'skipped': return `v${state.version} available · you skipped it`;
     case 'available': return `v${state.version} available`;
     case 'downloading': return `Downloading v${state.version} (${state.progress.percent.toFixed(0)}%)`;
     case 'downloaded': return `v${state.version} ready to install`;

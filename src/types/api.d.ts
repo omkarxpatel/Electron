@@ -114,6 +114,9 @@ export interface ElectronApi {
     install(): Promise<void>;
     openFallback(url?: string): Promise<void>;
     dismissVersion(version: string): Promise<void>;
+    /** Report whether audio is playing, so a silent update never restarts
+     *  the app mid-listen. */
+    setActivity(active: boolean): void;
   };
 }
 
@@ -241,6 +244,16 @@ export type UpdateState =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'up-to-date'; checkedAt: number }
+  | {
+      /** A newer version exists but the user asked not to be told about it.
+       *  Distinct from 'up-to-date' because saying "Up to date" here is a
+       *  lie — the update is deferred, not absent. The banner still stays
+       *  hidden; only the Settings status tells the truth. */
+      kind: 'skipped';
+      version: string;
+      checkedAt: number;
+      releasePageUrl: string;
+    }
   | { kind: 'available'; version: string; releaseNotes?: string; releasePageUrl: string }
   | {
       kind: 'downloading';

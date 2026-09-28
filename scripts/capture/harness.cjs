@@ -58,7 +58,9 @@ const INVOKE = [
   'sink-volume:pin', 'sink-volume:restore',
 ];
 for (const ch of INVOKE) ipcMain.handle(ch, () => null);
-for (const ch of ['tray:now-playing', 'notch:state', 'notch:command']) ipcMain.on(ch, () => {});
+for (const ch of ['tray:now-playing', 'notch:state', 'notch:command', 'update:set-activity']) {
+  ipcMain.on(ch, () => {});
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 

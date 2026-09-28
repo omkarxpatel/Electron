@@ -48,6 +48,15 @@ else
   rm -f "$NOTES"
 fi
 
+# How this release should be DELIVERED, read from the same changelog heading.
+# A separate small asset rather than a marker inside the notes: the notes are
+# user-facing prose and the app must not have to parse English to decide
+# whether it may restart itself.
+META="release/release-meta.json"
+INSTALL_CLASS="$(node scripts/release-notes.mjs "$TAG" --class 2>/dev/null || echo prompt)"
+printf '{"version":"%s","install":"%s"}\n' "${TAG#v}" "$INSTALL_CLASS" > "$META"
+echo "delivery class for ${TAG#v}: $INSTALL_CLASS"
+
 if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   echo "creating release $TAG"
   if [ -f "$NOTES" ]; then
@@ -64,7 +73,10 @@ for file in release/*.dmg release/*.zip release/*.blockmap; do
 done
 
 # Before latest-mac.yml: once the feed lands the app starts offering this
-# version, and it should never advertise notes that aren't uploaded yet.
+# version, and it should never advertise notes — or a delivery class — that
+# aren't uploaded yet. A missing class reads as "prompt" in the app, so the
+# ordering failure mode is an extra dialog rather than a silent restart.
 [ -f "$NOTES" ] && upload "$NOTES"
+[ -f "$META" ] && upload "$META"
 
 upload "release/latest-mac.yml"

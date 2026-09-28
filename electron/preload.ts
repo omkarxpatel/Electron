@@ -162,6 +162,13 @@ const api = {
     dismissVersion(version: string): Promise<void> {
       return ipcRenderer.invoke('update:dismiss-version', version);
     },
+    /** Whether audio is currently playing through us. A silent update is
+     *  allowed to restart the app when the machine is unattended, and this is
+     *  the one thing the main process cannot see for itself — someone
+     *  listening via the notch HUD hasn't touched a key in an hour. */
+    setActivity(active: boolean): void {
+      ipcRenderer.send('update:set-activity', active);
+    },
   },
 
   /**

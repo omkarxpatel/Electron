@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.5 (prompt)
+
+- Skipping a version no longer makes Settings claim you're up to date. It now says the update is there and that you skipped it; "Check for updates" still brings it back.
+- Small fixes can now install themselves. When a release is only bug fixes it downloads quietly and applies on your next quit — or while you're away from the Mac with nothing playing. It will never restart the app while audio is going, and anything bigger than a fix still asks first.
+
 ## 1.4.4
 
 - Fixed "Report a bug" and "Send feedback" in Settings doing nothing when clicked.
