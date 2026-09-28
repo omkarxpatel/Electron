@@ -180,11 +180,11 @@ function SpotifyTrackListImpl({
     [contextUri, onPlay, onPlayTracks, tracks],
   );
 
-  // Stable per-row click handler. Each TrackRow needs a *stable* callback
+  // Stable per-row play handler. Each TrackRow needs a *stable* callback
   // (otherwise React.memo wouldn't help — a fresh closure on every parent
   // render would invalidate the memo). The row passes its own track back so
   // we don't need to capture index in the closure.
-  const handleRowClick = useCallback((track: SpotifyTrack) => playFrom(track), [playFrom]);
+  const handlePlayTrack = useCallback((track: SpotifyTrack) => playFrom(track), [playFrom]);
 
   // With shuffle on, start somewhere random rather than on track 1. Handing
   // Spotify no offset at all and letting its own shuffle choose would be
@@ -468,7 +468,7 @@ function SpotifyTrackListImpl({
                   index={index}
                   artistNames={artistStrings[index]}
                   isPlaying={track.id === currentlyPlayingId}
-                  onClick={handleRowClick}
+                  onPlay={handlePlayTrack}
                   onContextMenu={handleRowContextMenu}
                   draggable={canReorder}
                   dragging={dragFrom === index}
@@ -748,7 +748,7 @@ interface TrackRowProps {
   index: number;
   artistNames: string;
   isPlaying: boolean;
-  onClick: (track: SpotifyTrack) => void;
+  onPlay: (track: SpotifyTrack) => void;
   onContextMenu: (track: SpotifyTrack, e: React.MouseEvent) => void;
   draggable: boolean;
   dragging: boolean;
@@ -766,7 +766,7 @@ function TrackRowImpl({
   index,
   artistNames,
   isPlaying,
-  onClick,
+  onPlay,
   onContextMenu,
   draggable,
   dragging,
@@ -781,11 +781,15 @@ function TrackRowImpl({
   return (
     <tr
       className="sp-track-row"
+      data-play="dblclick"
       data-playing={isPlaying ? 'true' : 'false'}
       data-dragging={dragging ? 'true' : undefined}
       data-drop-target={dropTarget ? 'true' : undefined}
       draggable={draggable}
-      onClick={() => onClick(track)}
+      // Double-click to play, as Spotify does. A single click used to start
+      // the track, which meant every attempt to right-click, drag-reorder or
+      // just read a row risked replacing what was playing.
+      onDoubleClick={() => onPlay(track)}
       onContextMenu={(e) => onContextMenu(track, e)}
       onDragStart={(e) => {
         // Firefox refuses to start a drag without payload; the index travels
@@ -809,7 +813,27 @@ function TrackRowImpl({
       onDragEnd={onDragEnd}
     >
       <td className="sp-track-index">
-        {isPlaying ? <span className="sp-track-playing-icon">♫</span> : index + 1}
+        {isPlaying ? (
+          // No play button on the row that's already playing — there is no
+          // sensible "play" there, and the ♫ is what marks it.
+          <span className="sp-track-playing-icon">♫</span>
+        ) : (
+          <>
+            <span className="sp-track-number">{index + 1}</span>
+            {/* Swapped with the number on hover, purely in CSS. Tracking hover
+                in React state would re-render a row per pointer move down a
+                list that can run to hundreds. */}
+            <button
+              type="button"
+              className="sp-track-play-btn"
+              onClick={() => onPlay(track)}
+              aria-label={`Play ${track.name}`}
+              title={`Play ${track.name}`}
+            >
+              <IconPlay />
+            </button>
+          </>
+        )}
       </td>
       <td className="sp-track-title-cell">
         {thumbUrl ? (

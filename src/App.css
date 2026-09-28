@@ -1271,15 +1271,22 @@
 }
 
 .sp-track-row {
-  /* Not `pointer`: a single click does nothing now. Playing is the play
-   * button or a double-click, and a hand cursor over the whole row would
-   * promise a click target that isn't there. */
+  cursor: pointer;
+  transition: background 80ms ease;
+  height: 56px; /* explicit row height keeps each row's hitbox matched to its visible block */
+}
+
+/* Playlist and album rows only. A single click there no longer plays, so the
+ * hand cursor would promise a click target that isn't there — but search
+ * results DO still play on one click (you clicked the thing you searched for,
+ * and they have no index column to hang a play button off), so they keep it.
+ * Scoped by attribute rather than by `:has(.sp-track-index)` so the rule says
+ * which behaviour it is dressing, not which cell happens to be present. */
+.sp-track-row[data-play='dblclick'] {
   cursor: default;
   /* Double-click to play would otherwise also select the title text. */
   user-select: none;
   -webkit-user-select: none;
-  transition: background 80ms ease;
-  height: 56px; /* explicit row height keeps each row's hitbox matched to its visible block */
 }
 
 .sp-track-row:hover {

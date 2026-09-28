@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.9 (prompt)
+
+- Clicking a song no longer starts it. Hover a row and its number turns into a play button, or double-click anywhere on the row — the same as Spotify. Reading a list, right-clicking a track or dragging one to reorder no longer risks replacing what you're listening to.
+- Search results still play on a single click, since picking one is the whole point of having searched.
+
 ## 1.4.8 (silent)
 
 - The note explaining that your output device is being held at 100% now appears inside the output menu, instead of floating under it all the time. Opening the menu is where you'd look for it anyway.

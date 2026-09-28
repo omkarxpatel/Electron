@@ -523,15 +523,33 @@ function AlbumDetailView({
                 <tr
                   key={`${track.id}-${index}`}
                   className="sp-track-row"
+                  data-play="dblclick"
                   data-playing={isPlaying ? 'true' : 'false'}
-                  onClick={() => onPlay(trackForPlay, album.uri)}
+                  onDoubleClick={() => onPlay(trackForPlay, album.uri)}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     setMenu({ x: e.clientX, y: e.clientY, track: trackForPlay });
                   }}
                 >
                   <td className="sp-track-index">
-                    {isPlaying ? <span className="sp-track-playing-icon">♫</span> : index + 1}
+                    {isPlaying ? (
+                      <span className="sp-track-playing-icon">♫</span>
+                    ) : (
+                      <>
+                        <span className="sp-track-number">{index + 1}</span>
+                        <button
+                          type="button"
+                          className="sp-track-play-btn"
+                          onClick={() => onPlay(trackForPlay, album.uri)}
+                          aria-label={`Play ${track.name}`}
+                          title={`Play ${track.name}`}
+                        >
+                          <svg width="11" height="12" viewBox="0 0 11 12" aria-hidden="true">
+                            <path d="M1 1.2 9.6 6 1 10.8z" fill="currentColor" />
+                          </svg>
+                        </button>
+                      </>
+                    )}
                   </td>
                   <td className="sp-track-title-cell">
                     <div className="sp-track-text">
