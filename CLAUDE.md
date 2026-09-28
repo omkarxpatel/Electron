@@ -357,6 +357,29 @@ Every failure path in `fetchInstallClass` resolves to `prompt`: a 404, bad
 JSON, an unknown string. Being wrong that way costs one dialog; being wrong
 the other way is an unannounced restart.
 
+## Commit messages
+
+**Every commit subject starts with the version it ships in:**
+
+```
+v1.4.7 -- Ask about updates in our own window, with the notes in it
+```
+
+Two hyphens, spaces either side, then the subject in the existing style — a
+sentence, lower case after the first word, no trailing period. The body then
+explains what went wrong and what was measured, as the surrounding history
+does.
+
+The version is the one in `package.json` **at that commit**, i.e. the release
+the work ships in, not the one that is currently out. Releases here bump the
+version in the same commit as the work, so those are the same thing; if you
+are adding a commit to a version that has already shipped, you are about to
+publish a release no client will ever see — check `git tag` first.
+
+Why: `git log --oneline` is the only place the mapping from a change to a
+release exists. The changelog is written for users and groups by release, and
+tags only tell you where a release ended, not which commits it contained.
+
 ## Commit attribution
 
 **Commits here are authored by Omkar alone. Never add a `Co-Authored-By: Claude ...` trailer,

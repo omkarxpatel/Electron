@@ -8,6 +8,7 @@ import { SectionBoundary } from './components/SectionBoundary';
 import { TrayBridge } from './components/TrayBridge';
 import { NotchBridge } from './components/NotchBridge';
 import { UpdateBanner } from './components/UpdateBanner';
+import { UpdateDialog } from './components/UpdateDialog';
 import { VisualizerBanner } from './components/VisualizerBanner';
 import { ImmersiveLyrics } from './components/ImmersiveLyrics';
 import { EqSection } from './components/EqSection';
@@ -266,6 +267,7 @@ function AppContent() {
         </div>
       )}
       <UpdateBanner />
+      <UpdateDialog />
       <ChromeBar
         sourceMode={audioSource.mode}
         sourceDeviceId={audioSource.deviceId}

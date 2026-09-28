@@ -1,4 +1,4 @@
-import { BrowserWindow, app, dialog, ipcMain, powerMonitor, shell } from 'electron';
+import { BrowserWindow, app, ipcMain, powerMonitor, shell } from 'electron';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -133,7 +133,6 @@ let stagedUpdate: StagedUpdate | null = null;
 let suppressUntilNewerThan: string | null = null;
 // Guards the prompt so a re-check that re-finds an already-answered version
 // doesn't ask twice.
-let promptedForVersion: string | null = null;
 // Set when the user picked "Install now" — the restart happens once the
 // download lands, not at click time.
 let installWhenDownloaded = false;
@@ -325,7 +324,6 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
       log('info', `user-initiated check clears the skip on v${suppressUntilNewerThan}`);
       suppressUntilNewerThan = null;
       writeSkippedVersion(null);
-      promptedForVersion = null;
     }
   }
 
@@ -354,52 +352,48 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
     }
 
     pendingUpdate = update;
+
+    // Pre-flight the swap BEFORE offering anything. An app on a read-only
+    // volume or owned by another user can download all day and never install,
+    // and the end of a 100 MB download is the worst moment to discover that.
+    // A release we cannot install is still worth reporting, however it was
+    // classified — silent means "you don't need to decide", not "say nothing".
+    const target = await findReplaceableBundle();
+    if (!target.ok) {
+      log('warn', `cannot replace this bundle: ${target.reason}`);
+      broadcast({
+        kind: 'manual-fallback',
+        reason: target.reason,
+        version: update.version,
+        releasePageUrl: releasePageUrlFor(update.version),
+      });
+      return;
+    }
+
+    if (update.installClass === 'silent') {
+      // Never restart the moment it lands — that is the one thing a silent
+      // update must not do. It waits for quit or for genuine idleness.
+      installWhenDownloaded = false;
+      silentInstallArmed = true;
+      log('info', `v${update.version} is a silent release; downloading without prompting`);
+      await startDownload(update, target.bundlePath);
+      return;
+    }
+
+    // The renderer owns the prompt from here — see src/components/
+    // UpdateDialog.tsx. It used to be dialog.showMessageBox, which could not
+    // show the release notes at all: a native alert takes a string, so the
+    // notes had to live in a separate banner and got truncated there. Asking
+    // in our own window means the question and what it's about are one thing.
     broadcast({
       kind: 'available',
       version: update.version,
       releaseNotes: update.notes,
       releasePageUrl: releasePageUrlFor(update.version),
     });
-    if (update.installClass === 'silent') {
-      await beginSilentUpdate(update);
-    } else {
-      await promptForUpdate(update);
-    }
   } catch (err) {
     handleError(err);
   }
-}
-
-/**
- * Take a `silent` release without asking: download, stage, and let it land
- * either on the next quit or the next time the machine is unattended.
- *
- * Deliberately still pre-flights the bundle. A release we cannot install is
- * worth telling the user about however it was classified — silent means "you
- * don't need to decide", not "say nothing when it fails".
- */
-async function beginSilentUpdate(update: RemoteUpdate): Promise<void> {
-  if (promptedForVersion === update.version) return;
-  promptedForVersion = update.version;
-
-  const target = await findReplaceableBundle();
-  if (!target.ok) {
-    log('warn', `cannot replace this bundle: ${target.reason}`);
-    broadcast({
-      kind: 'manual-fallback',
-      reason: target.reason,
-      version: update.version,
-      releasePageUrl: releasePageUrlFor(update.version),
-    });
-    return;
-  }
-
-  // Never restart the moment it finishes downloading — that is the one thing
-  // a silent update must not do. It waits for quit or for genuine idleness.
-  installWhenDownloaded = false;
-  silentInstallArmed = true;
-  log('info', `v${update.version} is a silent release; downloading without prompting`);
-  await startDownload(update, target.bundlePath);
 }
 
 /**
@@ -431,70 +425,6 @@ function stopIdlePoll(): void {
   if (idlePollTimer === null) return;
   clearInterval(idlePollTimer);
   idlePollTimer = null;
-}
-
-/** Ask once per version, before downloading anything, and act on the answer.
- *
- *  Asking *before* the download is what makes "skip" truthful — a version the
- *  user refused is never fetched at all — and it's also where we find out
- *  whether we can install it, so we never promise a swap we can't perform. */
-async function promptForUpdate(update: RemoteUpdate): Promise<void> {
-  if (promptedForVersion === update.version) return;
-  promptedForVersion = update.version;
-
-  // Pre-flight the swap. An app on a read-only volume or owned by another
-  // user can download all day and never install; the end of a 100 MB
-  // download is the worst moment to discover that.
-  const target = await findReplaceableBundle();
-  if (!target.ok) {
-    log('warn', `cannot replace this bundle: ${target.reason}`);
-    broadcast({
-      kind: 'manual-fallback',
-      reason: target.reason,
-      version: update.version,
-      releasePageUrl: releasePageUrlFor(update.version),
-    });
-    return;
-  }
-
-  const win =
-    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-  if (!win) {
-    log('warn', 'no window to prompt in; leaving the update undownloaded');
-    return;
-  }
-
-  const { response } = await dialog.showMessageBox(win, {
-    type: 'info',
-    title: 'Update available',
-    message: `Version ${update.version} is available.`,
-    detail:
-      'It downloads in the background. Installing restarts the app — your Spotify sign-in, EQ settings and visualizer presets are preserved.',
-    buttons: ['Install now', 'Install when I quit', 'Skip this version'],
-    defaultId: 0,
-    cancelId: 1,
-    normalizeAccessKeys: false,
-  });
-
-  if (response === 2) {
-    suppressUntilNewerThan = update.version;
-    writeSkippedVersion(update.version);
-    pendingUpdate = null;
-    log('info', `v${update.version} skipped by user; not downloading`);
-    broadcast({
-      kind: 'skipped',
-      version: update.version,
-      checkedAt: Date.now(),
-      releasePageUrl: releasePageUrlFor(update.version),
-    });
-    return;
-  }
-
-  // Both remaining answers download now. They differ only in whether we
-  // restart as soon as it lands, or apply it on the next quit.
-  installWhenDownloaded = response === 0;
-  log('info', `v${update.version} accepted (${installWhenDownloaded ? 'restart when ready' : 'install on quit'})`);
-  await startDownload(update, target.bundlePath);
 }
 
 async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<void> {
@@ -535,11 +465,22 @@ async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<
   }
 }
 
-async function triggerDownload(): Promise<void> {
+/**
+ * Download the pending update.
+ *
+ * `installNow` is the user's answer to "when", and it is passed in rather
+ * than remembered: the native dialog used to set `installWhenDownloaded` as a
+ * side effect, and with the asking moved into the renderer a stale value from
+ * an earlier flow would decide whether we restart out from under them.
+ */
+async function triggerDownload(installNow: boolean): Promise<void> {
   if (currentState.kind !== 'available' || pendingUpdate === null) {
     log('warn', `triggerDownload called from state ${currentState.kind}, ignoring`);
     return;
   }
+  installWhenDownloaded = installNow;
+  log('info',
+    `v${pendingUpdate.version} accepted (${installNow ? 'restart when ready' : 'install on quit'})`);
   const target = await findReplaceableBundle();
   if (!target.ok) {
     broadcast({
@@ -578,7 +519,6 @@ function handleError(err: unknown): void {
   // half-finished download around to be applied on quit.
   void clearStaged();
   pendingUpdate = null;
-  promptedForVersion = null;
 
   if (cat.category === 'network' && cat.canRetry) {
     broadcast({
@@ -643,7 +583,9 @@ export function setupAutoUpdater(): void {
 
   // IPC handlers for renderer-initiated actions.
   ipcMain.handle('update:check', () => triggerCheck({ source: 'user' }));
-  ipcMain.handle('update:download', () => triggerDownload());
+  ipcMain.handle('update:download', (_e, installNow: unknown) =>
+    triggerDownload(installNow === true),
+  );
   ipcMain.handle('update:install', () => {
     triggerInstall();
     return true;  // synchronous, returns before the quit kicks in

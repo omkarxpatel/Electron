@@ -110,7 +110,8 @@ export interface ElectronApi {
     getInitialState(): UpdateState;
     onState(handler: (state: UpdateState) => void): () => void;
     check(): Promise<void>;
-    download(): Promise<void>;
+    /** true = restart as soon as it lands; false = apply on next quit. */
+    download(installNow: boolean): Promise<void>;
     install(): Promise<void>;
     openFallback(url?: string): Promise<void>;
     dismissVersion(version: string): Promise<void>;

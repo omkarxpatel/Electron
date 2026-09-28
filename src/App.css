@@ -4523,6 +4523,156 @@
   margin-left: 2px;
 }
 
+/* ── Update dialog ──────────────────────────────────────────────────────
+   The "an update is available" prompt. Replaces dialog.showMessageBox, which
+   takes a plain string and so could never show the release notes; they had to
+   go in the top strip, where they got clipped.
+
+   Centred rather than anchored: it is the only thing being asked, and the
+   notes make it tall enough that hanging it off the top bar would push it
+   over the equaliser anyway. */
+.update-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  /* Pointer events only on the card. The dialog is deliberately not OS-modal
+     — closing it leaves the update pending under Settings — but a full-screen
+     backdrop that swallowed clicks would make it modal in practice. */
+  pointer-events: none;
+  animation: update-dialog-fade 140ms ease-out;
+}
+
+.update-dialog {
+  pointer-events: auto;
+  position: relative;
+  width: min(460px, calc(100vw - 64px));
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding: 24px 26px 20px;
+  border-radius: 14px;
+  background: rgba(24, 24, 28, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  animation: update-dialog-rise 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes update-dialog-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes update-dialog-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+.update-dialog-title {
+  margin: 0 28px 14px 0;
+  font-size: 16px;
+  font-weight: 650;
+  color: #f3f4f6;
+  letter-spacing: -0.01em;
+}
+
+.update-dialog-notes {
+  margin: 0 0 16px;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.update-dialog-sub {
+  margin: 0 0 16px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.update-dialog-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.update-dialog-btn {
+  width: 100%;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.update-dialog-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.update-dialog-btn.is-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #0a0a0a;
+}
+
+.update-dialog-btn.is-primary:hover {
+  filter: brightness(1.08);
+}
+
+.update-dialog-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.update-dialog-link {
+  display: block;
+  margin: 14px auto 0;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.42);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.update-dialog-link:hover { color: rgba(255, 255, 255, 0.7); }
+
+.update-dialog-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  font-size: 17px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+}
+
+.update-dialog-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
 /* Pin notice under the output picker. We raise the chosen device's hardware
    volume to unity while Live is on — a system-level change the user didn't ask
    for — so it is stated rather than done quietly. Absolutely positioned so

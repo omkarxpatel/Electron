@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.7 (prompt)
+
+- The update prompt is now part of the app instead of a macOS alert, and it lists what's in the release. The notes used to appear in a strip along the top, where longer ones were cut off mid-sentence.
+- You can close the prompt and decide later — it stays under Settings → About.
+
 ## 1.4.6 (prompt)
 
 - The playlist panel can now be folded away. The chevron in its header slides it off to the right and hands the whole window to the visualizer and EQ; a tab on the right edge brings it back. Your music, playlist and place in the list are untouched while it's closed.

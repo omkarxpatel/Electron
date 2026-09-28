@@ -56,14 +56,38 @@ function ensureSubscribed(): void {
   });
 }
 
+/**
+ * Pull the bullet lines out of a release's markdown.
+ *
+ * Shared by the top banner and the update dialog, which want the same text at
+ * different lengths — the banner is a strip and truncates, the dialog has room
+ * for all of it. Kept here so the two can't drift into parsing the same
+ * CHANGELOG differently.
+ *
+ * Only list items survive: the notes are authored for humans and may carry a
+ * stray heading or blank line, and anything that isn't a bullet is not
+ * something we have a place to put.
+ */
+export function parseReleaseNotes(notes?: string): string[] {
+  if (!notes) return [];
+  return notes
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- ') || line.startsWith('* '))
+    .map((line) => line.slice(2).replace(/\*\*/g, '').trim())
+    .filter(Boolean);
+}
+
 // ── Public actions ─────────────────────────────────────────────────────────
 
 export async function checkForUpdate(): Promise<void> {
   await window.api.update.check();
 }
 
-export async function downloadUpdate(): Promise<void> {
-  await window.api.update.download();
+/** `installNow` true restarts as soon as the download lands; false stages it
+ *  for the next quit. */
+export async function downloadUpdate(installNow = false): Promise<void> {
+  await window.api.update.download(installNow);
 }
 
 export async function installUpdate(): Promise<void> {

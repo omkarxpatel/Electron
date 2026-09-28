@@ -150,8 +150,11 @@ const api = {
     check(): Promise<void> {
       return ipcRenderer.invoke('update:check');
     },
-    download(): Promise<void> {
-      return ipcRenderer.invoke('update:download');
+    /** `installNow` true restarts as soon as it lands; false stages it for
+     *  the next quit. Always passed explicitly — main no longer remembers an
+     *  answer from a previous prompt. */
+    download(installNow: boolean): Promise<void> {
+      return ipcRenderer.invoke('update:download', installNow);
     },
     install(): Promise<void> {
       return ipcRenderer.invoke('update:install');

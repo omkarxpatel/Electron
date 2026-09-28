@@ -4,6 +4,7 @@ import {
   downloadUpdate,
   installUpdate,
   openReleasePage,
+  parseReleaseNotes,
   useUpdateState,
 } from '../lib/updateService';
 import type { UpdateState } from '../types/api';
@@ -37,7 +38,14 @@ function UpdateBannerImpl() {
   // Idle + up-to-date render nothing — banner is for *actionable* states.
   // 'skipped' is hidden for the same reason 'up-to-date' is: the user asked
   // not to be nagged. It differs only in what Settings reports.
-  if (state.kind === 'idle' || state.kind === 'up-to-date' || state.kind === 'skipped') {
+  // 'available' belongs to UpdateDialog — it carries the release notes, which
+  // is what a strip this tall could never show without clipping them.
+  if (
+    state.kind === 'idle' ||
+    state.kind === 'up-to-date' ||
+    state.kind === 'skipped' ||
+    state.kind === 'available'
+  ) {
     return null;
   }
 
@@ -60,14 +68,7 @@ const MAX_NOTES = 4;
  * string comes off the network, and the banner is not worth an HTML sink.
  */
 function ReleaseNotes({ notes }: { notes?: string }) {
-  if (!notes) return null;
-  const items = notes
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith('- ') || l.startsWith('* '))
-    .map((l) => l.slice(2).replace(/\*\*/g, '').trim())
-    .filter(Boolean);
-
+  const items = parseReleaseNotes(notes);
   if (items.length === 0) return null;
   const shown = items.slice(0, MAX_NOTES);
 
