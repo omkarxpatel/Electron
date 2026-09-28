@@ -1716,11 +1716,34 @@
      └────────────────────────────┴──────────────────┘
    ============================================================ */
 
+/* Width of the right column, in ONE place. `.hover-overlay-panel` is
+ * fixed-positioned and has to stop exactly where this column starts; when
+ * that was a second hardcoded 340px, collapsing the column left the overlay
+ * short by a 340px strip of nothing. Both read the variable now. */
+.app {
+  --right-col-full: 340px;
+  --right-col-w: var(--right-col-full);
+}
+
+.app[data-right-collapsed='true'] {
+  --right-col-w: 0px;
+}
+
 .workspace {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: 1fr var(--right-col-w);
   height: 100%;
   min-height: 0;
+  /* Anchors the floating expand button, which is absolutely positioned so it
+   * never becomes a third grid column. */
+  position: relative;
+  transition: grid-template-columns 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace {
+    transition: none;
+  }
 }
 
 .workspace > * {
@@ -1733,9 +1756,14 @@
   border-right: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/* Held at full width even while the grid track shrinks to zero, so collapsing
+ * SLIDES the panel off the right edge instead of reflowing every track row
+ * down to nothing on the way out. `.app` and `#root` are both
+ * `overflow: hidden`, so the overspill past the window edge is clipped. */
 .workspace-right {
   display: flex;
   flex-direction: column;
+  width: var(--right-col-full);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1749,7 +1777,7 @@
 .hover-overlay-panel {
   position: fixed;
   left: 0;
-  right: 340px; /* clear the right column (workspace-right is 340px wide) */
+  right: var(--right-col-w); /* clear the right column, collapsed or not */
   top: 50px; /* clear the topbar */
   bottom: 198px; /* clear viz-banner (110) + player bar (88) */
   z-index: 11;
@@ -2101,6 +2129,71 @@
 }
 
 .sp-right-music-icon:focus-visible {
+  border-color: var(--accent-border);
+}
+
+/* Collapse chevron — pushed to the far end of the header row, away from the
+ * library trigger, so a mis-click doesn't hide the panel you meant to open. */
+.sp-right-collapse {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.sp-right-collapse:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.sp-right-collapse:focus-visible {
+  border-color: var(--accent-border);
+}
+
+/* The only way back once the column is gone: a tab on the right edge, at the
+ * same height as the header it replaces. Sits above the visualizer, which
+ * paints to the window edge underneath it. */
+.sp-right-expand {
+  position: absolute;
+  top: 8px;
+  right: 0;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: rgba(18, 18, 20, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  outline: none;
+  transition: color 140ms ease, background 140ms ease, width 140ms ease;
+}
+
+.sp-right-expand:hover {
+  width: 30px;
+  color: var(--accent-bright);
+  background: rgba(24, 24, 28, 0.95);
+}
+
+.sp-right-expand:focus-visible {
   border-color: var(--accent-border);
 }
 

@@ -8,6 +8,10 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.6 (prompt)
+
+- The playlist panel can now be folded away. The chevron in its header slides it off to the right and hands the whole window to the visualizer and EQ; a tab on the right edge brings it back. Your music, playlist and place in the list are untouched while it's closed.
+
 ## 1.4.5 (prompt)
 
 - Skipping a version no longer makes Settings claim you're up to date. It now says the update is there and that you skipped it; "Check for updates" still brings it back.

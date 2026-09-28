@@ -42,9 +42,14 @@ interface Props {
   /** When false the lyrics pane is not mounted at all, so its lazy chunk is
    *  never fetched and the track list reclaims the vertical space. */
   showLyrics: boolean;
+  /** Right column slid away so the visualizer + EQ get the full width. The
+   *  panel stays mounted — collapsing must not drop the Spotify poll, the
+   *  lyrics prefetch or the track list's scroll position. */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }
 
-export function SpotifySection({ active, showLyrics }: Props) {
+export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapsed }: Props) {
   const library = useLibrary();
   const playback = usePlayback();
   // Space / ← / →. Registered here because this section is only mounted once
@@ -186,6 +191,16 @@ export function SpotifySection({ active, showLyrics }: Props) {
           >
             <IconLibrary />
           </button>
+          <button
+            type="button"
+            className="sp-right-collapse"
+            onClick={onToggleCollapsed}
+            aria-label="Collapse panel"
+            aria-expanded={!collapsed}
+            title="Collapse the panel — the visualizer takes the full width"
+          >
+            <IconChevronRight />
+          </button>
         </div>
 
         <SectionBoundary label="track list">
@@ -220,6 +235,21 @@ export function SpotifySection({ active, showLyrics }: Props) {
           </SectionBoundary>
         )}
       </div>
+
+      {/* Absolutely positioned, so it is not a third grid column — the
+          workspace stays a 2-column grid whether or not this is showing. */}
+      {collapsed && (
+        <button
+          type="button"
+          className="sp-right-expand"
+          onClick={onToggleCollapsed}
+          aria-label="Expand panel"
+          aria-expanded={false}
+          title="Bring the playlist panel back"
+        >
+          <IconChevronLeft />
+        </button>
+      )}
 
       <HoverOverlayPanel
         title="Spotify"
@@ -256,6 +286,24 @@ export function SpotifySection({ active, showLyrics }: Props) {
         </SectionBoundary>
       </HoverOverlayPanel>
     </>
+  );
+}
+
+/** Chevrons point the way the panel travels: right to tuck it away, left to
+ *  pull it back. */
+function IconChevronRight() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+function IconChevronLeft() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M15 6l-6 6 6 6" />
+    </svg>
   );
 }
 

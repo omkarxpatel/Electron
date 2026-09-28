@@ -242,8 +242,22 @@ function AppContent() {
     setPlaythrough((v) => !v);
   }, []);
 
+  // Collapse the right column so the visualizer + EQ get the whole width.
+  // Lives on `.app` rather than `.workspace` because HoverOverlayPanel is
+  // fixed-positioned and has to stop short of the right column — it reads
+  // the same --right-col-w, and a class further down wouldn't reach it.
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const toggleRightCollapsed = useCallback((): void => {
+    setRightCollapsed((v) => !v);
+  }, []);
+
   return (
-    <div className="app" data-immersive={settings.immersive ? 'true' : 'false'} style={themeStyle}>
+    <div
+      className="app"
+      data-immersive={settings.immersive ? 'true' : 'false'}
+      data-right-collapsed={rightCollapsed ? 'true' : 'false'}
+      style={themeStyle}
+    >
       {settings.albumArtBackdrop && albumImageUrl && (
         // key forces a fresh element per track so the fade-in replays instead
         // of the browser swapping src on a already-opaque image.
@@ -304,7 +318,12 @@ function AppContent() {
             />
 
             <SectionBoundary label="Spotify panel">
-              <SpotifySection active={isActive} showLyrics={settings.showLyrics} />
+              <SpotifySection
+                active={isActive}
+                showLyrics={settings.showLyrics}
+                collapsed={rightCollapsed}
+                onToggleCollapsed={toggleRightCollapsed}
+              />
             </SectionBoundary>
           </div>
         )}
