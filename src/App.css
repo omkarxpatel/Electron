@@ -3733,8 +3733,23 @@
 }
 
 .workspace-right .sp-track-header-cover {
-  width: 72px;
-  height: 72px;
+  /* 112px, not the 160 of the wide layout — this column is 340px and the
+     header spends 36 of it on padding and 14 on the gap, leaving 290 to split
+     with the text. At 112 the text column still gets 178px, which holds
+     "Pause" plus the overflow button on one line; past about 130 they wrap.
+
+     It also lands near the text column's own height here (eyebrow, title,
+     meta and the actions row), so the two sides read as aligned rather than
+     the cover looking like a thumbnail stuck beside a taller block. */
+  width: 112px;
+  height: 112px;
+}
+
+/* The heart is a fixed 44px glyph, so growing the cover box above left it
+   swimming in the gradient. Scaled to keep roughly the fill it had at 72. */
+.workspace-right .sp-liked-cover svg {
+  width: 64px;
+  height: 64px;
 }
 
 .workspace-right .sp-track-header-title {

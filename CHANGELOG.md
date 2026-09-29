@@ -8,6 +8,10 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.12 (silent)
+
+- Bigger playlist and Liked Songs cover art in the sidebar.
+
 ## 1.4.11 (silent)
 
 - Fixed the "Suggested" tag appearing on tracks that are in the playlist you're playing, including ones you picked yourself.
