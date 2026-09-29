@@ -314,7 +314,14 @@ export function useSpotify() {
       tracks: [],
       tracksLoading: true,
       tracksTotal: 0,
-      tracksNextOffset: null,
+      // 0, not null. `null` is the "fully paged in" sentinel, and setting it
+      // here claimed the opposite of the truth: for the whole window between
+      // opening a source and its first page landing, state read as an empty
+      // list that was known-complete. Anything asking "is this track missing
+      // from the playlist?" got yes for every track — which is exactly how the
+      // Suggested badge came to appear on tracks that were sitting in the list.
+      // 0 is the honest value: nothing fetched, next fetch starts at offset 0.
+      tracksNextOffset: 0,
     }));
     try {
       const page = await fetchSourcePage(source, 0);

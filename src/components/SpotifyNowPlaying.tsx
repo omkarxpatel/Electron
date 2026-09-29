@@ -20,22 +20,34 @@ interface Props {
   suggested: boolean;
 }
 
-// pickSmallestImage selects by area rather than relying on Spotify's image
-// ordering — the only caller that does this. Kept local for that reason.
-function pickSmallestImage(images: SpotifyImage[]): SpotifyImage | null {
+// Selects by measured area rather than relying on Spotify's image ordering,
+// which this file has never trusted. `pickSmallestImage` used to take the
+// smallest of them; the art is now bigger than the ~64px entry Spotify puts
+// last, so it asks for the smallest one that is still big enough to render
+// sharp, and only falls back to the largest available when none is.
+function pickArtAtLeast(images: SpotifyImage[], minPx: number): SpotifyImage | null {
   if (!images || images.length === 0) return null;
-  let smallest: SpotifyImage = images[0];
-  let smallestArea = Number.POSITIVE_INFINITY;
+  let best: SpotifyImage | null = null;
+  let bestArea = Number.POSITIVE_INFINITY;
+  let largest: SpotifyImage = images[0];
+  let largestArea = -1;
   for (const img of images) {
-    const w = img.width ?? Number.POSITIVE_INFINITY;
-    const h = img.height ?? Number.POSITIVE_INFINITY;
+    // A missing dimension is treated as big enough rather than as infinite:
+    // Spotify omits width/height on some covers, and calling those unusable
+    // would drop the only image we have.
+    const w = img.width ?? minPx;
+    const h = img.height ?? minPx;
     const area = w * h;
-    if (area < smallestArea) {
-      smallestArea = area;
-      smallest = img;
+    if (area > largestArea) {
+      largestArea = area;
+      largest = img;
+    }
+    if (w >= minPx && h >= minPx && area < bestArea) {
+      bestArea = area;
+      best = img;
     }
   }
-  return smallest;
+  return best ?? largest;
 }
 
 // Past this many ms into a track, a single Previous click restarts the track
@@ -180,7 +192,9 @@ function SpotifyNowPlayingImpl({
   }, [playback?.device?.volume_percent]);
 
   const track = playback?.item ?? null;
-  const albumImage = track ? pickSmallestImage(track.album.images) : null;
+  // 128px minimum for a 64px box on a 2x display. Spotify's smallest entry is
+  // ~64px, which was fine at the old 48px and upscales visibly at 64.
+  const albumImage = track ? pickArtAtLeast(track.album.images, 128) : null;
   const currentVolume = playback?.device?.volume_percent ?? 50;
 
   const commitSeek = (): void => {

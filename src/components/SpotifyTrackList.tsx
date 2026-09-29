@@ -26,6 +26,11 @@ interface Props {
   rawLoadedThrough: number | null;
   /** Player shuffle state. Decides where the header Play button starts. */
   shuffle: boolean;
+  /** True when the player is playing the source this list is showing, so the
+   *  header can offer Pause. Decided by the caller, which is the only place
+   *  that can compare the player's context uri against the open source. */
+  sourcePlaying: boolean;
+  onPause: () => void;
   /** Every playlist we know about; the row menu offers the writable ones as
    *  "Add to playlist" targets. */
   playlists: SpotifyPlaylist[];
@@ -58,6 +63,8 @@ function SpotifyTrackListImpl({
   loading,
   currentlyPlayingId,
   onPlay,
+  onPause,
+  sourcePlaying,
   onPlayTracks,
   onLoadMore,
   hasMore,
@@ -390,11 +397,20 @@ function SpotifyTrackListImpl({
   return (
     <div className="sp-track-view">
       {source.kind === 'liked' ? (
-        <LikedHeader total={tracksTotal} onPlay={handlePlayAll} canPlay={tracks.length > 0} shuffle={shuffle} />
+        <LikedHeader
+          total={tracksTotal}
+          onPlay={handlePlayAll}
+          onPause={onPause}
+          sourcePlaying={sourcePlaying}
+          canPlay={tracks.length > 0}
+          shuffle={shuffle}
+        />
       ) : (
         <PlaylistHeader
           playlist={source.playlist}
           onPlay={handlePlayAll}
+          onPause={onPause}
+          sourcePlaying={sourcePlaying}
           canPlay={tracks.length > 0}
           shuffle={shuffle}
           editable={canEditPlaylist(source.playlist, userId)}
@@ -503,6 +519,10 @@ function SpotifyTrackListImpl({
 
 interface HeaderProps {
   onPlay: () => void;
+  onPause: () => void;
+  /** True only when the player is playing THIS source, so the button can
+   *  show Pause rather than offering to start what is already running. */
+  sourcePlaying: boolean;
   canPlay: boolean;
   shuffle: boolean;
 }
@@ -510,6 +530,8 @@ interface HeaderProps {
 function PlaylistHeader({
   playlist,
   onPlay,
+  onPause,
+  sourcePlaying,
   canPlay,
   shuffle,
   editable,
@@ -621,7 +643,15 @@ function PlaylistHeader({
           {trackTotal !== undefined ? ` · ${trackTotal} tracks` : null}
         </div>
         <div className="sp-track-header-actions">
-          {canPlay && <PlayButton onPlay={onPlay} shuffle={shuffle} label={playlist.name} />}
+          {canPlay && (
+            <PlayButton
+              onPlay={onPlay}
+              onPause={onPause}
+              playing={sourcePlaying}
+              shuffle={shuffle}
+              label={playlist.name}
+            />
+          )}
           {confirmingDelete ? (
             <>
               <button
@@ -683,7 +713,14 @@ function PlaylistHeader({
   );
 }
 
-function LikedHeader({ total, onPlay, canPlay, shuffle }: HeaderProps & { total: number }) {
+function LikedHeader({
+  total,
+  onPlay,
+  onPause,
+  sourcePlaying,
+  canPlay,
+  shuffle,
+}: HeaderProps & { total: number }) {
   return (
     <header className="sp-track-header">
       <div className="sp-track-header-cover sp-liked-cover" aria-hidden>
@@ -694,19 +731,41 @@ function LikedHeader({ total, onPlay, canPlay, shuffle }: HeaderProps & { total:
         <h1 className="sp-track-header-title">Liked Songs</h1>
         <div className="sp-track-header-meta">{total} songs</div>
         <div className="sp-track-header-actions">
-          {canPlay && <PlayButton onPlay={onPlay} shuffle={shuffle} label="Liked Songs" />}
+          {canPlay && (
+            <PlayButton
+              onPlay={onPlay}
+              onPause={onPause}
+              playing={sourcePlaying}
+              shuffle={shuffle}
+              label="Liked Songs"
+            />
+          )}
         </div>
       </div>
     </header>
   );
 }
 
+/**
+ * Header play control. Shows Pause while this source is the one playing, so
+ * it reflects the transport instead of offering to start something that is
+ * already going.
+ *
+ * `playing` is decided by the caller rather than here, because only it can
+ * compare the player's context uri against the open source — and for Liked
+ * Songs there is nothing to compare, since it plays as a bare uri list with
+ * no context. That case stays showing Play.
+ */
 function PlayButton({
   onPlay,
+  onPause,
+  playing,
   shuffle,
   label,
 }: {
   onPlay: () => void;
+  onPause: () => void;
+  playing: boolean;
   shuffle: boolean;
   label: string;
 }) {
@@ -714,13 +773,22 @@ function PlayButton({
     <button
       type="button"
       className="sp-track-header-play"
-      onClick={onPlay}
-      title={shuffle ? 'Play from a random track' : 'Play'}
-      aria-label={`Play ${label}`}
+      onClick={playing ? onPause : onPlay}
+      title={playing ? 'Pause' : shuffle ? 'Play from a random track' : 'Play'}
+      aria-label={playing ? `Pause ${label}` : `Play ${label}`}
     >
-      <IconPlay />
-      Play
+      {playing ? <IconPause /> : <IconPlay />}
+      {playing ? 'Pause' : 'Play'}
     </button>
+  );
+}
+
+function IconPause() {
+  return (
+    <svg width="11" height="12" viewBox="0 0 11 12" aria-hidden="true">
+      <rect x="1.4" y="1.2" width="3" height="9.6" fill="currentColor" />
+      <rect x="6.6" y="1.2" width="3" height="9.6" fill="currentColor" />
+    </svg>
   );
 }
 

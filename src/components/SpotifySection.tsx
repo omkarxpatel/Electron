@@ -52,6 +52,18 @@ interface Props {
 export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapsed }: Props) {
   const library = useLibrary();
   const playback = usePlayback();
+
+  // Whether the transport is playing the source this list is showing, which
+  // is what lets the header button show Pause. Compared on the context uri
+  // rather than on the playing track: a track can appear in many playlists,
+  // so "the current track is in this list" would light up the wrong header.
+  //
+  // Liked Songs can't be detected this way and stays showing Play — it is
+  // started as a bare uri list, so Spotify reports no context at all.
+  const sourcePlaying =
+    playback.playback?.is_playing === true &&
+    library.source?.kind === 'playlist' &&
+    playback.playback.context?.uri === library.source.playlist.uri;
   // Space / ← / →. Registered here because this section is only mounted once
   // Spotify is connected, so the keys do nothing before there's a player.
   useTransportShortcuts();
@@ -216,6 +228,8 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
           hasMore={library.tracksNextOffset !== null}
           rawLoadedThrough={library.tracksNextOffset}
           shuffle={playback.playback?.shuffle_state === true}
+          sourcePlaying={sourcePlaying}
+          onPause={playback.togglePlay}
           playlists={library.playlists}
           userId={library.userId}
           onAddToPlaylist={library.addTrackToPlaylist}

@@ -22,12 +22,25 @@ export function NowPlayingBar() {
   // playlist either way. So infer it: playing from the playlist we have open,
   // but the track isn't in it.
   //
-  // Gated on the playlist being FULLY paged in (tracksNextOffset === null).
-  // Mid-pagination, "not in the list we've loaded" doesn't mean "not in the
-  // playlist", and badging on that would mislabel ordinary tracks on every
-  // long playlist. Liked Songs is excluded: it plays as a uri list with no
-  // context, so there is nothing to compare against.
-  const trackId = p.playback?.item?.id ?? null;
+  // Every clause below is a way that inference has been wrong:
+  //
+  //  - `tracksNextOffset === null` means fully paged in. Mid-pagination,
+  //    "not in the list we've loaded" doesn't mean "not in the playlist".
+  //  - `tracks.length > 0` because you cannot conclude a track is missing
+  //    from a list you have none of. Opening a source used to set the
+  //    fully-paged sentinel while the list was still empty, so for that whole
+  //    window this test said yes to everything, badging tracks that were
+  //    visibly sitting in the playlist.
+  //  - `!tracksLoading` for the same reason, one step earlier.
+  //  - `linked_from` because Spotify relinks tracks per market: the id on the
+  //    player is the market-specific one while the playlist holds the
+  //    original, so comparing only `id` reports a false miss.
+  //
+  // Liked Songs is excluded: it plays as a uri list with no context, so there
+  // is nothing to compare against.
+  const item = p.playback?.item ?? null;
+  const trackId = item?.id ?? null;
+  const originalId = item?.linked_from?.id ?? null;
   const contextUri = p.playback?.context?.uri ?? null;
   const suggested =
     trackId !== null &&
@@ -35,7 +48,11 @@ export function NowPlayingBar() {
     lib.source?.kind === 'playlist' &&
     lib.source.playlist.uri === contextUri &&
     lib.tracksNextOffset === null &&
-    !lib.tracks.some((t) => t.id === trackId);
+    !lib.tracksLoading &&
+    lib.tracks.length > 0 &&
+    !lib.tracks.some(
+      (t) => t.id === trackId || (originalId !== null && t.id === originalId),
+    );
 
   return (
     <SpotifyNowPlaying

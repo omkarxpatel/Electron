@@ -8,6 +8,12 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.11 (silent)
+
+- Fixed the "Suggested" tag appearing on tracks that are in the playlist you're playing, including ones you picked yourself.
+- The play button on a playlist now shows Pause while that playlist is the thing playing.
+- Bigger album art in the player bar.
+
 ## 1.4.10 (prompt)
 
 - Fixed the app starting at almost no volume. Holding your output device at 100% was being offset by turning your system volume down, and that offset was re-applied on every launch until the slider was at the floor.

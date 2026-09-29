@@ -52,6 +52,11 @@ export interface SpotifyTrack {
   /** Removed from Dev Mode responses in Feb 2026; grandfathered client IDs
    *  still receive it. Same handling as the artist fields above. */
   popularity?: number;
+  /** Present when Spotify has relinked this track for the user's market: the
+   *  id here is the ORIGINAL, and `id` above is the market-specific one. They
+   *  differ, so matching a playing track against a stored list has to try
+   *  both or it will decide a track isn't in a list it is sitting in. */
+  linked_from?: { id: string; uri?: string };
 }
 
 export interface SpotifyPlaylist {
