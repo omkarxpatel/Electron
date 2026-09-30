@@ -5,6 +5,7 @@ import type { EnhancerState } from '../state/enhancer';
 import type { EffectsState } from '../state/effects';
 import { buildEffectsChain, type EffectsChain } from './effectsGraph';
 import type { AiEffectTargets } from './useAiEnhancer';
+import { createLoudnessTap, type LoudnessTap } from './loudnessTap';
 import { buildBandCoefs, logSpacedFrequencies, responseCurveDb } from './biquadResponse';
 
 interface AudioEngineState {
@@ -21,6 +22,10 @@ interface AudioEngineState {
   /** Headroom the auto-trim is currently giving back, in dB (>= 0). Surfaced
    *  so the Enhancer can show that a boost moved tone, not level. */
   autoTrimDb: number;
+  /** BS.1770 tap on the raw input, or null where AudioWorklet is
+   *  unavailable. A ref rather than state: it is read on the enhancer's
+   *  10 Hz tick and must not change identity or force a render. */
+  loudnessTapRef: { current: LoudnessTap | null };
   error: string | null;
   status: 'Idle' | 'Connecting' | 'Listening' | 'Error';
 }
@@ -77,6 +82,10 @@ export function useAudioEngine(
    *  user's width / exciter values on the rack — the user's stored state is
    *  left untouched so switching AI effects off restores it exactly. */
   aiEffectsRef: { current: AiEffectTargets } | null = null,
+  /** Level-match trim for the current track, in dB. Sits between the input
+   *  and the preamp, downstream of the loudness tap that produced it — see
+   *  the wiring comment. 0 disables it. */
+  autoLevelDb = 0,
   /** Input compensation gain in dB, applied right after the MediaStreamSource
    *  (before the preamp / EQ / analysers). Used to lift quiet virtual inputs
    *  like BlackHole back to parity with direct system audio. Default 0 dB. */
@@ -96,6 +105,7 @@ export function useAudioEngine(
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const inputGainRef = useRef<GainNode | null>(null);
   const preampRef = useRef<GainNode | null>(null);
+  const autoLevelRef = useRef<GainNode | null>(null);
   const filtersRef = useRef<BiquadFilterNode[]>([]);
   const bassShelfRef = useRef<BiquadFilterNode | null>(null);
   const midPeakRef = useRef<BiquadFilterNode | null>(null);
@@ -126,6 +136,8 @@ export function useAudioEngine(
   const preEqAttachedRef = useRef(false);
   /** Live mirror of aiEnabled so the graph-build effect can read it without
    *  taking it as a dep (which would force a rebuild every toggle). */
+  const autoLevelDbRef = useRef(autoLevelDb);
+  autoLevelDbRef.current = autoLevelDb;
   const aiEnabledRef = useRef(aiEnabled);
   aiEnabledRef.current = aiEnabled;
   const destinationConnectedRef = useRef(false);
@@ -140,6 +152,10 @@ export function useAudioEngine(
   const effectsStateRef = useRef(effectsState);
   effectsStateRef.current = effectsState;
   const effectsChainRef = useRef<EffectsChain | null>(null);
+  /** BS.1770 tap on the raw input. Null when AudioWorklet is unavailable or
+   *  the module failed to load — every caller treats that as "no loudness
+   *  data" rather than an error. */
+  const loudnessTapRef = useRef<LoudnessTap | null>(null);
   /** A/B compare taps. `abProcessed` carries the full chain, `abRaw` carries
    *  the untouched input; exactly one is open at a time. */
   const abProcessedRef = useRef<GainNode | null>(null);
@@ -288,8 +304,49 @@ export function useAudioEngine(
         // visualizer reflects the audio content, not the user's chosen output
         // amplitude. (If we tapped after masterGain, the visualizer would die
         // at volume = 0 even though the audio is fine.)
+        /* Level match, applied between the input and the preamp.
+         *
+         * Here rather than at masterGain because masterGain is the user's
+         * volume and is a literal multiplier by design — silently moving it
+         * would make the label a lie. Here rather than folded into inputGain
+         * because that is per-device compensation, and the two want
+         * different lifetimes.
+         *
+         * Note what is NOT downstream of this: the A/B raw tap and the
+         * loudness worklet both hang off inputGain, so comparing raw against
+         * processed still compares like for like, and the meter never sees
+         * its own correction. */
+        const autoLevel = ctx.createGain();
+        autoLevel.gain.value = Math.pow(10, autoLevelDbRef.current / 20);
+
         source.connect(inputGain);
-        inputGain.connect(preamp);
+        inputGain.connect(autoLevel);
+        autoLevel.connect(preamp);
+
+        /* BS.1770 tap, fed from inputGain — deliberately upstream of every
+         * gain this measurement could ever drive. Measuring after an
+         * auto-level would be a closed loop: the correction would change the
+         * reading that produced it, exactly the trap the pre-EQ analysers
+         * already exist to avoid for the EQ.
+         *
+         * inputGain itself is device compensation, constant per device, so
+         * including it costs nothing and means we measure the signal the
+         * rest of the chain actually works with. */
+        const loudnessTap = await createLoudnessTap(ctx);
+        if (cancelled) {
+          loudnessTap?.dispose();
+          ctx.close();
+          return;
+        }
+        if (loudnessTap) {
+          inputGain.connect(loudnessTap.node);
+          // A worklet whose output reaches nothing is not guaranteed to be
+          // scheduled. Its process() never writes to the output buffer, so
+          // what arrives at the limiter is silence — this connection exists
+          // purely to keep the node in the pulled graph.
+          loudnessTap.node.connect(limiter);
+          loudnessTapRef.current = loudnessTap;
+        }
         // Pre-EQ analyser splitter is wired but its FEED FROM PREAMP is
         // attached/detached dynamically based on `aiEnabled` — see the effect
         // below. When AI is off, these analyser nodes receive no audio and
@@ -344,6 +401,7 @@ export function useAudioEngine(
         sourceRef.current = source;
         inputGainRef.current = inputGain;
         preampRef.current = preamp;
+        autoLevelRef.current = autoLevel;
         filtersRef.current = filters;
         bassShelfRef.current = bassShelf;
         midPeakRef.current = midPeak;
@@ -421,6 +479,7 @@ export function useAudioEngine(
       ctxRef.current = null;
       sourceRef.current = null;
       preampRef.current = null;
+      autoLevelRef.current = null;
       filtersRef.current = [];
       bassShelfRef.current = null;
       midPeakRef.current = null;
@@ -428,6 +487,8 @@ export function useAudioEngine(
       pannerRef.current = null;
       effectsChainRef.current?.dispose();
       effectsChainRef.current = null;
+      loudnessTapRef.current?.dispose();
+      loudnessTapRef.current = null;
       abProcessedRef.current = null;
       abRawRef.current = null;
       masterGainRef.current = null;
@@ -465,6 +526,16 @@ export function useAudioEngine(
       applyEqState(ctx, preamp, filters, eqState, enhancerState, aiEnabled, prevAppliedBandsRef),
     );
   }, [eqState, enhancerState, aiEnabled]);
+
+  /* Level match — ramp when the track changes. Slow enough not to read as a
+   * jump mid-programme, fast enough to be finished before anyone has judged
+   * the new track's level. */
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    const node = autoLevelRef.current;
+    if (!ctx || !node) return;
+    node.gain.setTargetAtTime(Math.pow(10, autoLevelDb / 20), ctx.currentTime, 0.12);
+  }, [autoLevelDb]);
 
   /* Input compensation — smoothly ramp the input-gain node when the
    * compensation value changes (e.g. user switched from BlackHole to mic). */
@@ -747,6 +818,7 @@ export function useAudioEngine(
     preEqAnalyserR,
     limiter,
     autoTrimDb,
+    loudnessTapRef,
     error,
     status,
   };

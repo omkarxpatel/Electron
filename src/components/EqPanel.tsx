@@ -93,7 +93,11 @@ function describeAiStatus(
   if (!status) return 'starting…';
   if (status.idle) return 'no signal — holding';
   if (!status.settled) return selected === 'auto' ? 'listening…' : 'settling…';
-  return selected === 'auto' ? `matching ${profileLabel(status.dominant)}` : 'settled';
+  // "recalled" is worth saying out loud: it's the difference between a curve
+  // measured over the last 20 s and one carried over from previous plays of
+  // this track, and only the second is right from the downbeat.
+  const how = status.recalled ? 'recalled' : 'matching';
+  return selected === 'auto' ? `${how} ${profileLabel(status.dominant)}` : how;
 }
 
 export const EqPanel = memo(EqPanelImpl);

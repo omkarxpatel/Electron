@@ -9,6 +9,7 @@ import {
   type MaterialClass,
 } from './enhanceProfiles';
 import { buildCurveSolver, solveBandGains } from './biquadResponse';
+import type { TrackProfile } from './trackProfile';
 
 /**
  * AI Enhancer — adaptive graphic EQ that matches the playing music toward a
@@ -170,6 +171,18 @@ interface Params {
   loudnessComp: boolean;
   /** Let the AI drive stereo width and the bass exciter. */
   driveEffects: boolean;
+  /** Spotify id of what is playing, or null when nothing is. Changing it
+   *  resets the spectrum estimate — without that, Steady's 20 s window
+   *  straddles the boundary and corrects the first third of every track
+   *  using the previous track's balance. */
+  trackId: string | null;
+  /** What we already know about this track's shape, or null if unheard.
+   *  Seeds the estimate so a known track is corrected from the downbeat
+   *  instead of after 20 s of listening. */
+  recalled: TrackProfile | null;
+  /** Called once per track, on the change away from it, with the measured
+   *  mean-zero shape and how many seconds of signal went into it. */
+  onTrackMeasured?: (trackId: string, bands10: number[], seconds: number) => void;
   /** Ref the AI writes its effect targets into, read by the audio engine.
    *  Same arrangement as deltaRef: a ref rather than state so the 10 Hz loop
    *  doesn't re-render anything. */
@@ -207,6 +220,8 @@ export interface AiEnhancerStatus {
   idle: boolean;
   /** What the AI is doing to the effects rack, or null when it isn't. */
   effects: AiEffectTargets | null;
+  /** The curve was seeded from a previous play rather than measured now. */
+  recalled: boolean;
 }
 
 export interface AiEnhancerHandle {
@@ -227,6 +242,9 @@ export function useAiEnhancer({
   adapt,
   loudnessComp,
   driveEffects,
+  trackId,
+  recalled,
+  onTrackMeasured,
   effectsRef,
   deltaRef,
   baselineRef,
@@ -255,6 +273,15 @@ export function useAiEnhancer({
   loudnessCompRef.current = loudnessComp;
   const driveEffectsRef = useRef<boolean>(driveEffects);
   driveEffectsRef.current = driveEffects;
+  // Through refs like everything else here: a track change must not tear the
+  // engine down and rebuild it, or the effect slew and vocal hysteresis
+  // restart on every song.
+  const trackIdRef = useRef<string | null>(trackId);
+  trackIdRef.current = trackId;
+  const recalledRef = useRef<TrackProfile | null>(recalled);
+  recalledRef.current = recalled;
+  const onTrackMeasuredRef = useRef<typeof onTrackMeasured>(onTrackMeasured);
+  onTrackMeasuredRef.current = onTrackMeasured;
 
   /* Resize the delta buffer whenever band count changes. We mutate in place
    * rather than reassign so the audio engine (which captured the ref by
@@ -314,6 +341,13 @@ export function useAiEnhancer({
     /** Ticks of real signal folded into bandDbEma so far. Used to bias-correct
      *  the EMA while it warms up — see the alpha calculation in the tick. */
     let emaTicks = 0;
+    /** Track the estimate currently belongs to, and how much signal has gone
+     *  into it. Both reset on a track change. */
+    let measuringTrackId: string | null = null;
+    let measuredTicks = 0;
+    /** True while the estimate is still mostly the recalled shape rather than
+     *  what we have heard this play. Reported so the UI can say so. */
+    let seededFromRecall = false;
     const prevSpectrum = new Float32Array(binsM.length);
     const onsetTimes: number[] = [];
     let currentMode: MaterialClass = 'dense';
@@ -399,6 +433,45 @@ export function useAiEnhancer({
         if (bandDbInst[i] > loudestInst) loudestInst = bandDbInst[i];
       }
       const isLive = adaptRef.current === 'live';
+
+      // ─── Track change ───
+      // Commit what we measured for the outgoing track, then start clean.
+      // Both halves matter: without the reset, Steady's 20 s window averages
+      // across the boundary and the first third of every track is corrected
+      // using the previous one's balance.
+      const nowTrackId = trackIdRef.current;
+      if (nowTrackId !== measuringTrackId) {
+        if (measuringTrackId !== null && measuredTicks > 0) {
+          onTrackMeasuredRef.current?.(
+            measuringTrackId,
+            bandDbEma.slice(),
+            measuredTicks * DT,
+          );
+        }
+        measuringTrackId = nowTrackId;
+        measuredTicks = 0;
+        const known = recalledRef.current;
+        if (known) {
+          // Seed the SHAPE from the previous plays and let the level come
+          // from what we are hearing right now — absolute dBFS at this tap
+          // moves with the input gain and the EQ's headroom trim, so a
+          // stored level would not be comparable across sessions.
+          let instMean = 0;
+          for (let i = 0; i < 10; i++) instMean += bandDbInst[i];
+          instMean /= 10;
+          for (let i = 0; i < 10; i++) bandDbEma[i] = known.shape10[i] + instMean;
+          // Weight the recall as most of a window so live measurement
+          // refines it rather than immediately washing it out, but still
+          // moves it if this play genuinely sounds different.
+          emaTicks = Math.round((isLive ? LIVE_SETTLE_TICKS : STEADY_SETTLE_TICKS) * 0.75);
+          seededFromRecall = true;
+        } else {
+          for (let i = 0; i < 10; i++) bandDbEma[i] = -100;
+          emaTicks = 0;
+          seededFromRecall = false;
+        }
+      }
+
       // Fold into the running estimate only while something is actually
       // playing. A 20 s window that averages in the gap between tracks would
       // have a few seconds of near-silence — which is spectrally flat at the
@@ -412,8 +485,14 @@ export function useAiEnhancer({
       const emaAlpha = Math.max(isLive ? EMA_ALPHA_LIVE : EMA_ALPHA_STEADY, 1 / (emaTicks + 1));
       if (signalPresent) {
         emaTicks++;
+        measuredTicks++;
         for (let i = 0; i < 10; i++) {
           bandDbEma[i] += emaAlpha * (bandDbInst[i] - bandDbEma[i]);
+        }
+        // Once this play has contributed a full window of its own, the
+        // estimate is no longer meaningfully the recalled one.
+        if (measuredTicks >= (isLive ? LIVE_SETTLE_TICKS : STEADY_SETTLE_TICKS)) {
+          seededFromRecall = false;
         }
       }
       for (let i = 0; i < 10; i++) {
@@ -618,7 +697,8 @@ export function useAiEnhancer({
       for (let i = 0; i < bandCount; i++) deltaSnapshotBuf[i] = cur[i];
       onTickRef.current?.(deltaSnapshotBuf, flashedBuf);
 
-      const settled = emaTicks >= (isLive ? LIVE_SETTLE_TICKS : STEADY_SETTLE_TICKS);
+      const settled =
+        seededFromRecall || emaTicks >= (isLive ? LIVE_SETTLE_TICKS : STEADY_SETTLE_TICKS);
       const fxSnapshot: AiEffectTargets | null = fx.active
         ? { active: true, width: fxWidth, exciter: fxExciter, exciterFreq: fxExciterFreq }
         : null;
@@ -627,9 +707,10 @@ export function useAiEnhancer({
         lastStatus.dominant !== dominant ||
         lastStatus.settled !== settled ||
         lastStatus.idle !== hold ||
+        lastStatus.recalled !== seededFromRecall ||
         effectsDiffer(lastStatus.effects, fxSnapshot)
       ) {
-        lastStatus = { dominant, settled, idle: hold, effects: fxSnapshot };
+        lastStatus = { dominant, settled, idle: hold, effects: fxSnapshot, recalled: seededFromRecall };
         onStatusRef.current?.(lastStatus);
       }
     };

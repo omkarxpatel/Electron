@@ -138,7 +138,9 @@ const RELATIVE_GATE_LU = -10;
  */
 const CHANNEL_WEIGHTS = [1.0, 1.0, 1.0, 1.41, 1.41];
 
-function channelWeight(index: number): number {
+/** Exported so the worklet tap can hand the same weights to the audio
+ *  thread rather than keeping a second copy of the table. */
+export function channelWeight(index: number): number {
   return CHANNEL_WEIGHTS[index] ?? 1.0;
 }
 
@@ -165,73 +167,60 @@ export interface LoudnessMeter {
   reset(): void;
 }
 
-export function createLoudnessMeter(sampleRate: number, channelCount: number): LoudnessMeter {
-  const stages = kWeightingStages(sampleRate);
-  const quarterSamples = Math.round((sampleRate * QUARTER_DURATION_MS) / 1000);
+/**
+ * The gating half of the meter, fed one completed 100 ms quarter at a time.
+ *
+ * Split out because the K-weighting has to happen on the audio thread — an
+ * AnalyserNode hands back 1024 samples every 100 ms, which is a ~21% duty
+ * cycle with discontinuous filter state, and you cannot build contiguous
+ * 400 ms gating blocks out of disjoint snippets. So the worklet filters and
+ * squares, posts one number per quarter, and everything below stays here:
+ * the gating needs every block before it can apply the relative threshold,
+ * which is a main-thread concern anyway.
+ *
+ * `createLoudnessMeter` is this plus the filtering, so there is exactly one
+ * implementation of the gating.
+ */
+export interface QuarterMeter {
+  /** One completed quarter: the K-weighted sum of squares, already summed
+   *  across channels with G_i applied, and how many frames produced it. */
+  pushQuarter(weightedSumSquares: number, frames: number): void;
+  shortTermLufs(): number;
+  integratedLufs(): number;
+  reset(): void;
+}
 
-  let shelfState: BiquadState[] = [];
-  let hpState: BiquadState[] = [];
-
-  /** Weighted sum of squares per completed 100 ms quarter, already summed
-   *  across channels with G_i applied. */
+export function createQuarterMeter(): QuarterMeter {
+  /** Weighted sum of squares per completed quarter, and the frame count that
+   *  produced each — kept in step so a short final quarter can't skew a mean. */
   let quarters: number[] = [];
+  let quarterFrames: number[] = [];
   /** Weighted mean square per 400 ms block, one per 100 ms step. Kept rather
    *  than reduced on the fly because the relative gate can't be applied until
    *  every block is in — it's a threshold derived from their mean. */
   let blocks: number[] = [];
 
-  let quarterAccum = 0;
-  let quarterFill = 0;
-
-  function reset(): void {
-    shelfState = [];
-    hpState = [];
-    for (let c = 0; c < channelCount; c++) {
-      shelfState.push(newState());
-      hpState.push(newState());
-    }
-    quarters = [];
-    blocks = [];
-    quarterAccum = 0;
-    quarterFill = 0;
-  }
-
-  reset();
-
-  function closeQuarter(): void {
-    quarters.push(quarterAccum);
-    quarterAccum = 0;
-    quarterFill = 0;
-
-    if (quarters.length < QUARTERS_PER_BLOCK) return;
+  function windowMeanSquare(count: number): number {
     let sum = 0;
-    for (let i = quarters.length - QUARTERS_PER_BLOCK; i < quarters.length; i++) {
+    let frames = 0;
+    for (let i = quarters.length - count; i < quarters.length; i++) {
       sum += quarters[i];
+      frames += quarterFrames[i];
     }
-    blocks.push(sum / (QUARTERS_PER_BLOCK * quarterSamples));
+    return frames === 0 ? 0 : sum / frames;
   }
 
   return {
-    push(channels: Float32Array[]): void {
-      const frames = channels[0]?.length ?? 0;
-      for (let n = 0; n < frames; n++) {
-        let weighted = 0;
-        for (let c = 0; c < channels.length; c++) {
-          const y = step(stages[1], hpState[c], step(stages[0], shelfState[c], channels[c][n]));
-          weighted += channelWeight(c) * y * y;
-        }
-        quarterAccum += weighted;
-        if (++quarterFill === quarterSamples) closeQuarter();
-      }
+    pushQuarter(weightedSumSquares: number, frames: number): void {
+      quarters.push(weightedSumSquares);
+      quarterFrames.push(frames);
+      if (quarters.length < QUARTERS_PER_BLOCK) return;
+      blocks.push(windowMeanSquare(QUARTERS_PER_BLOCK));
     },
 
     shortTermLufs(): number {
       if (quarters.length < QUARTERS_PER_SHORT_TERM) return -Infinity;
-      let sum = 0;
-      for (let i = quarters.length - QUARTERS_PER_SHORT_TERM; i < quarters.length; i++) {
-        sum += quarters[i];
-      }
-      return toLufs(sum / (QUARTERS_PER_SHORT_TERM * quarterSamples));
+      return toLufs(windowMeanSquare(QUARTERS_PER_SHORT_TERM));
     },
 
     integratedLufs(): number {
@@ -263,6 +252,58 @@ export function createLoudnessMeter(sampleRate: number, channelCount: number): L
       return toLufs(sum / count);
     },
 
+    reset(): void {
+      quarters = [];
+      quarterFrames = [];
+      blocks = [];
+    },
+  };
+}
+
+export function createLoudnessMeter(sampleRate: number, channelCount: number): LoudnessMeter {
+  const stages = kWeightingStages(sampleRate);
+  const quarterSamples = Math.round((sampleRate * QUARTER_DURATION_MS) / 1000);
+  const gate = createQuarterMeter();
+
+  let shelfState: BiquadState[] = [];
+  let hpState: BiquadState[] = [];
+  let quarterAccum = 0;
+  let quarterFill = 0;
+
+  function reset(): void {
+    shelfState = [];
+    hpState = [];
+    for (let c = 0; c < channelCount; c++) {
+      shelfState.push(newState());
+      hpState.push(newState());
+    }
+    gate.reset();
+    quarterAccum = 0;
+    quarterFill = 0;
+  }
+
+  reset();
+
+  return {
+    push(channels: Float32Array[]): void {
+      const frames = channels[0]?.length ?? 0;
+      for (let n = 0; n < frames; n++) {
+        let weighted = 0;
+        for (let c = 0; c < channels.length; c++) {
+          const y = step(stages[1], hpState[c], step(stages[0], shelfState[c], channels[c][n]));
+          weighted += channelWeight(c) * y * y;
+        }
+        quarterAccum += weighted;
+        if (++quarterFill === quarterSamples) {
+          gate.pushQuarter(quarterAccum, quarterSamples);
+          quarterAccum = 0;
+          quarterFill = 0;
+        }
+      }
+    },
+
+    shortTermLufs: () => gate.shortTermLufs(),
+    integratedLufs: () => gate.integratedLufs(),
     reset,
   };
 }

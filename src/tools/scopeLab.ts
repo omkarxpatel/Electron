@@ -65,6 +65,8 @@ function settingsFor(style: WaveformStyle): ResolvedSettings {
     glow: ui.glow,
     sensitivity: 1.1,
     autoGain: true,
+    rememberTracks: false,
+    autoLevel: false,
     spectralPosition: true,
     trail: 0.42,
     smoothing: 0.88,

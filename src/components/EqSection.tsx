@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { EqPanel } from './EqPanel';
 import { useAiEnhancer, type AiEffectTargets, type AiEnhancerStatus } from '../audio/useAiEnhancer';
+import { useCurrentlyPlayingId } from '../spotify/SpotifyProvider';
+import type { UseTrackMemoryReturn } from '../state/trackMemory';
+import type { LoudnessTap } from '../audio/loudnessTap';
 import { frequenciesFor, type UseEQReturn } from '../state/eq';
 import type { UseEnhancerReturn } from '../state/enhancer';
 import type { UseEffectsRackReturn } from '../state/effects';
@@ -49,6 +52,14 @@ interface Props {
   baselineRef: { current: number[] };
   /** Shared AI effect targets — written here, read by the audio engine. */
   aiEffectsRef: { current: AiEffectTargets };
+  /** What the app has learned about each track it has played. Lets the
+   *  enhancer start a known track already corrected instead of spending its
+   *  first 20 s measuring something it has measured before. Owned by App so
+   *  Settings can report and clear the same store. */
+  trackMemory: UseTrackMemoryReturn;
+  /** BS.1770 tap on the raw input. Read at each track boundary for that
+   *  track's integrated loudness, then reset for the next one. */
+  loudnessTapRef: { current: LoudnessTap | null };
   /** When false, the response-curve halo + band-activity RAF loops pause. */
   active: boolean;
   /** Live (playthrough) state, owned by App because the audio source toggle
@@ -78,6 +89,8 @@ export function EqSection({
   aiDeltaRef,
   baselineRef,
   aiEffectsRef,
+  trackMemory,
+  loudnessTapRef,
   active,
   playthrough,
   togglePlaythrough,
@@ -101,6 +114,10 @@ export function EqSection({
   // field actually changes, so this can be a plain setState.
   const [aiStatus, setAiStatus] = useState<AiEnhancerStatus | null>(null);
   const flashClearTimersRef = useRef<number[]>([]);
+  const trackId = useCurrentlyPlayingId();
+  // Looked up per render rather than per tick — the enhancer reads it through
+  // a ref, and it only matters on the tick where trackId changes.
+  const recalled = trackMemory.recall(trackId);
   // Last AI-delta value we actually dispatched to React state. The AI tick
   // fires 10×/sec but band values usually drift by tiny fractional dBs; we
   // only dispatch when any band has moved by a perceptible amount. This
@@ -123,6 +140,21 @@ export function EqSection({
     adapt: eq.state.aiAdapt,
     loudnessComp: eq.state.aiLoudnessComp,
     driveEffects: eq.state.aiEffects,
+    trackId,
+    recalled,
+    // The enhancer knows about track boundaries; loudness is measured
+    // elsewhere. Joining them here keeps the enhancer about spectrum and
+    // means the meter is read and restarted at exactly the same instant the
+    // spectrum is committed.
+    onTrackMeasured: useCallback(
+      (id: string, bands10: number[], seconds: number) => {
+        const tap = loudnessTapRef.current;
+        const lufs = tap ? tap.meter.integratedLufs() : null;
+        trackMemory.commit(id, bands10, seconds, Number.isFinite(lufs ?? NaN) ? lufs : null);
+        tap?.reset();
+      },
+      [loudnessTapRef, trackMemory],
+    ),
     effectsRef: aiEffectsRef,
     deltaRef: aiDeltaRef,
     baselineRef,

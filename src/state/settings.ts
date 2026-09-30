@@ -81,6 +81,14 @@ export interface SharedSettings {
   albumArtBackdrop: boolean;
   /** Visuals-only mode — hides chrome, EQ, and side panels. */
   immersive: boolean;
+  /** Remember each track's measured tone so AI Enhance can recall it instead
+   *  of spending the first 20 s of a known track measuring it again. Stored
+   *  locally, capped, and clearable — see src/state/trackMemory.ts. */
+  rememberTracks: boolean;
+  /** Level-match tracks against each other using their measured BS.1770
+   *  loudness. Only acts on tracks already in track memory — the figure
+   *  isn't known until a track has been heard through once. */
+  autoLevel: boolean;
 }
 
 export interface Settings extends SharedSettings {
@@ -134,6 +142,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // a preference; booting into a chrome-less window with no visible way out
   // is a trap.
   immersive: false,
+  rememberTracks: true,
+  autoLevel: false,
   profiles: {
     banner: BANNER_PROFILE,
     immersive: IMMERSIVE_PROFILE,
@@ -194,6 +204,8 @@ function migrateLegacy(flat: Record<string, unknown>): Settings {
     showLyrics: (flat.showLyrics as boolean) ?? DEFAULT_SETTINGS.showLyrics,
     albumArtBackdrop: (flat.albumArtBackdrop as boolean) ?? DEFAULT_SETTINGS.albumArtBackdrop,
     immersive: false,
+    rememberTracks: (flat.rememberTracks as boolean) ?? DEFAULT_SETTINGS.rememberTracks,
+    autoLevel: (flat.autoLevel as boolean) ?? DEFAULT_SETTINGS.autoLevel,
     profiles: {
       banner: visual,
       immersive: {

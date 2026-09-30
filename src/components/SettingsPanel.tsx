@@ -7,6 +7,7 @@ import type {
 } from '../state/settings';
 import { PALETTES } from '../visualizers/palettes';
 import { TIER_KNOBS, TIER_LABELS, type UseQuality } from '../state/quality';
+import type { UseTrackMemoryReturn } from '../state/trackMemory';
 import type { QualityTier } from '../types/api';
 import {
   checkForUpdate,
@@ -112,6 +113,10 @@ interface Props {
    *  instance here would hold its own tier, so changing it would never reach
    *  the render path. */
   quality: UseQuality;
+  /** The single useTrackMemory() instance, shared with the enhancer that
+   *  writes it. A second instance here would hold its own copy of the store
+   *  and the two would diverge on the first commit. */
+  trackMemory: UseTrackMemoryReturn;
   spotifyAuthed: boolean;
   onReconnectSpotify: () => void;
   onSignOutSpotify: () => void;
@@ -126,6 +131,7 @@ export function SettingsPanel({
   resetActiveProfile,
   reset,
   quality,
+  trackMemory,
   spotifyAuthed,
   onReconnectSpotify,
   onSignOutSpotify,
@@ -340,6 +346,44 @@ export function SettingsPanel({
                   <span>{label}</span>
                 </label>
               ))}
+            </div>
+          )}
+        </Section>
+
+        <Section title="Track memory">
+          <ToggleRow
+            title="Remember how tracks sound"
+            hint={
+              settings.rememberTracks
+                ? `${trackMemory.stats.tracks} tracks · ${formatBytes(trackMemory.stats.bytes)}`
+                : 'Off — every track is measured from scratch'
+            }
+            value={settings.rememberTracks}
+            onToggle={() => update('rememberTracks', !settings.rememberTracks)}
+            tooltip="AI Enhance measures a track's tonal balance over 20 seconds before it can correct it. With this on, that measurement is kept and recalled, so a track you have heard before is corrected from the downbeat. Only the tonal shape is stored — no audio, and no listening history beyond the track id. Capped at 1000 tracks, oldest dropped first."
+          />
+          <ToggleRow
+            title="Level-match tracks"
+            hint={
+              settings.rememberTracks
+                ? 'Even out loudness between tracks you have heard before'
+                : 'Dormant — needs track memory on'
+            }
+            value={settings.autoLevel}
+            onToggle={() => update('autoLevel', !settings.autoLevel)}
+            tooltip="Measures each track's loudness to BS.1770 — the same standard streaming services normalise with — and trims the quiet ones up and the loud ones down toward -14 LUFS, capped at 6 dB. It can only act on a track it has already heard through once, because integrated loudness is a property of the whole track; guessing from the first few seconds would be a compressor, not a level match. Applied before the EQ and nowhere near the volume knob."
+          />
+          {settings.rememberTracks && trackMemory.stats.tracks > 0 && (
+            <div className="setting-toggle-row">
+              <span className="setting-toggle-label">
+                <span className="setting-toggle-title">Forget everything</span>
+                <span className="setting-toggle-hint">
+                  Known tracks go back to measuring for 20 s
+                </span>
+              </span>
+              <button type="button" className="segmented-button" onClick={trackMemory.clear}>
+                Clear
+              </button>
             </div>
           )}
         </Section>

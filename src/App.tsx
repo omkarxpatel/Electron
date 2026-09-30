@@ -13,6 +13,7 @@ import { VisualizerBanner } from './components/VisualizerBanner';
 import { ImmersiveLyrics } from './components/ImmersiveLyrics';
 import { EqSection } from './components/EqSection';
 import type { AiEffectTargets } from './audio/useAiEnhancer';
+import { useTrackMemory } from './state/trackMemory';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
 import { useAudioSource } from './audio/useAudioSource';
@@ -31,6 +32,12 @@ import { useAlbumPalette } from './visualizers/useAlbumPalette';
 import { pickMediumImage } from './shared/image';
 import { hexToRgba } from './shared/color';
 import './App.css';
+
+/** Spotify's own normalisation reference, so the two agree rather than fight. */
+const AUTO_LEVEL_TARGET_LUFS = -14;
+/** Most a track may be moved. Beyond this the correction costs more headroom
+ *  than the level difference is worth, and the limiter is downstream. */
+const AUTO_LEVEL_MAX_DB = 6;
 
 const PLAYTHROUGH_KEY = 'av.eq.playthrough';
 
@@ -97,7 +104,39 @@ function AppContent() {
     exciter: 0,
     exciterFreq: 90,
   });
-  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, limiter } =
+  // One instance, shared by the enhancer (which writes it) and Settings
+  // (which reports its size and clears it) — a second would hold its own
+  // copy of the store and the two would diverge on the first commit.
+  const trackMemory = useTrackMemory(settings.rememberTracks);
+  // Subscribing to playback re-renders AppContent on each 1.5s poll, but
+  // App's heavy children are memoized and the only prop that flows from
+  // playback (`albumPalette`) only changes when the album image URL changes —
+  // i.e. once per song. Declared above the audio engine because the level
+  // match below has to reach it.
+  const playback = usePlayback();
+  /**
+   * Level match for the current track.
+   *
+   * Only acts on a track already in memory: integrated loudness is a
+   * property of the whole track, so there is nothing honest to apply until
+   * one has been heard through. Deriving it live from short-term loudness
+   * instead would be a compressor, not a level match, and would pump.
+   *
+   * -14 LUFS is Spotify's own reference, so with their normalisation on this
+   * is close to a no-op and with it off it brings everything to the same
+   * place. Clamped because a wildly quiet master should be brought up some
+   * of the way, not all of it — the headroom is not free and the limiter is
+   * downstream.
+   */
+  const autoLevelDb = useMemo(() => {
+    if (!settings.autoLevel) return 0;
+    const known = trackMemory.recall(playback.playback?.item?.id ?? null);
+    if (!known || known.lufs === null) return 0;
+    const wanted = AUTO_LEVEL_TARGET_LUFS - known.lufs;
+    return Math.max(-AUTO_LEVEL_MAX_DB, Math.min(AUTO_LEVEL_MAX_DB, wanted));
+  }, [settings.autoLevel, trackMemory, playback.playback?.item?.id]);
+
+  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, limiter, loudnessTapRef } =
     useAudioEngine(
     audioSource.stream,
     eq.state,
@@ -109,6 +148,7 @@ function AppContent() {
     eq.state.aiEnhance,
     0.08,
     aiEffectsRef,
+    autoLevelDb,
   );
   // Hold the output device at unity while we're actually playing through it.
   // The macOS slider only reaches the DEFAULT output device, so once system
@@ -119,12 +159,6 @@ function AppContent() {
     playthrough && !!audioSource.stream,
   );
   const library = useLibrary();
-  // Subscribing to playback re-renders AppContent on each 1.5s poll, but
-  // App's heavy children are memoized and the only prop that flows from
-  // playback (`albumPalette`) only changes when the album image URL changes —
-  // i.e. once per song. The Settings toggle gates the whole hook so users
-  // who don't opt in pay only a context subscription cost.
-  const playback = usePlayback();
   const albumImageUrl = useMemo(
     () => pickMediumImage(playback.playback?.item?.album?.images) ?? null,
     [playback.playback?.item?.album?.images],
@@ -298,6 +332,8 @@ function AppContent() {
         ) : (
           <div className="workspace">
             <EqSection
+              trackMemory={trackMemory}
+              loudnessTapRef={loudnessTapRef}
               eq={eq}
               enhancer={enhancer}
               effects={effects}
@@ -352,6 +388,7 @@ function AppContent() {
       )}
 
       <SettingsPanel
+        trackMemory={trackMemory}
         open={panelOpen}
         onClose={() => setPanelOpen(false)}
         settings={resolved}

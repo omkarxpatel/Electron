@@ -19,7 +19,8 @@
  * ever learns "louder wins" — a silent failure that would poison every
  * preference judgement collected under it.
  *
- * `biquadResponse.ts`, `enhanceProfiles.ts` and `loudness.ts` have no
+ * `biquadResponse.ts`, `enhanceProfiles.ts`, `loudness.ts` and
+ * `trackProfile.ts` have no
  * imports, so they compile standalone and run under plain node — no bundler,
  * no browser, no AudioContext.
  *
@@ -97,6 +98,7 @@ async function loadModules() {
       'src/audio/biquadResponse.ts',
       'src/audio/enhanceProfiles.ts',
       'src/audio/loudness.ts',
+      'src/audio/trackProfile.ts',
       '--outDir', out,
       '--module', 'esnext',
       '--target', 'es2022',
@@ -106,11 +108,12 @@ async function loadModules() {
   );
   const biquad = await import(pathToFileURL(join(out, 'biquadResponse.js')).href);
   const profiles = await import(pathToFileURL(join(out, 'enhanceProfiles.js')).href);
+  const track = await import(pathToFileURL(join(out, 'trackProfile.js')).href);
   const loudness = await import(pathToFileURL(join(out, 'loudness.js')).href);
-  return { biquad, profiles, loudness, cleanup: () => rmSync(out, { recursive: true, force: true }) };
+  return { biquad, profiles, loudness, track, cleanup: () => rmSync(out, { recursive: true, force: true }) };
 }
 
-const { biquad, profiles, loudness, cleanup } = await loadModules();
+const { biquad, profiles, loudness, track, cleanup } = await loadModules();
 const { buildBandCoefs, responseCurveDb, buildCurveSolver, solveBandGains, logSpacedFrequencies } =
   biquad;
 const { ENHANCE_PROFILES, ISO_10 } = profiles;
@@ -366,6 +369,158 @@ console.log('\nBS.1770 loudness');
     `${gain.toFixed(2)} dB to reach -23 LUFS`,
   );
   check('silence cannot produce a match gain', matchGainDb(-Infinity, -23) === 0);
+}
+
+console.log('\nTrack memory');
+{
+  const { foldMeasurement, meanZero, decodeProfile, encodeProfile, encodeStore, decodeStore, evictOldest, MAX_PRIOR_SECONDS } = track;
+
+  // Only shape is stored. A curve and the same curve 12 dB louder describe
+  // the same track, and absolute dBFS at the pre-EQ tap moves with the input
+  // gain and the EQ's headroom trim between sessions.
+  const curve = [6, 4, 2, 0, -1, -2, -3, -2, -1, 1];
+  const louder = curve.map((v) => v + 12);
+  const a = foldMeasurement(null, curve, 60, 1);
+  const b = foldMeasurement(null, louder, 60, 1);
+  check(
+    'level is discarded, shape is kept',
+    a.shape10.every((v, i) => Math.abs(v - b.shape10[i]) < 1e-9),
+    'same track at two input gains stores identically',
+  );
+  check(
+    'stored shape is mean-zero',
+    Math.abs(a.shape10.reduce((x, y) => x + y, 0)) < 0.05,
+    `mean ${(a.shape10.reduce((x, y) => x + y, 0) / 10).toFixed(4)} dB`,
+  );
+
+  // Repeated folds must not walk the mean away from zero: the value is
+  // persisted and re-folded every play, so any drift compounds forever
+  // rather than washing out.
+  // Through encode/decode, because that is the real cycle: every play reads
+  // the rounded value back off disk and folds into it.
+  let drifting = foldMeasurement(null, curve, 60, 1);
+  for (let i = 0; i < 500; i++) {
+    drifting = decodeProfile(encodeProfile(drifting));
+    drifting = foldMeasurement(drifting, curve, 60, (i + 2) * 60_000);
+  }
+  const drift = Math.abs(drifting.shape10.reduce((x, y) => x + y, 0) / 10);
+  check('500 persist+fold cycles do not accumulate drift', drift < 0.05, `mean ${drift.toFixed(6)} dB`);
+  check(
+    'a repeated identical play leaves the shape alone',
+    drifting.shape10.every((v, i) => Math.abs(v - meanZero(curve)[i]) < 0.02),
+  );
+
+  // The prior is capped so a re-mastered or re-encoded track can be relearned
+  // at all. What matters is that it CONVERGES: without the cap, `seconds`
+  // grows without bound and a track played enough times could never be
+  // relearned, because each new play would weigh essentially nothing.
+  const changed = [-4, -3, -1, 0, 1, 2, 3, 2, 1, -1];
+  const target = meanZero(changed);
+  const gapAfter = (plays) => {
+    // A huge prior, i.e. a track played many times already.
+    let p = { shape10: meanZero(curve), seconds: 100000, updated: 1, lufs: null };
+    for (let i = 0; i < plays; i++) p = foldMeasurement(p, changed, 180, i + 2);
+    return p.shape10.reduce((m, v, i) => Math.max(m, Math.abs(v - target[i])), 0);
+  };
+  const gap0 = curve.reduce((m, _, i) => Math.max(m, Math.abs(meanZero(curve)[i] - target[i])), 0);
+  const gap1 = gapAfter(1);
+  check(
+    'each play closes a real share of the gap',
+    gap1 < gap0 * 0.85,
+    `${gap0.toFixed(1)} → ${gap1.toFixed(1)} dB in one play`,
+  );
+  check(
+    'a changed track is fully relearned',
+    gapAfter(10) < 1.5,
+    `within ${gapAfter(10).toFixed(2)} dB after 10 plays (prior capped at ${MAX_PRIOR_SECONDS}s)`,
+  );
+  check(
+    'stability is preferred over chasing one play',
+    gap1 > gap0 * 0.5,
+    'one odd play cannot redefine a known track',
+  );
+
+  // localStorage survives downgrades and hand-editing; a malformed shape
+  // would be seeded straight into the EQ.
+  check('rejects a short shape', decodeProfile({ s: [1, 2], n: 5, u: 1 }) === null);
+  check('rejects NaN in a shape', decodeProfile({ s: Array(10).fill(NaN), n: 5, u: 1 }) === null);
+  check('rejects a zero-second profile', decodeProfile({ s: Array(10).fill(0), n: 0, u: 1 }) === null);
+  check('rejects the readable form as stored data', decodeProfile(a) === null);
+  const round = decodeProfile(encodeProfile(a));
+  check(
+    'a profile survives the round trip',
+    round !== null && round.shape10.every((v, i) => Math.abs(v - a.shape10[i]) <= 0.05),
+    'shape preserved to 0.1 dB',
+  );
+
+  // The store is written on every track change and read whole at startup, so
+  // its size is a real cost the user is shown in Settings. Assert the budget
+  // rather than trusting the encoding to stay terse.
+  const MAX_TRACKS = 1000;
+  const big = {};
+  for (let i = 0; i < MAX_TRACKS; i++) {
+    // Realistic ids: Spotify's are 22 base62 characters.
+    const id = `t${String(i).padStart(21, '0')}`;
+    big[id] = foldMeasurement(null, curve.map((v) => v + (i % 7) * 0.3), 180 + i, i * 60_000);
+  }
+  const serialized = encodeStore(big);
+  const perTrack = serialized.length / MAX_TRACKS;
+  check(
+    'the full store stays small',
+    serialized.length < 150 * 1024,
+    `${MAX_TRACKS} tracks = ${(serialized.length / 1024).toFixed(0)} KB (${perTrack.toFixed(0)} B each)`,
+  );
+  const reread = decodeStore(serialized);
+  check(
+    'a full store reloads intact',
+    Object.keys(reread).length === MAX_TRACKS,
+    `${Object.keys(reread).length} of ${MAX_TRACKS}`,
+  );
+  check(
+    'one corrupt entry does not lose the rest',
+    Object.keys(decodeStore(JSON.stringify({ ...JSON.parse(serialized), bad: { s: [1] } }))).length
+      === MAX_TRACKS,
+  );
+
+  // Eviction keeps what is actually being listened to, not what arrived first.
+  const store = {};
+  for (let i = 0; i < 10; i++) store[`t${i}`] = { shape10: meanZero(curve), seconds: 60, updated: i, lufs: null };
+  const kept = evictOldest(store, 3);
+  // Loudness is the one stored value that IS a level. It is measured
+  // upstream of everything the app does, so it describes the track rather
+  // than our processing — that is what makes it comparable between sessions
+  // and usable for levelling one track against another.
+  const withL = foldMeasurement(null, curve, 180, 1000, -14.2);
+  check('loudness is kept when measured', withL.lufs === -14.2, `${withL.lufs} LUFS`);
+  check(
+    'loudness survives the round trip',
+    Math.abs(decodeProfile(encodeProfile(withL)).lufs - -14.2) < 0.05,
+  );
+  check(
+    'an unmeasured track stores no loudness',
+    foldMeasurement(null, curve, 180, 1000).lufs === null &&
+      encodeProfile(foldMeasurement(null, curve, 180, 1000)).l === undefined,
+    'omitted rather than null — most of the store predates the meter',
+  );
+  check(
+    'a silent play cannot erase a known loudness',
+    foldMeasurement(withL, curve, 180, 2000, -Infinity).lufs === -14.2,
+    'gated-out play leaves the figure alone',
+  );
+  // A partial play measures a real but unrepresentative slice, so it should
+  // move the figure without redefining it.
+  const nudged = foldMeasurement(withL, curve, 30, 3000, -20);
+  check(
+    'a partial play nudges loudness rather than replacing it',
+    nudged.lufs < -14.2 && nudged.lufs > -16,
+    `${nudged.lufs.toFixed(2)} LUFS after a 30 s play at -20`,
+  );
+
+  check(
+    'eviction keeps the most recently heard',
+    Object.keys(kept).sort().join(',') === 't7,t8,t9',
+    Object.keys(kept).sort().join(','),
+  );
 }
 
 cleanup();
