@@ -45,6 +45,21 @@ export interface ElectronApi {
     launchHidden(): Promise<{ ok: boolean; reason?: string }>;
   };
   /**
+   * Reads playlist folders out of the Spotify desktop app's own cache — see
+   * electron/spotifyFolders.ts. Mirrors RootlistResult there; change one and
+   * change the other.
+   *
+   * There is no API for this. `GET /me/playlists` is flat and has never
+   * carried a folder field, and the internal endpoint that does know about
+   * folders answers `403 RBAC: access denied` to third-party tokens. Reading
+   * Spotify's on-disk format is the only route, which is why every failure
+   * here is a normal result rather than a throw: it is a convenience that
+   * seeds local folders once, and the app is fully usable without it.
+   */
+  spotifyFolders: {
+    read(): Promise<RootlistResult>;
+  };
+  /**
    * Menu-bar bridge — see electron/main.ts's tray section. The renderer owns
    * the Spotify session, so it pushes now-playing up for the tray's labels
    * and handles the transport commands the tray sends back.
@@ -293,6 +308,26 @@ export type SinkVolumeState =
   | { kind: 'already-unity'; deviceName: string }
   | { kind: 'unsupported'; deviceName: string; reason: string }
   | { kind: 'error'; deviceName: string; message: string };
+
+/**
+ * Mirror of RootlistNode / RootlistResult in electron/spotifyFolders.ts.
+ *
+ * `uri` stays a full `spotify:playlist:<id>` rather than a bare id because
+ * that is what Spotify's cache stores, and narrowing it here would mean two
+ * places to fix if Spotify ever puts something else in a folder.
+ *
+ * The reasons are distinct so the import button can say which thing is
+ * missing. "Spotify isn't installed" and "Spotify is installed but hasn't
+ * synced your folders yet" need different advice, and collapsing them into
+ * one failure message sends people looking in the wrong place.
+ */
+export type RootlistNode =
+  | { kind: 'playlist'; uri: string }
+  | { kind: 'folder'; id: string; name: string; children: RootlistNode[] };
+
+export type RootlistResult =
+  | { kind: 'ok'; nodes: RootlistNode[]; folderCount: number; playlistCount: number }
+  | { kind: 'unavailable'; reason: 'no-cache' | 'no-rootlist' | 'unreadable' };
 
 declare global {
   interface Window {

@@ -8,6 +8,14 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.13 (prompt)
+
+- Playlist folders. Make folders, nest them, and drag playlists in or right-click one and pick "Move to folder". Spotify has no API for folders, so these live in this app and don't sync back to Spotify.
+- "Import from Spotify" reads your existing folder structure from the Spotify desktop app on this Mac, so you don't have to file everything by hand. Spotify's own playlists — Blends, Daily Mixes — can't come with it, because third-party apps lost access to them; the import says how many it skipped.
+- The app now remembers how each track sounds. AI Enhance used to spend 20 seconds measuring a track's tonal balance before it could correct it; a track you've heard before is now corrected from the downbeat. Settings -> Track memory, with a Clear button.
+- New "Level-match tracks", which evens out loudness between tracks you've already heard, using the same BS.1770 standard the streaming services normalise with.
+- Long playlist names no longer overprint the tiles either side of them in search results and the library.
+
 ## 1.4.12 (silent)
 
 - Bigger playlist and Liked Songs cover art in the sidebar.

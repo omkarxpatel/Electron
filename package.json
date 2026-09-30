@@ -21,6 +21,7 @@
     "typecheck": "tsc --noEmit",
     "check:enhancer": "node scripts/check-enhancer.mjs",
     "check:quality": "node scripts/check-quality.mjs",
+    "check:folders": "node scripts/check-folders.mjs",
     "icon:gen": "bash scripts/build-icon.sh",
     "capture": "node scripts/capture.mjs",
     "helper": "bash scripts/build-helper.sh",

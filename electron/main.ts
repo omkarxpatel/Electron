@@ -38,6 +38,7 @@ import {
   type QualityTier,
   type RendererInfo,
 } from './deviceProfile';
+import { readSpotifyRootlist } from './spotifyFolders';
 import {
   initNotch,
   isNotchEnabled,
@@ -666,6 +667,15 @@ ipcMain.handle('spotify-app:launch-hidden', async (): Promise<{ ok: boolean; rea
     return { ok: false, reason: notInstalled ? 'not-installed' : 'failed' };
   }
 });
+
+/**
+ * Playlist folders, read out of the Spotify desktop client's own cache.
+ *
+ * The Web API has no folder field and the internal rootlist endpoint refuses
+ * third-party tokens, so this local cache is the only source there is. It
+ * resolves to `unavailable` rather than rejecting — see spotifyFolders.ts.
+ */
+ipcMain.handle('spotify-folders:read', () => readSpotifyRootlist());
 
 ipcMain.handle('shell:open-external', async (_event, url: string) => {
   if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {

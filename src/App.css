@@ -2099,6 +2099,18 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Two separate things have to be said here or long names overprint the
+     tiles either side, which is what arbitrary user playlist names in search
+     did. Both defeat the `text-overflow: ellipsis` on the name below.
+       min-width: a grid item defaults to min-width:auto, i.e. its min-content
+       width — and the name is `white-space: nowrap`, so min-content is the
+       whole untruncated title and the tile refuses to shrink to its track.
+       align-items: the tile is a <button>, whose UA style sets flex-start
+       rather than the usual stretch. That makes each child's width
+       fit-content, so the name box grows to its full text and has nothing
+       to clip — the tile can be the right width and the text still spill. */
+  min-width: 0;
+  align-items: stretch;
   transition: background 120ms ease, border-color 120ms ease, transform 140ms ease;
 }
 
@@ -2143,6 +2155,101 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ─── Playlist folders (local — Spotify has no API for them) ─── */
+.sp-library-folder-cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-bright);
+  background: linear-gradient(135deg, var(--accent-soft-bg), rgba(255, 255, 255, 0.03));
+}
+
+/* The drop highlight is a ring rather than a background change: a tile being
+   dragged over is usually half-covered by the drag image, and an edge stays
+   visible where a fill doesn't. */
+.sp-library-tile[data-drop='true'],
+.sp-library-crumb[data-drop='true'] {
+  border-color: var(--accent-bright);
+  box-shadow: inset 0 0 0 1px var(--accent-bright);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.sp-library-folder-rename {
+  width: 100%;
+}
+
+/* Children don't take pointer events, so dragging across the icon or the
+   label doesn't fire dragleave on the tile itself — without this the drop
+   highlight strobes as the cursor crosses each child. */
+.sp-library-folder-tile > *:not(input) {
+  pointer-events: none;
+}
+
+.sp-library-crumbs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 8px 22px 4px;
+}
+
+.sp-library-crumb {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.sp-library-crumb:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #eaeaea;
+}
+
+.sp-library-crumb[data-current='true'] {
+  color: #eaeaea;
+  font-weight: 600;
+}
+
+.sp-library-crumb:focus-visible {
+  border-color: var(--accent-border);
+}
+
+.sp-library-crumb-group {
+  display: inline-flex;
+  align-items: center;
+}
+
+.sp-library-crumb-sep {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 12px;
+}
+
+.sp-library-import-status {
+  align-self: center;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* `.sp-library-new-btn` carries `margin-left: auto` to push the single "+ New"
+   control to the right edge. Once there is more than one, each gets its own
+   auto margin and flex splits the free space between them — the controls end
+   up strung out across the row rather than grouped. Only the first keeps it.
+   Both selectors list the input too, because either control swaps to one
+   while its name is being typed. */
+.sp-library-filters
+  > :is(.sp-library-new-btn, .sp-library-new-input)
+  ~ :is(.sp-library-new-btn, .sp-library-new-input) {
+  margin-left: 0;
 }
 
 /* ─── Right-column header (music icon trigger) ─── */

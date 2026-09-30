@@ -67,6 +67,16 @@ const api = {
   },
 
   /**
+   * Playlist folders. Spotify's Web API doesn't expose them at all, so main
+   * reads the desktop client's local cache instead.
+   *
+   * Returns `unknown`; the shape is declared once in src/types/api.d.ts.
+   */
+  spotifyFolders: {
+    read: (): Promise<unknown> => ipcRenderer.invoke('spotify-folders:read'),
+  },
+
+  /**
    * Menu-bar bridge. The tray lives in main but has no Spotify session of its
    * own, so the renderer pushes now-playing up and receives transport
    * commands back down. This is what makes the tray work while the window is
