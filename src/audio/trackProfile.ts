@@ -46,6 +46,17 @@ export interface TrackProfile {
    *  it is measured upstream of everything the app does, so it describes the
    *  track rather than our processing, and is comparable between sessions. */
   lufs: number | null;
+  /** Detected key as `tonic + 12 * (minor ? 1 : 0)`, 0..23, or null if the
+   *  track was never judged tonal enough. Kept as a code rather than a
+   *  label so the Camelot mapping stays in one place. */
+  key: number | null;
+  /** How clear the key call was, 0..1. Stored rather than thresholded here
+   *  because the scale is comparative, not calibrated — see musicalKey. */
+  keyConfidence: number;
+  /** Detected tempo in BPM, folded into the estimator's range, or null.
+   *  Like the key, not averaged — the clearest reading wins. */
+  bpm: number | null;
+  bpmConfidence: number;
 }
 
 /**
@@ -85,11 +96,15 @@ export function foldMeasurement(
   seconds: number,
   now: number,
   lufs: number | null = null,
+  key: number | null = null,
+  keyConfidence = 0,
+  bpm: number | null = null,
+  bpmConfidence = 0,
 ): TrackProfile {
   const shape = meanZero(bands10);
   const clean = lufs !== null && Number.isFinite(lufs) ? lufs : null;
   if (!prev) {
-    return { shape10: shape, seconds, updated: now, lufs: clean };
+    return { shape10: shape, seconds, updated: now, lufs: clean, key, keyConfidence, bpm, bpmConfidence };
   }
   const priorWeight = Math.min(prev.seconds, MAX_PRIOR_SECONDS);
   const total = priorWeight + seconds;
@@ -112,6 +127,15 @@ export function foldMeasurement(
         : prev.lufs === null
           ? clean
           : (prev.lufs * priorWeight + clean * seconds) / total,
+    // Key is not averaged — you cannot average two keys, and a track has
+    // one. The clearest reading across all plays wins, so a pass over a
+    // quiet intro can't overwrite a confident call from a full play.
+    ...(key !== null && keyConfidence > prev.keyConfidence
+      ? { key, keyConfidence }
+      : { key: prev.key, keyConfidence: prev.keyConfidence }),
+    ...(bpm !== null && bpmConfidence > prev.bpmConfidence
+      ? { bpm, bpmConfidence }
+      : { bpm: prev.bpm, bpmConfidence: prev.bpmConfidence }),
   };
 }
 
@@ -139,6 +163,14 @@ interface StoredProfile {
    *  as null — it costs nothing to leave out and most of the store predates
    *  the meter. */
   l?: number;
+  /** key code 0..23, omitted when unknown. */
+  k?: number;
+  /** key confidence at 0.01, omitted with the key. */
+  kc?: number;
+  /** bpm at 0.1, omitted when unknown. */
+  b?: number;
+  /** bpm confidence at 0.01, omitted with the bpm. */
+  bc?: number;
 }
 
 const MS_PER_MINUTE = 60_000;
@@ -150,6 +182,14 @@ export function encodeProfile(p: TrackProfile): StoredProfile {
     u: Math.round(p.updated / MS_PER_MINUTE),
   };
   if (p.lufs !== null && Number.isFinite(p.lufs)) out.l = Math.round(p.lufs * 10) / 10;
+  if (p.key !== null && Number.isInteger(p.key) && p.key >= 0 && p.key < 24) {
+    out.k = p.key;
+    out.kc = Math.round(p.keyConfidence * 100) / 100;
+  }
+  if (p.bpm !== null && Number.isFinite(p.bpm) && p.bpm > 0) {
+    out.b = Math.round(p.bpm * 10) / 10;
+    out.bc = Math.round(p.bpmConfidence * 100) / 100;
+  }
   return out;
 }
 
@@ -168,7 +208,18 @@ export function decodeProfile(value: unknown): TrackProfile | null {
   if (typeof v.n !== 'number' || !Number.isFinite(v.n) || v.n <= 0) return null;
   if (typeof v.u !== 'number' || !Number.isFinite(v.u) || v.u < 0) return null;
   const lufs = typeof v.l === 'number' && Number.isFinite(v.l) ? v.l : null;
-  return { shape10: v.s.slice(), seconds: v.n, updated: v.u * MS_PER_MINUTE, lufs };
+  const keyOk = typeof v.k === 'number' && Number.isInteger(v.k) && v.k >= 0 && v.k < 24;
+  const bpmOk = typeof v.b === 'number' && Number.isFinite(v.b) && v.b > 0 && v.b < 400;
+  return {
+    shape10: v.s.slice(),
+    seconds: v.n,
+    updated: v.u * MS_PER_MINUTE,
+    lufs,
+    key: keyOk ? (v.k as number) : null,
+    keyConfidence: keyOk && typeof v.kc === 'number' && Number.isFinite(v.kc) ? v.kc : 0,
+    bpm: bpmOk ? (v.b as number) : null,
+    bpmConfidence: bpmOk && typeof v.bc === 'number' && Number.isFinite(v.bc) ? v.bc : 0,
+  };
 }
 
 /**

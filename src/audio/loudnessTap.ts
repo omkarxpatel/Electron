@@ -103,7 +103,7 @@ registerProcessor(${JSON.stringify(PROCESSOR_NAME)}, LoudnessTapProcessor);
  *  reuse a context. Registration is per-context, so remember which ones. */
 const registered = new WeakSet<BaseAudioContext>();
 
-async function ensureRegistered(ctx: AudioContext): Promise<void> {
+async function ensureRegistered(ctx: BaseAudioContext): Promise<void> {
   if (registered.has(ctx)) return;
   const url = URL.createObjectURL(new Blob([PROCESSOR_SOURCE], { type: 'application/javascript' }));
   try {
@@ -130,8 +130,13 @@ export interface LoudnessTap {
  * fails to load, which callers treat as "no loudness data" rather than an
  * error — every feature built on this degrades to the behaviour it had
  * before the measurement existed.
+ *
+ * Takes a BaseAudioContext rather than an AudioContext because only
+ * `sampleRate` and `audioWorklet` are used, and `check:loudness-tap` drives
+ * it from an OfflineAudioContext — deterministic, faster than real time, and
+ * no dependence on there being an output device.
  */
-export async function createLoudnessTap(ctx: AudioContext): Promise<LoudnessTap | null> {
+export async function createLoudnessTap(ctx: BaseAudioContext): Promise<LoudnessTap | null> {
   if (!ctx.audioWorklet) return null;
   try {
     await ensureRegistered(ctx);

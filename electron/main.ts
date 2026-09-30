@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 // so the shipped binary is basename "electron" and Electron computes
 // isPackaged as permanently false in every release. See updater.ts.
 import { isPackagedBuild, setupAutoUpdater, teardownAutoUpdater } from './updater';
+import { renderSpeech } from './speech';
 import {
   getSinkVolumeState,
   onSinkVolumeChange,
@@ -182,22 +183,32 @@ let systemAudioMuted = false;
  * while it sits in the menu bar.
  */
 /**
- * Dock icon visible iff the window is up AND the notch HUD is off.
+ * Dock icon visible iff the window is up. The notch HUD does NOT get a vote,
+ * and that is the whole point of this comment.
  *
- * The HUD half is not a style choice. Since macOS 10.14 a window may only
- * float over ANOTHER app's fullscreen Space if the process is an accessory
- * (`kProcessTransformToUIElementApplication`), and `app.dock.hide()` is how
- * you get there. Keeping the dock icon means the HUD stops at the edge of a
- * fullscreen Space — it simply isn't drawn, with nothing logged.
+ * It used to: the dock icon was dropped for as long as the HUD was enabled,
+ * and since the HUD is on by default that meant the app was an accessory from
+ * the first launch onwards. An accessory app owns no menu bar, so the band at
+ * the top of the screen sat empty whenever this app was frontmost — no Apple
+ * menu, no File / Edit / View, and with the Edit menu gone, no Cmd+X / C / V
+ * in the Spotify Client ID box or the search field. Nothing logs this; the
+ * menu bar is simply blank, which reads as the OS glitching rather than as
+ * something we did.
  *
- * So enabling the HUD costs the dock icon and the Cmd+Tab entry; the tray is
- * the way back to the window. Turning the HUD off restores both, which is why
- * this is computed rather than set once at startup.
+ * What it bought: since macOS 10.14 a window may only float over ANOTHER
+ * app's FULLSCREEN Space if the process is an accessory
+ * (`kProcessTransformToUIElementApplication`, i.e. `app.dock.hide()`). So the
+ * HUD now reaches a fullscreen Space only while our window is hidden — which
+ * is the state the HUD is actually for. With the window open, the panel stops
+ * at the edge of a fullscreen Space and isn't drawn there.
+ *
+ * That is the right way round: a blank menu bar is broken all the time, a HUD
+ * missing from a fullscreen Space is missing in the one case where the window
+ * it belongs to is already on screen.
  */
 function syncDockVisibility(): void {
   if (process.platform !== 'darwin' || !app.dock) return;
-  const wantDock =
-    !isNotchEnabled() && !!win && !win.isDestroyed() && win.isVisible();
+  const wantDock = !!win && !win.isDestroyed() && win.isVisible();
   if (wantDock) {
     void app.dock.show().catch(() => {
       // Non-fatal — the window is up either way, we just keep the old state.
@@ -676,6 +687,14 @@ ipcMain.handle('spotify-app:launch-hidden', async (): Promise<{ ok: boolean; rea
  * resolves to `unavailable` rather than rejecting — see spotifyFolders.ts.
  */
 ipcMain.handle('spotify-folders:read', () => readSpotifyRootlist());
+
+// The DJ's commentary, rendered to a buffer rather than spoken to the default
+// output device. See electron/speech.ts — in Live mode the default device is
+// BlackHole, so anything spoken there is captured by our own tap and folded
+// into the key, tempo and loudness we record for whatever is playing.
+ipcMain.handle('speech:render', (_event, text: unknown, voice: unknown) =>
+  renderSpeech(text, voice),
+);
 
 ipcMain.handle('shell:open-external', async (_event, url: string) => {
   if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {

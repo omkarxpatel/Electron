@@ -417,6 +417,27 @@ function EqPanelImpl({
                 <span className="eq-ai-status" title="What the enhancer is doing right now.">
                   {describeAiStatus(state.aiProfile, aiStatus)}
                 </span>
+                {(aiStatus?.key || aiStatus?.tempo) && (
+                  <span className="eq-ai-key">
+                    {aiStatus.key && (
+                      <span
+                        data-unsure={aiStatus.key.confidence < 0.35 ? 'true' : 'false'}
+                        title={`Key: ${aiStatus.key.label}, Camelot ${aiStatus.key.camelot}. Worked out from the audio — Spotify stopped providing this in 2024. It settles as the track plays, and dims while neighbouring keys are still close.`}
+                      >
+                        {aiStatus.key.camelot} · {aiStatus.key.label}
+                      </span>
+                    )}
+                    {aiStatus.key && aiStatus.tempo && <span className="eq-ai-sep"> · </span>}
+                    {aiStatus.tempo && (
+                      <span
+                        data-unsure={aiStatus.tempo.confidence < 0.35 ? 'true' : 'false'}
+                        title={`Tempo: ${aiStatus.tempo.bpm.toFixed(1)} BPM, from the beat rather than from metadata. Reported in the 70-140 range: tempo is only defined up to a factor of two, so a 160 BPM track reads as 80.`}
+                      >
+                        {Math.round(aiStatus.tempo.bpm)} BPM
+                      </span>
+                    )}
+                  </span>
+                )}
                 <span className="eq-ai-profiles-label">Adapt</span>
                 <div className="eq-ai-profiles-row">
                   <button

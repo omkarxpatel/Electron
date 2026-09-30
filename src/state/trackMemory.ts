@@ -65,14 +65,33 @@ export function useTrackMemory(enabled: boolean) {
    * the change away from it.
    */
   const commit = useCallback(
-    (trackId: string, bands10: number[], seconds: number, lufs: number | null): void => {
+    (
+      trackId: string,
+      bands10: number[],
+      seconds: number,
+      lufs: number | null,
+      key: number | null,
+      keyConfidence: number,
+      bpm: number | null,
+      bpmConfidence: number,
+    ): void => {
     if (!enabledRef.current) return;
     // A skipped track measures its intro, not the track. Storing that would
     // poison every later recall, and recall is the whole point.
     if (seconds < MIN_COMMIT_SECONDS) return;
     const store = storeRef.current;
     if (!store) return;
-    store[trackId] = foldMeasurement(store[trackId] ?? null, bands10, seconds, Date.now(), lufs);
+    store[trackId] = foldMeasurement(
+      store[trackId] ?? null,
+      bands10,
+      seconds,
+      Date.now(),
+      lufs,
+      key,
+      keyConfidence,
+      bpm,
+      bpmConfidence,
+    );
     const kept = evictOldest(store, MAX_TRACKS);
     storeRef.current = kept;
     const serialized = encodeStore(kept);

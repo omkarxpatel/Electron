@@ -46,6 +46,8 @@ interface Props {
   onPlayTrack: (track: SpotifyTrack) => void;
   currentlyPlayingId: string | null;
   onOpenQueue: () => void;
+  /** Opens the DJ view — suggestions for what follows what is playing. */
+  onOpenDj: () => void;
   /** Bumped when the panel opens — used to refetch saved albums on each open. */
   refreshKey: number;
 }
@@ -72,6 +74,7 @@ function SpotifyLibraryImpl({
   onPlayTrack,
   currentlyPlayingId,
   onOpenQueue,
+  onOpenDj,
   refreshKey,
 }: Props) {
   const [filter, setFilter] = useState<Filter>('all');
@@ -433,6 +436,15 @@ function SpotifyLibraryImpl({
         >
           <IconQueue />
           <span>Queue</span>
+        </button>
+        <button
+          type="button"
+          className="sp-library-queue-btn"
+          onClick={onOpenDj}
+          aria-label="Open DJ suggestions"
+          title="What should follow this?"
+        >
+          <span>DJ</span>
         </button>
       </div>
 

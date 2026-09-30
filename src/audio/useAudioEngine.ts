@@ -6,6 +6,7 @@ import type { EffectsState } from '../state/effects';
 import { buildEffectsChain, type EffectsChain } from './effectsGraph';
 import type { AiEffectTargets } from './useAiEnhancer';
 import { createLoudnessTap, type LoudnessTap } from './loudnessTap';
+import { createOnsetTap, type OnsetTap } from './onsetTap';
 import { buildBandCoefs, logSpacedFrequencies, responseCurveDb } from './biquadResponse';
 
 interface AudioEngineState {
@@ -16,6 +17,11 @@ interface AudioEngineState {
    *  so its analysis isn't a closed feedback loop with its own corrections. */
   preEqAnalyserL: AnalyserNode | null;
   preEqAnalyserR: AnalyserNode | null;
+  /** Pre-EQ mono analyser at a much larger FFT, for chroma. A semitone at
+   *  130 Hz is 7.7 Hz wide; the 1024-point analysers above give 47 Hz bins
+   *  and cannot resolve one below roughly 800 Hz, which is most of where
+   *  the harmony lives. Attached and detached with the pre-EQ group. */
+  chromaAnalyser: AnalyserNode | null;
   /** Peak catcher node, exposed so the UI can read live gain reduction
    *  (`.reduction`) without reaching into the graph. */
   limiter: DynamicsCompressorNode | null;
@@ -26,6 +32,14 @@ interface AudioEngineState {
    *  unavailable. A ref rather than state: it is read on the enhancer's
    *  10 Hz tick and must not change identity or force a render. */
   loudnessTapRef: { current: LoudnessTap | null };
+  /** Onset envelope tap for tempo, or null where AudioWorklet is
+   *  unavailable. A ref for the same reason as the loudness tap. */
+  onsetTapRef: { current: OnsetTap | null };
+  /** Ducks the music under the DJ's commentary, and the node the commentary
+   *  is played into. Refs rather than state: they are driven from a speech
+   *  callback, not from a render. */
+  duckGainRef: { current: GainNode | null };
+  voiceGainRef: { current: GainNode | null };
   error: string | null;
   status: 'Idle' | 'Connecting' | 'Listening' | 'Error';
 }
@@ -96,6 +110,8 @@ export function useAudioEngine(
   const [analyserR, setAnalyserR] = useState<AnalyserNode | null>(null);
   const [preEqAnalyserL, setPreEqAnalyserL] = useState<AnalyserNode | null>(null);
   const [preEqAnalyserR, setPreEqAnalyserR] = useState<AnalyserNode | null>(null);
+  const [chromaAnalyser, setChromaAnalyser] = useState<AnalyserNode | null>(null);
+  const chromaAnalyserRef = useRef<AnalyserNode | null>(null);
   const [limiter, setLimiter] = useState<DynamicsCompressorNode | null>(null);
   const [autoTrimDb, setAutoTrimDb] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -112,6 +128,11 @@ export function useAudioEngine(
   const trebleShelfRef = useRef<BiquadFilterNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
+  /** Attenuates the music under the DJ's commentary. Separate from
+   *  masterGain on purpose — see the wiring comment. */
+  const duckGainRef = useRef<GainNode | null>(null);
+  /** Where the rendered commentary is played into the graph. */
+  const voiceGainRef = useRef<GainNode | null>(null);
   /** Peak catcher sitting BEFORE masterGain (see the wiring comment below).
    *  Scope is stage-overflow only: preamp + EQ + enhancer can stack +30 dB
    *  cumulative, and this keeps that from hard-clipping. It deliberately does
@@ -156,6 +177,8 @@ export function useAudioEngine(
    *  the module failed to load — every caller treats that as "no loudness
    *  data" rather than an error. */
   const loudnessTapRef = useRef<LoudnessTap | null>(null);
+  /** Onset envelope for tempo, on the same raw-input tap point. */
+  const onsetTapRef = useRef<OnsetTap | null>(null);
   /** A/B compare taps. `abProcessed` carries the full chain, `abRaw` carries
    *  the untouched input; exactly one is open at a time. */
   const abProcessedRef = useRef<GainNode | null>(null);
@@ -238,6 +261,25 @@ export function useAudioEngine(
         const masterGain = ctx.createGain();
         masterGain.gain.value = 1;
 
+        /* Commentary ducking, and the voice it ducks for.
+         *
+         * `duckGain` attenuates the music while the DJ is talking; `voiceGain`
+         * carries the speech. Both sum into masterGain, so the user's volume
+         * still scales the pair of them together — which is what a master
+         * volume should do.
+         *
+         * Not at masterGain, deliberately. That is the user's knob and a
+         * literal multiplier by design, and moving it from underneath them
+         * would make the label a lie — the same rule the level matcher
+         * follows. And not anywhere upstream of the taps either: the speech
+         * has to be invisible to the chroma, onset and BS.1770 measurements,
+         * or the DJ's own voice ends up recorded as part of the track it is
+         * describing. See electron/speech.ts for the other half of that. */
+        const duckGain = ctx.createGain();
+        duckGain.gain.value = 1;
+        const voiceGain = ctx.createGain();
+        voiceGain.gain.value = 1;
+
         // Limiter — interim peak catcher via DynamicsCompressor. True
         // brick-wall limiting requires an AudioWorklet (Phase 4).
         const limiter = ctx.createDynamicsCompressor();
@@ -289,7 +331,9 @@ export function useAudioEngine(
         // Wire the chain:
         //   source → inputGain → preamp → eq filters → bass → mid → treble
         //         → panner → limiter → analyser → splitter (taps)
-        //                                    └─→ masterGain → destination
+        //                                    └─→ duckGain ─┐
+        //                        DJ commentary → voiceGain ─┴→ masterGain
+        //                                                      → destination
         //
         // The limiter sits BEFORE masterGain so it only protects against
         // stage-overflow (preamp + EQ + enhancer can stack +30+ dB cumulative)
@@ -332,18 +376,33 @@ export function useAudioEngine(
          * inputGain itself is device compensation, constant per device, so
          * including it costs nothing and means we measure the signal the
          * rest of the chain actually works with. */
-        const loudnessTap = await createLoudnessTap(ctx);
+        const [loudnessTap, onsetTap] = await Promise.all([
+          createLoudnessTap(ctx),
+          createOnsetTap(ctx),
+        ]);
         if (cancelled) {
           loudnessTap?.dispose();
+          onsetTap?.dispose();
           ctx.close();
           return;
         }
+        if (onsetTap) {
+          // Same tap point and the same reason: upstream of every gain, so
+          // nothing we do to the signal can colour what the beat detector
+          // sees.
+          inputGain.connect(onsetTap.node);
+          onsetTap.node.connect(limiter);
+          onsetTapRef.current = onsetTap;
+        }
         if (loudnessTap) {
           inputGain.connect(loudnessTap.node);
-          // A worklet whose output reaches nothing is not guaranteed to be
-          // scheduled. Its process() never writes to the output buffer, so
-          // what arrives at the limiter is silence — this connection exists
-          // purely to keep the node in the pulled graph.
+          // Keeps the node in the pulled graph: a worklet whose output
+          // reaches nothing is not guaranteed to be scheduled. process()
+          // never writes to the output buffer, so what arrives here is
+          // silence. `check:loudness-tap` measured this as belt-and-braces
+          // rather than load-bearing — the tap reads correctly without it —
+          // but that was measured offline, and the cost is one connection
+          // carrying silence, so it stays.
           loudnessTap.node.connect(limiter);
           loudnessTapRef.current = loudnessTap;
         }
@@ -353,6 +412,18 @@ export function useAudioEngine(
         // their internal sliding buffers fall idle (no FFT work, no overhead).
         preEqSplitter.connect(preEqAnalyserLNode, 0, 0);
         preEqSplitter.connect(preEqAnalyserRNode, 1, 0);
+        // Chroma wants frequency resolution, not time resolution: key is a
+        // whole-track average, so it is read a couple of times a second and
+        // an 8192-point FFT costs nothing. It hangs off the same splitter
+        // so it attaches and detaches with the rest of the pre-EQ group.
+        const chromaNode = ctx.createAnalyser();
+        chromaNode.fftSize = 8192;
+        // No smoothing: consecutive reads are averaged into the chroma total
+        // anyway, and the analyser's own EMA would just correlate them.
+        chromaNode.smoothingTimeConstant = 0;
+        preEqSplitter.connect(chromaNode, 0, 0);
+        chromaAnalyserRef.current = chromaNode;
+        setChromaAnalyser(chromaNode);
         if (aiEnabledRef.current) {
           preamp.connect(preEqSplitter);
           preEqAttachedRef.current = true;
@@ -392,7 +463,9 @@ export function useAudioEngine(
 
         limiter.connect(analyserNode);
         limiter.connect(splitter);
-        analyserNode.connect(masterGain);
+        analyserNode.connect(duckGain);
+        duckGain.connect(masterGain);
+        voiceGain.connect(masterGain);
         splitter.connect(analyserLNode, 0, 0);
         splitter.connect(analyserRNode, 1, 0);
 
@@ -411,6 +484,8 @@ export function useAudioEngine(
         abProcessedRef.current = abProcessed;
         abRawRef.current = abRaw;
         masterGainRef.current = masterGain;
+        duckGainRef.current = duckGain;
+        voiceGainRef.current = voiceGain;
         limiterRef.current = limiter;
         setLimiter(limiter);
         analyserRef.current = analyserNode;
@@ -466,6 +541,8 @@ export function useAudioEngine(
       analyserRRef.current?.disconnect();
       splitterRef.current?.disconnect();
       masterGainRef.current?.disconnect();
+      duckGainRef.current?.disconnect();
+      voiceGainRef.current?.disconnect();
       pannerRef.current?.disconnect();
       trebleShelfRef.current?.disconnect();
       midPeakRef.current?.disconnect();
@@ -489,9 +566,13 @@ export function useAudioEngine(
       effectsChainRef.current = null;
       loudnessTapRef.current?.dispose();
       loudnessTapRef.current = null;
+      onsetTapRef.current?.dispose();
+      onsetTapRef.current = null;
       abProcessedRef.current = null;
       abRawRef.current = null;
       masterGainRef.current = null;
+      duckGainRef.current = null;
+      voiceGainRef.current = null;
       analyserRef.current = null;
       analyserLRef.current = null;
       analyserRRef.current = null;
@@ -816,9 +897,13 @@ export function useAudioEngine(
     analyserR,
     preEqAnalyserL,
     preEqAnalyserR,
+    chromaAnalyser,
     limiter,
     autoTrimDb,
     loudnessTapRef,
+    onsetTapRef,
+    duckGainRef,
+    voiceGainRef,
     error,
     status,
   };

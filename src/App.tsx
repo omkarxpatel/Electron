@@ -13,6 +13,8 @@ import { VisualizerBanner } from './components/VisualizerBanner';
 import { ImmersiveLyrics } from './components/ImmersiveLyrics';
 import { EqSection } from './components/EqSection';
 import type { AiEffectTargets } from './audio/useAiEnhancer';
+import type { DjBridge } from './components/SpotifySection';
+import type { LiveMeasurement } from './components/DjPanel';
 import { useTrackMemory } from './state/trackMemory';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
@@ -40,6 +42,7 @@ const AUTO_LEVEL_TARGET_LUFS = -14;
 const AUTO_LEVEL_MAX_DB = 6;
 
 const PLAYTHROUGH_KEY = 'av.eq.playthrough';
+const RIGHT_COLLAPSED_KEY = 'av.rightPanel.collapsed';
 
 export function App() {
   return (
@@ -136,7 +139,22 @@ function AppContent() {
     return Math.max(-AUTO_LEVEL_MAX_DB, Math.min(AUTO_LEVEL_MAX_DB, wanted));
   }, [settings.autoLevel, trackMemory, playback.playback?.item?.id]);
 
-  const { analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR, limiter, loudnessTapRef } =
+  /**
+   * Live key and tempo of the playing track, pushed up by the enhancer.
+   *
+   * The DJ view needs to know what it is mixing OUT of, and the stored
+   * profile only exists once a track has been played through — so on a first
+   * listen the live reading is the only reading there is. Just the two
+   * numbers, not the whole enhancer status, because the rest of it moves
+   * several times a second and App re-rendering at that rate would be a
+   * needless cost.
+   */
+  const [liveMeasurement, setLiveMeasurement] = useState<LiveMeasurement | null>(null);
+
+  const {
+    analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR,
+    chromaAnalyser, limiter, loudnessTapRef, onsetTapRef, duckGainRef, voiceGainRef,
+  } =
     useAudioEngine(
     audioSource.stream,
     eq.state,
@@ -175,6 +193,30 @@ function AppContent() {
   // "unattended" is measured from keyboard and mouse — which says nothing
   // about someone listening with the window in the background.
   const audioActive = playthrough && !!audioSource.stream;
+
+  /**
+   * What the overlay's DJ view needs, gathered in one object.
+   *
+   * Assembled here because App owns the only `useTrackMemory` instance and
+   * the audio graph's nodes are its refs — SpotifySection reads everything
+   * else from context, but neither of those is in a context.
+   *
+   * `audible` is the same flag the rest of the app uses for "we are the ones
+   * making the sound". When it is false the user is listening to Spotify
+   * directly, so there is nothing to duck and nowhere to put a voice, and the
+   * commentary degrades to text.
+   */
+  const djBridge = useMemo<DjBridge>(
+    () => ({
+      currentTrack: playback.playback?.item ?? null,
+      live: liveMeasurement,
+      recall: trackMemory.recall,
+      audible: audioActive,
+      duckGainRef,
+      voiceGainRef,
+    }),
+    [playback.playback?.item, liveMeasurement, trackMemory.recall, audioActive, duckGainRef, voiceGainRef],
+  );
   useEffect(() => {
     window.api.update.setActivity(audioActive);
   }, [audioActive]);
@@ -281,10 +323,19 @@ function AppContent() {
   // Lives on `.app` rather than `.workspace` because HoverOverlayPanel is
   // fixed-positioned and has to stop short of the right column — it reads
   // the same --right-col-w, and a class further down wouldn't reach it.
-  const [rightCollapsed, setRightCollapsed] = useState(false);
+  //
+  // Persisted, like playthrough above: this is a layout choice about how you
+  // want the app to look, and it survived neither a relaunch nor one of dev
+  // mode's reloads.
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(
+    () => localStorage.getItem(RIGHT_COLLAPSED_KEY) === 'true',
+  );
   const toggleRightCollapsed = useCallback((): void => {
     setRightCollapsed((v) => !v);
   }, []);
+  useEffect(() => {
+    localStorage.setItem(RIGHT_COLLAPSED_KEY, String(rightCollapsed));
+  }, [rightCollapsed]);
 
   return (
     <div
@@ -332,13 +383,16 @@ function AppContent() {
         ) : (
           <div className="workspace">
             <EqSection
+              onMeasurement={setLiveMeasurement}
               trackMemory={trackMemory}
               loudnessTapRef={loudnessTapRef}
+              onsetTapRef={onsetTapRef}
               eq={eq}
               enhancer={enhancer}
               effects={effects}
               preEqAnalyserL={preEqAnalyserL}
               preEqAnalyserR={preEqAnalyserR}
+              chromaAnalyser={chromaAnalyser}
               analyser={analyser}
               analyserL={analyserL}
               analyserR={analyserR}
@@ -357,6 +411,7 @@ function AppContent() {
 
             <SectionBoundary label="Spotify panel">
               <SpotifySection
+                dj={djBridge}
                 active={isActive}
                 showLyrics={settings.showLyrics}
                 collapsed={rightCollapsed}

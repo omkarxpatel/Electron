@@ -8,6 +8,19 @@ import { useLibrary, usePlayback } from '../spotify/SpotifyProvider';
 import { useTransportShortcuts } from '../spotify/useTransportShortcuts';
 import type { SpotifyTrack } from '../spotify/types';
 import { onOverlayNav } from '../spotify/navigation';
+import type { TrackProfile } from '../audio/trackProfile';
+import type { LiveMeasurement } from './DjPanel';
+
+/** Passed through to SpotifyOverlay's DJ view untouched. Declared here so
+ *  App and the overlay agree on one shape rather than two. */
+export interface DjBridge {
+  currentTrack: SpotifyTrack | null;
+  live: LiveMeasurement | null;
+  recall: (trackId: string | null) => TrackProfile | null;
+  audible: boolean;
+  duckGainRef: { current: GainNode | null };
+  voiceGainRef: { current: GainNode | null };
+}
 
 /**
  * The right column of the post-auth workspace: music-icon overlay trigger,
@@ -39,6 +52,10 @@ interface Props {
   /** Window-visibility flag — RAF-driven children gate on it to suspend
    *  while the window is hidden. */
   active: boolean;
+  /** Everything the overlay's DJ view needs, threaded straight through.
+   *  Owned by App because the single `useTrackMemory` instance lives there
+   *  and the audio graph's nodes are its refs. */
+  dj: DjBridge;
   /** When false the lyrics pane is not mounted at all, so its lazy chunk is
    *  never fetched and the track list reclaims the vertical space. */
   showLyrics: boolean;
@@ -49,7 +66,7 @@ interface Props {
   onToggleCollapsed: () => void;
 }
 
-export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapsed }: Props) {
+export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapsed, dj }: Props) {
   const library = useLibrary();
   const playback = usePlayback();
 
@@ -295,6 +312,7 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
             onClose={closeOverlay}
             albumRequest={albumRequest}
             artistRequest={artistRequest}
+            dj={dj}
           />
         </Suspense>
         </SectionBoundary>

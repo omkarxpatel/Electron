@@ -8,6 +8,15 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.14 (prompt)
+
+- New DJ view, in the library panel next to Queue. Pick a playlist or a folder and it ranks what should play next against whatever is playing — on key, tempo and loudness — says why ("9B, one step round the wheel, and four BPM up"), and queues it. It'll read that out loud too, ducking the music under the voice.
+- Steer it by typing: "something chill", "pick up the energy", "keep it in this key". It tells you what it understood, and tells you when it didn't.
+- It only knows tracks this app has heard. Spotify stopped publishing key and tempo in 2024, so the app works them out by listening, and every list says how many of its tracks have been analysed — a short list is explained rather than mysterious.
+- The EQ column now shows the key and tempo of what's playing, as a Camelot code.
+- Key and tempo detection are much more accurate. Key was reading a fifth too high on a third of tracks, and tempo was latching onto off-beat subdivisions. Checked against 189 passages of real music with published key and tempo: key right 45% → 62%, tempo within 1 BPM 51% → 78%.
+- Fixed tempo never being measured at all — the detector ran, but its output never reached the app.
+
 ## 1.4.13 (prompt)
 
 - Playlist folders. Make folders, nest them, and drag playlists in or right-click one and pick "Move to folder". Spotify has no API for folders, so these live in this app and don't sync back to Spotify.

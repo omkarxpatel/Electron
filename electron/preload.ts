@@ -77,6 +77,21 @@ const api = {
   },
 
   /**
+   * Text to speech, rendered to a WAV buffer instead of played.
+   *
+   * The renderer plays it through the audio graph so it reaches the same
+   * output device as the music and stays out of every measurement tap — see
+   * electron/speech.ts for why speaking it directly would corrupt track
+   * memory.
+   *
+   * Returns `unknown`; the shape is declared once in src/types/api.d.ts.
+   */
+  speech: {
+    render: (text: string, voice?: string): Promise<unknown> =>
+      ipcRenderer.invoke('speech:render', text, voice),
+  },
+
+  /**
    * Menu-bar bridge. The tray lives in main but has no Spotify session of its
    * own, so the renderer pushes now-playing up and receives transport
    * commands back down. This is what makes the tray work while the window is

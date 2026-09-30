@@ -4,6 +4,7 @@ import { useAiEnhancer, type AiEffectTargets, type AiEnhancerStatus } from '../a
 import { useCurrentlyPlayingId } from '../spotify/SpotifyProvider';
 import type { UseTrackMemoryReturn } from '../state/trackMemory';
 import type { LoudnessTap } from '../audio/loudnessTap';
+import type { OnsetTap } from '../audio/onsetTap';
 import { frequenciesFor, type UseEQReturn } from '../state/eq';
 import type { UseEnhancerReturn } from '../state/enhancer';
 import type { UseEffectsRackReturn } from '../state/effects';
@@ -36,6 +37,8 @@ interface Props {
    *  audio graph hasn't built yet (no stream). */
   preEqAnalyserL: AnalyserNode | null;
   preEqAnalyserR: AnalyserNode | null;
+  /** Large-FFT pre-EQ analyser the enhancer folds chroma from. */
+  chromaAnalyser: AnalyserNode | null;
   /** Post-EQ analyser — drives the response-curve halo + per-band activity. */
   analyser: AnalyserNode | null;
   /** Post-EQ stereo analysers — drive the Enhancer's per-channel output meter. */
@@ -60,6 +63,16 @@ interface Props {
   /** BS.1770 tap on the raw input. Read at each track boundary for that
    *  track's integrated loudness, then reset for the next one. */
   loudnessTapRef: { current: LoudnessTap | null };
+  /** Onset envelope tap the enhancer estimates tempo from. */
+  onsetTapRef: { current: OnsetTap | null };
+  /**
+   * Live key and tempo of the playing track, pushed up for the DJ view.
+   *
+   * Only the two measurements, not the whole status: the rest of it moves
+   * several times a second and App re-rendering at that rate would be a
+   * needless cost. Key and tempo change once per track.
+   */
+  onMeasurement: (m: { key: number | null; keyConfidence: number; bpm: number | null; bpmConfidence: number } | null) => void;
   /** When false, the response-curve halo + band-activity RAF loops pause. */
   active: boolean;
   /** Live (playthrough) state, owned by App because the audio source toggle
@@ -82,6 +95,7 @@ export function EqSection({
   effects,
   preEqAnalyserL,
   preEqAnalyserR,
+  chromaAnalyser,
   analyser,
   analyserL,
   analyserR,
@@ -91,6 +105,8 @@ export function EqSection({
   aiEffectsRef,
   trackMemory,
   loudnessTapRef,
+  onsetTapRef,
+  onMeasurement,
   active,
   playthrough,
   togglePlaythrough,
@@ -113,6 +129,10 @@ export function EqSection({
   // What the enhancer is currently doing. The hook only calls onStatus when a
   // field actually changes, so this can be a plain setState.
   const [aiStatus, setAiStatus] = useState<AiEnhancerStatus | null>(null);
+  // Through a ref so the onStatus callback stays stable — it is handed to the
+  // enhancer once and a changing identity would re-run its effect.
+  const onMeasurementRef = useRef(onMeasurement);
+  onMeasurementRef.current = onMeasurement;
   const flashClearTimersRef = useRef<number[]>([]);
   const trackId = useCurrentlyPlayingId();
   // Looked up per render rather than per tick — the enhancer reads it through
@@ -133,6 +153,8 @@ export function EqSection({
   const aiHandle = useAiEnhancer({
     analyserL: preEqAnalyserL,
     analyserR: preEqAnalyserR,
+    chromaAnalyser,
+    onsetTapRef,
     enabled: eq.state.aiEnhance,
     bandCount: eq.state.bandCount,
     locked: eq.state.locked,
@@ -147,10 +169,27 @@ export function EqSection({
     // means the meter is read and restarted at exactly the same instant the
     // spectrum is committed.
     onTrackMeasured: useCallback(
-      (id: string, bands10: number[], seconds: number) => {
+      (
+        id: string,
+        bands10: number[],
+        seconds: number,
+        key: number | null,
+        keyConfidence: number,
+        bpm: number | null,
+        bpmConfidence: number,
+      ) => {
         const tap = loudnessTapRef.current;
         const lufs = tap ? tap.meter.integratedLufs() : null;
-        trackMemory.commit(id, bands10, seconds, Number.isFinite(lufs ?? NaN) ? lufs : null);
+        trackMemory.commit(
+          id,
+          bands10,
+          seconds,
+          Number.isFinite(lufs ?? NaN) ? lufs : null,
+          key,
+          keyConfidence,
+          bpm,
+          bpmConfidence,
+        );
         tap?.reset();
       },
       [loudnessTapRef, trackMemory],
@@ -159,7 +198,22 @@ export function EqSection({
     deltaRef: aiDeltaRef,
     baselineRef,
     bandFreqs: aiBandFreqs,
-    onStatus: setAiStatus,
+    onStatus: useCallback(
+      (status: AiEnhancerStatus) => {
+        setAiStatus(status);
+        onMeasurementRef.current(
+          status.key || status.tempo
+            ? {
+                key: status.key ? status.key.code : null,
+                keyConfidence: status.key?.confidence ?? 0,
+                bpm: status.tempo?.bpm ?? null,
+                bpmConfidence: status.tempo?.confidence ?? 0,
+              }
+            : null,
+        );
+      },
+      [],
+    ),
     onTick: (deltas, flashed) => {
       // Threshold-diff: only setState when band values have moved enough
       // to be visually distinguishable on the slider thumb.

@@ -768,7 +768,31 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /*
+   * `clip` horizontally, not `hidden`, and that is load-bearing.
+   *
+   * `overflow: hidden` clips but still makes this a scroll container, and a
+   * scroll container can be scrolled by anything that asks to be brought into
+   * view. Collapsing the right column leaves `.workspace-right` held at its
+   * full 340px in a zero-width grid track, i.e. parked just past the right
+   * edge — and LyricsPane, which lives inside it, calls
+   * `scrollIntoView({ behavior: 'smooth' })` on the active line every time the
+   * line changes. `inline: 'nearest'` is the default and cannot be turned off,
+   * so each line dragged this box 264.5px sideways and slid a collapsed panel
+   * back onto the screen, smoothly, over the visualizer.
+   *
+   * Everything else stayed correct while that happened — React state,
+   * `data-right-collapsed`, the computed `--right-col-w`, the grid tracks — so
+   * the panel was visible and the expand button was showing at the same time,
+   * and clicking it "did nothing" because the app was already expanding
+   * something it believed collapsed.
+   *
+   * `overflow-x: clip` is not a scroll container, so there is nothing to
+   * scroll and no descendant can move the layout sideways. Vertical stays
+   * `hidden`: panes below manage their own scrolling.
+   */
+  overflow-x: clip;
+  overflow-y: hidden;
   position: relative;
 }
 
@@ -1470,6 +1494,31 @@
 /* ============================================================
    Spotify — persistent player bar
    ============================================================ */
+
+/* The player bar's equivalent of .sp-track-notice. Fixed rather than
+   absolute: the bar is `overflow: hidden` and only 88px tall, so a notice
+   positioned inside it would be clipped, and one placed in normal flow would
+   become a flex item of the app shell and push the bar down. */
+.sp-player-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 100px;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: 60vw;
+  padding: 7px 14px;
+  background: rgba(24, 24, 24, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  color: #eee;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  animation: context-menu-in 120ms ease-out;
+}
 
 .sp-player-bar {
   flex: 0 0 88px;
@@ -3739,6 +3788,28 @@
 
 /* Live readout of what the enhancer chose. Deliberately quiet — it's there to
    be checked, not watched. */
+/* Detected key. Dims rather than hides when the call is close, because a
+   hedged reading is still worth seeing — it is the one measurement here
+   with no machine-verifiable ground truth. */
+.eq-ai-key {
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  padding-bottom: 2px;
+}
+
+.eq-ai-key [data-unsure='true'] {
+  opacity: 0.45;
+  font-weight: 500;
+}
+
+.eq-ai-sep {
+  opacity: 0.35;
+}
+
 .eq-ai-status {
   font-size: 9.5px;
   text-align: center;
@@ -6559,48 +6630,67 @@
 
 /* ── Top lists ── */
 
+/* Art-forward rather than a list of 34px thumbnails.
+   These two sections are the only place the app shows a whole top-N at once,
+   and cover art is what makes a chart readable at a glance — you recognise
+   the artwork long before you finish reading the name. The rank and name sit
+   under the art on one line, so a long title truncates instead of pushing the
+   badge out of the card. */
 .sp-stats-list {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 16px 14px;
 }
 
 .sp-stats-row {
-  display: flex;
+  /* Two rows: the art spans the full width, then rank / name / delta share a
+     baseline beneath it. A flex column can't keep those three on one line
+     without another wrapper element. */
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'art art art'
+    'rank name delta';
   align-items: center;
-  gap: 10px;
-  padding: 4px 6px;
-  border-radius: 6px;
-}
-
-.sp-stats-row:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.sp-stats-rank {
-  flex: none;
-  width: 18px;
-  text-align: right;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.35);
-  font-variant-numeric: tabular-nums;
+  gap: 8px 6px;
+  padding: 0;
+  border-radius: 8px;
 }
 
 .sp-stats-avatar {
-  flex: none;
-  width: 34px;
-  height: 34px;
+  grid-area: art;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   object-fit: cover;
   background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.38);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.sp-stats-row:hover .sp-stats-avatar {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
 }
 
 .sp-stats-avatar-square {
-  border-radius: 4px;
+  border-radius: 8px;
+}
+
+.sp-stats-rank {
+  grid-area: rank;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.34);
+  font-variant-numeric: tabular-nums;
 }
 
 .sp-stats-row-name {
-  flex: 1;
+  grid-area: name;
   min-width: 0;
   font-size: 12.5px;
   overflow: hidden;
@@ -6609,6 +6699,8 @@
 }
 
 .sp-stats-row-play {
+  grid-area: name;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -6639,12 +6731,12 @@
 }
 
 .sp-stats-delta {
-  flex: none;
-  min-width: 36px;
+  grid-area: delta;
   text-align: right;
   font-size: 10.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* Palette-derived rather than fixed green/red/yellow, which fought every
@@ -6920,4 +7012,217 @@
 .sp-stats-mover-by {
   color: rgba(255, 255, 255, 0.38);
   white-space: nowrap;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   DJ view — what should follow what is playing
+   ──────────────────────────────────────────────────────────────────────── */
+
+.dj-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+.dj-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dj-now {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dj-now-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.dj-now-track {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dj-now-facts {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-bright);
+  opacity: 0.85;
+}
+
+.dj-source,
+.dj-request-input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  background: var(--accent-soft-bg);
+  color: inherit;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.dj-source:focus,
+.dj-request-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.dj-request {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dj-speak-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.8;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* What the app understood, echoed back. A misread request is otherwise
+   invisible — the list just quietly ranks on something else. */
+.dj-intent {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.dj-intent[data-understood='false'] {
+  opacity: 0.95;
+  color: var(--accent-bright);
+}
+
+/* Coverage is shown always, not only when it is poor. Only tracks the app
+   has heard can be ranked at all, so this is the honest explanation for a
+   thin list. */
+.dj-coverage {
+  font-size: 11px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.dj-coverage strong {
+  color: var(--accent-bright);
+  font-weight: 600;
+}
+
+.dj-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dj-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.dj-row-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.dj-row-main:hover {
+  background: var(--accent-soft-bg);
+}
+
+.dj-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.dj-row-reason {
+  font-size: 10.5px;
+  color: var(--accent-bright);
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dj-queue-btn {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--accent-bg);
+  color: inherit;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.dj-queue-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft-bg);
+}
+
+.dj-queue-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dj-row-error {
+  flex-basis: 100%;
+  padding-left: 6px;
+  font-size: 10.5px;
+  opacity: 0.8;
+}
+
+/* The commentary, shown as well as spoken. When the voice cannot play this
+   is the whole of it rather than a caption. */
+.dj-said {
+  margin-top: auto;
+  padding: 9px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--accent-soft-bg);
+}
+
+.dj-said-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.dj-said-note {
+  margin: 5px 0 0;
+  font-size: 10.5px;
+  opacity: 0.7;
 }

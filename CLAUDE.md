@@ -30,25 +30,45 @@ Verification here means:
 
 1. `npm run typecheck` — must be clean.
 2. `npm run check:enhancer` — if you touched `useAiEnhancer`, `enhanceProfiles`,
-   `biquadResponse` or `loudness`. Asserts the AI Enhancer's target curves, its
-   curve→filter-gain solver, and the BS.1770 loudness meter (against the
-   standard's published coefficient tables and the EBU Tech 3341 tones).
+   `biquadResponse`, `loudness`, `trackProfile`, `musicalKey`, `tempo`,
+   `mixCompatibility`, or anything under `src/dj/`. Asserts the AI Enhancer's
+   target curves, its curve→filter-gain solver, the BS.1770 loudness meter
+   (against the standard's published coefficient tables and the EBU Tech 3341
+   tones), key and tempo detection, and the mix scoring the DJ view ranks on.
    Typecheck can't tell you a filter delivers the wrong curve; every case it
    guards shipped silently once already.
-3. `npm run check:quality` — if you touched `electron/deviceProfile.ts`,
+
+   **Every module it covers must stay import-free**, or it drops out of the
+   only test coverage this repo has: it compiles them standalone with `tsc`
+   and runs them under plain node, which cannot resolve an extensionless
+   relative import. `import type` is fine — TypeScript erases it entirely.
+
+   Its synthetic material is not neutral, and the DEFAULTS have hidden a bug
+   once already. The key test drove three harmonics at 1/h², which has far
+   less energy a fifth above the fundamental than any real instrument, so it
+   never exercised the one error that turned out to dominate real music. If
+   you add a case here, ask what its generator's easy settings let through.
+3. `npm run check:loudness-tap` — if you touched `electron`-side audio
+   wiring, `src/audio/loudnessTap.ts`, or the graph in `useAudioEngine.ts`.
+   Renders a known tone through the real worklet in the app's graph shape
+   and asserts it agrees with the offline reference. `check:enhancer` proves
+   the loudness *math*; this proves the number ever arrives. A worklet that
+   is never scheduled reports -Infinity forever, so track memory records no
+   loudness and level matching silently does nothing.
+4. `npm run check:quality` — if you touched `electron/deviceProfile.ts`,
    `src/state/quality.ts` or `src/visualizers/drawRevision.ts`. Asserts the
    frame-cap arithmetic against synthetic vsync traces, then boots a real
    Electron (GPU status, screen metrics and powerMonitor don't exist under
    node) for capability detection and every profile-invalidation path. The
    failures it guards are silent by construction: nothing errors, the app just
    runs at the wrong quality tier, or half the frame rate, forever.
-4. `npm run check:sink-volume` — if you touched `electron/deviceVolume.ts` or
+5. `npm run check:sink-volume` — if you touched `electron/deviceVolume.ts` or
    `build/helpers/avvolume.swift`. This is the only code in the app that can
    leave the *machine* worse than it found it: pinning means we raised
    someone's output device to 100%, and a broken restore strands it there.
    The check drives the real helper against a real device and asserts every
    crash-recovery path, then hands the device back.
-5. Run the app and look at it. See below, because launching it has traps.
+6. Run the app and look at it. See below, because launching it has traps.
 
 `npm run capture` renders the app into an offscreen window and photographs it
 with `webContents.capturePage()`, which reads that window's own buffer — no
@@ -69,6 +89,22 @@ npm run capture                      # every scene into docs/media/
 npm run capture -- --only hero       # one scene
 npm run capture -- --no-build        # reuse the existing dist/
 ```
+
+**Calibrating a detector needs real audio, and there is a corpus on every
+Mac.** `/Library/Audio/Apple Loops` holds around 1700 professionally produced
+loops, and each one's CAF `uuid` chunk carries the publisher's own key
+signature, key type and beat count — so ground truth for key and tempo is
+already on disk, played on real instruments and real drums, with no licensing
+question. Decode with `afconvert`, sum a drum loop with a bass and a chord
+part from the same collection and native tempo to get something shaped like a
+record, and render it through the real graph using the `check:loudness-tap`
+pattern (an `OfflineAudioContext` in a hidden Electron renderer, with
+`ctx.suspend()` to sample an AnalyserNode at known times).
+
+That is how the v1.4.14 key and tempo work was calibrated, and it is the only
+reason the errors were found: synthetic scales and click trains passed
+everything while key detection was a fifth high on a third of real music.
+Synthetic material proves the maths. It does not tell you the answer is right.
 
 Scenes live at the top of `scripts/capture.mjs`. Two things to know when
 adding one: `av.settings.v3` is nested, so per-style knobs are declared flat

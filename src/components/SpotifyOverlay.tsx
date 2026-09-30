@@ -11,6 +11,7 @@ import {
 import { SpotifyLibrary } from './SpotifyLibrary';
 import { SpotifyQueue } from './SpotifyQueue';
 import { SpotifyStats } from './SpotifyStats';
+import { DjPanel, type LiveMeasurement } from './DjPanel';
 import type {
   SpotifyAlbum,
   SpotifyArtist,
@@ -20,9 +21,10 @@ import type {
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { addToQueue, canEditPlaylist, isMissingScopeError } from '../spotify/api';
 import { formatDuration } from '../shared/format';
+import type { TrackProfile } from '../audio/trackProfile';
 import { pickMediumImage } from '../shared/image';
 
-type View = 'library' | 'album' | 'artist' | 'queue' | 'stats';
+type View = 'library' | 'album' | 'artist' | 'queue' | 'stats' | 'dj';
 
 interface Props {
   playlists: SpotifyPlaylist[];
@@ -52,6 +54,17 @@ interface Props {
    *  request for the same target count as a new one. */
   albumRequest: { albumId: string; nonce: number } | null;
   artistRequest: { artistId: string; nonce: number } | null;
+  /** Everything the DJ view needs. Threaded from App rather than read from a
+   *  hook here because only one `useTrackMemory` may exist — a second would
+   *  hold its own copy of the store and the two would diverge. */
+  dj: {
+    currentTrack: SpotifyTrack | null;
+    live: LiveMeasurement | null;
+    recall: (trackId: string | null) => TrackProfile | null;
+    audible: boolean;
+    duckGainRef: { current: GainNode | null };
+    voiceGainRef: { current: GainNode | null };
+  };
 }
 
 export const SpotifyOverlay = memo(SpotifyOverlayImpl);
@@ -75,6 +88,7 @@ function SpotifyOverlayImpl({
   onClose,
   albumRequest,
   artistRequest,
+  dj,
 }: Props) {
   useRenderCount('SpotifyOverlay');
   const [view, setView] = useState<View>('library');
@@ -210,6 +224,10 @@ function SpotifyOverlayImpl({
     setView('stats');
   }, []);
 
+  const handleOpenDj = useCallback((): void => {
+    setView('dj');
+  }, []);
+
   /** Picking Liked Songs loads it into the main track list, so the panel
    *  closes the same way choosing a playlist does. */
   const handleSelectLikedSongs = useCallback((): void => {
@@ -236,6 +254,7 @@ function SpotifyOverlayImpl({
           onPlayTrack={handlePlayTrackFromLibrary}
           currentlyPlayingId={currentlyPlayingId}
           onOpenQueue={handleOpenQueue}
+          onOpenDj={handleOpenDj}
           refreshKey={refreshKey}
         />
       )}
@@ -264,6 +283,20 @@ function SpotifyOverlayImpl({
           onBack={backToLibrary}
           onPlayTrack={handlePlayTrackFromLibrary}
           refreshKey={refreshKey}
+        />
+      )}
+      {view === 'dj' && (
+        <DjPanel
+          onBack={backToLibrary}
+          playlists={playlists}
+          currentlyPlayingId={currentlyPlayingId}
+          currentTrack={dj.currentTrack}
+          live={dj.live}
+          recall={dj.recall}
+          onPlay={(t) => playTrack(t)}
+          audible={dj.audible}
+          duckGainRef={dj.duckGainRef}
+          voiceGainRef={dj.voiceGainRef}
         />
       )}
       {view === 'queue' && (

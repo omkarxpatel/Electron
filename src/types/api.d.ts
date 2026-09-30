@@ -60,6 +60,20 @@ export interface ElectronApi {
     read(): Promise<RootlistResult>;
   };
   /**
+   * Text to speech for the DJ's commentary, rendered to audio rather than
+   * spoken. Main runs `say` to a file and hands the bytes back; the renderer
+   * plays them through the audio graph.
+   *
+   * It has to work this way round. Live mode points system output at
+   * BlackHole so the app can tap it, and anything spoken to the default
+   * device therefore lands in our own capture — where it would be folded
+   * into the key, tempo and loudness recorded against whatever track is
+   * playing, and would duck itself instead of the music.
+   */
+  speech: {
+    render(text: string, voice?: string): Promise<SpeechResult>;
+  };
+  /**
    * Menu-bar bridge — see electron/main.ts's tray section. The renderer owns
    * the Spotify session, so it pushes now-playing up for the tray's labels
    * and handles the transport commands the tray sends back.
@@ -321,6 +335,18 @@ export type SinkVolumeState =
  * synced your folders yet" need different advice, and collapsing them into
  * one failure message sends people looking in the wrong place.
  */
+/**
+ * What `speech.render` answers with. Mirrors SpeechResult in
+ * electron/speech.ts; change one and change the other.
+ *
+ * Every failure is a normal result rather than a throw: commentary is a
+ * flourish on a feature that works without it, and the renderer's fallback is
+ * to show the sentence instead of speaking it.
+ */
+export type SpeechResult =
+  | { ok: true; wav: Uint8Array }
+  | { ok: false; reason: string };
+
 export type RootlistNode =
   | { kind: 'playlist'; uri: string }
   | { kind: 'folder'; id: string; name: string; children: RootlistNode[] };

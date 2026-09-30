@@ -10,6 +10,9 @@ import {
 } from './enhanceProfiles';
 import { buildCurveSolver, solveBandGains } from './biquadResponse';
 import type { TrackProfile } from './trackProfile';
+import { accumulateChroma, estimateKey, PITCH_CLASSES } from './musicalKey';
+import { estimateTempo } from './tempo';
+import type { OnsetTap } from './onsetTap';
 
 /**
  * AI Enhancer — adaptive graphic EQ that matches the playing music toward a
@@ -160,6 +163,12 @@ export interface AiEffectTargets extends EffectTargets {
 interface Params {
   analyserL: AnalyserNode | null;
   analyserR: AnalyserNode | null;
+  /** Large-FFT pre-EQ analyser for chroma. Optional: without it the key is
+   *  simply never determined, which is how this worked before. */
+  chromaAnalyser: AnalyserNode | null;
+  /** Onset envelope tap for tempo. Optional, like the chroma analyser:
+   *  without it the tempo is simply never determined. */
+  onsetTapRef: { current: OnsetTap | null } | null;
   enabled: boolean;
   bandCount: BandCount;
   locked: boolean[];
@@ -182,7 +191,15 @@ interface Params {
   recalled: TrackProfile | null;
   /** Called once per track, on the change away from it, with the measured
    *  mean-zero shape and how many seconds of signal went into it. */
-  onTrackMeasured?: (trackId: string, bands10: number[], seconds: number) => void;
+  onTrackMeasured?: (
+    trackId: string,
+    bands10: number[],
+    seconds: number,
+    key: number | null,
+    keyConfidence: number,
+    bpm: number | null,
+    bpmConfidence: number,
+  ) => void;
   /** Ref the AI writes its effect targets into, read by the audio engine.
    *  Same arrangement as deltaRef: a ref rather than state so the 10 Hz loop
    *  doesn't re-render anything. */
@@ -222,6 +239,19 @@ export interface AiEnhancerStatus {
   effects: AiEffectTargets | null;
   /** The curve was seeded from a previous play rather than measured now. */
   recalled: boolean;
+  /** Running key estimate for what is playing, or null before there is
+   *  enough tonal content to judge. Reported live rather than only at the
+   *  track boundary so the call can be checked against a track you know —
+   *  it is the one measurement here with no machine-verifiable ground
+   *  truth. See musicalKey on why the confidence is comparative. */
+  /** `code` is the same `tonic + 12 * (minor ? 1 : 0)` that gets stored in
+   *  track memory. Carried alongside the labels so a consumer that needs to
+   *  compare keys does not have to parse "F#m" back into a number. */
+  key: { camelot: string; label: string; code: number; confidence: number } | null;
+  /** Running tempo estimate, or null before the envelope has filled. Live
+   *  for the same reason as the key: neither has machine-verifiable ground
+   *  truth on real music, only on synthetic signals. */
+  tempo: { bpm: number; confidence: number } | null;
 }
 
 export interface AiEnhancerHandle {
@@ -235,6 +265,8 @@ export interface AiEnhancerHandle {
 export function useAiEnhancer({
   analyserL,
   analyserR,
+  chromaAnalyser,
+  onsetTapRef,
   enabled,
   bandCount,
   locked,
@@ -348,6 +380,18 @@ export function useAiEnhancer({
     /** True while the estimate is still mostly the recalled shape rather than
      *  what we have heard this play. Reported so the UI can say so. */
     let seededFromRecall = false;
+    /** Running chroma total for the current track, and the scratch buffer
+     *  the analyser is read into. Reset on a track change with everything
+     *  else. */
+    const chroma = new Float64Array(PITCH_CLASSES);
+    const chromaBins = chromaAnalyser
+      ? new Float32Array(chromaAnalyser.frequencyBinCount)
+      : null;
+    const chromaLinear = chromaBins ? new Float32Array(chromaBins.length) : null;
+    let chromaTick = 0;
+    /** Latest live key estimate, refreshed with the chroma. */
+    let liveKey: { camelot: string; label: string; code: number; confidence: number } | null = null;
+    let liveTempo: { bpm: number; confidence: number } | null = null;
     const prevSpectrum = new Float32Array(binsM.length);
     const onsetTimes: number[] = [];
     let currentMode: MaterialClass = 'dense';
@@ -442,12 +486,23 @@ export function useAiEnhancer({
       const nowTrackId = trackIdRef.current;
       if (nowTrackId !== measuringTrackId) {
         if (measuringTrackId !== null && measuredTicks > 0) {
+          const k = estimateKey(chroma);
           onTrackMeasuredRef.current?.(
             measuringTrackId,
             bandDbEma.slice(),
             measuredTicks * DT,
+            k ? k.tonic + (k.mode === 'minor' ? PITCH_CLASSES : 0) : null,
+            k ? k.confidence : 0,
+            liveTempo ? liveTempo.bpm : null,
+            liveTempo ? liveTempo.confidence : 0,
           );
         }
+        chroma.fill(0);
+        liveKey = null;
+        liveTempo = null;
+        // The envelope is a rolling 14 s window; without this the first
+        // estimate on a new track is mostly the previous one's beat.
+        onsetTapRef?.current?.reset();
         measuringTrackId = nowTrackId;
         measuredTicks = 0;
         const known = recalledRef.current;
@@ -495,6 +550,31 @@ export function useAiEnhancer({
           seededFromRecall = false;
         }
       }
+      if (chromaAnalyser && chromaBins && chromaLinear && signalPresent && ++chromaTick >= 5) {
+        chromaTick = 0;
+        chromaAnalyser.getFloatFrequencyData(chromaBins);
+        // dB to linear magnitude: chroma sums energy, and summing decibels
+        // would weight a quiet partial the same as a loud one.
+        for (let k = 0; k < chromaBins.length; k++) {
+          chromaLinear[k] = chromaBins[k] > -120 ? Math.pow(10, chromaBins[k] / 20) : 0;
+        }
+        accumulateChroma(chromaLinear, sampleRate, chromaAnalyser.fftSize, chroma);
+        const k = estimateKey(chroma);
+        liveKey = k
+          ? {
+              camelot: k.camelot,
+              label: k.label,
+              code: k.tonic + (k.mode === 'minor' ? PITCH_CLASSES : 0),
+              confidence: k.confidence,
+            }
+          : null;
+        // Same 2 Hz cadence. The envelope covers 14 s, so nothing moves
+        // fast enough to justify running the autocorrelation more often.
+        const tap = onsetTapRef?.current ?? null;
+        const env = tap ? tap.envelope() : null;
+        liveTempo = tap && env ? estimateTempo(env, tap.envelopeHz) : null;
+      }
+
       for (let i = 0; i < 10; i++) {
         activity10[i] = smoothstep01(
           clamp01((bandDbEma[i] - BAND_FLOOR_DBFS) / (BAND_ACTIVE_DBFS - BAND_FLOOR_DBFS)),
@@ -708,9 +788,19 @@ export function useAiEnhancer({
         lastStatus.settled !== settled ||
         lastStatus.idle !== hold ||
         lastStatus.recalled !== seededFromRecall ||
+        keysDiffer(lastStatus.key, liveKey) ||
+        temposDiffer(lastStatus.tempo, liveTempo) ||
         effectsDiffer(lastStatus.effects, fxSnapshot)
       ) {
-        lastStatus = { dominant, settled, idle: hold, effects: fxSnapshot, recalled: seededFromRecall };
+        lastStatus = {
+          dominant,
+          settled,
+          idle: hold,
+          effects: fxSnapshot,
+          recalled: seededFromRecall,
+          key: liveKey,
+          tempo: liveTempo,
+        };
         onStatusRef.current?.(lastStatus);
       }
     };
@@ -742,6 +832,29 @@ function effectsDiffer(a: AiEffectTargets | null, b: AiEffectTargets | null): bo
     Math.abs(a.exciter - b.exciter) > 0.5 ||
     Math.abs(a.exciterFreq - b.exciterFreq) > 1
   );
+}
+
+/** Change detection for the key readout. Confidence drifts continuously as
+ *  chroma accumulates, so comparing it exactly would re-render the panel
+ *  every time the estimate is refreshed. */
+function keysDiffer(
+  a: { camelot: string; confidence: number } | null,
+  b: { camelot: string; confidence: number } | null,
+): boolean {
+  if ((a === null) !== (b === null)) return true;
+  if (a === null || b === null) return false;
+  return a.camelot !== b.camelot || Math.abs(a.confidence - b.confidence) > 0.1;
+}
+
+/** Same rationale as keysDiffer: the estimate drifts continuously, so only
+ *  a change a reader would notice should reach React. */
+function temposDiffer(
+  a: { bpm: number } | null,
+  b: { bpm: number } | null,
+): boolean {
+  if ((a === null) !== (b === null)) return true;
+  if (a === null || b === null) return false;
+  return Math.abs(a.bpm - b.bpm) > 0.5;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
