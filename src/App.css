@@ -798,6 +798,20 @@
    * manage their own scrolling.
    */
   overflow: clip;
+  /*
+   * Load-bearing, and only since this box stopped being `hidden`.
+   *
+   * A flex item's automatic minimum size is its CONTENT size, not zero — the
+   * single exception being a scroll container, which gets zero. `hidden` made
+   * this a scroll container and so quietly supplied that zero. `clip` does
+   * not, so the content-based minimum came back and this box could no longer
+   * shrink to the space it was given: it grew to the full height of the track
+   * list inside it, measured at 13804px against an 84-track playlist, and
+   * pushed the visualiser and the player bar off the bottom of the window.
+   * The EQ then stretched to fill what was left, which is what it looked
+   * like from the outside. Nothing errored.
+   */
+  min-height: 0;
   position: relative;
 }
 

@@ -8,6 +8,10 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.16 (silent)
+
+- Fixed the window emptying out after updating to 1.4.15: the equalizer stretched to fill everything and the visualizer and player controls were pushed off the bottom of the screen.
+
 ## 1.4.15 (prompt)
 
 - Right-click the track in the player bar for the same menu the track rows have: add to a playlist, add to the queue, save or remove from Liked Songs, go to the album or artist, copy a link.
