@@ -24,7 +24,7 @@ interface Props {
 }
 
 export function NotchBridge({ albumPalette }: Props): null {
-  const { playback, savedCurrent, togglePlay, next, previous, seek, toggleShuffle, toggleSaveCurrent } =
+  const { playback, savedCurrent, togglePlay, next, previousOrRestart, seek, toggleShuffle, toggleSaveCurrent } =
     usePlayback();
 
   const item = playback?.item ?? null;
@@ -37,8 +37,8 @@ export function NotchBridge({ albumPalette }: Props): null {
 
   // Read through a ref so the 1.5 s playback poll handing us new callback
   // identities doesn't tear the IPC listener down and set it up again.
-  const actionsRef = useRef({ togglePlay, next, previous, seek, toggleShuffle, toggleSaveCurrent });
-  actionsRef.current = { togglePlay, next, previous, seek, toggleShuffle, toggleSaveCurrent };
+  const actionsRef = useRef({ togglePlay, next, previousOrRestart, seek, toggleShuffle, toggleSaveCurrent });
+  actionsRef.current = { togglePlay, next, previousOrRestart, seek, toggleShuffle, toggleSaveCurrent };
 
   useEffect(() => {
     return window.api?.notch?.onCommand((cmd) => {
@@ -51,7 +51,7 @@ export function NotchBridge({ albumPalette }: Props): null {
           void a.next();
           break;
         case 'previous':
-          void a.previous();
+          void a.previousOrRestart();
           break;
         case 'shuffle':
           void a.toggleShuffle();

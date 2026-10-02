@@ -88,6 +88,14 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
     () => playback.playback?.item?.id ?? null,
     [playback.playback?.item?.id],
   );
+  /** Uri of whatever the player is playing FROM, so the library can mark that
+   *  tile. Memoised on the uri rather than read straight off `playback`: the
+   *  library grid is memo'd, and handing it a value that changes on every
+   *  poll would re-render every tile once a second. */
+  const playingContextUri = useMemo(
+    () => playback.playback?.context?.uri ?? null,
+    [playback.playback?.context?.uri],
+  );
 
   // Overlay state + handlers — see App.tsx's previous comment for the rationale.
   const [overlayOpen, setOverlayOpen] = useState<boolean>(false);
@@ -294,6 +302,7 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
           <SpotifyOverlay
             playlists={library.playlists}
             playlistsLoading={library.playlistsLoading}
+            playingContextUri={playingContextUri}
             selectedPlaylistId={
               library.source?.kind === 'playlist' ? library.source.playlist.id : null
             }

@@ -129,7 +129,9 @@
   /* Contains .album-backdrop's negative z-index — without this it would
      paint behind the #root background and be invisible. */
   isolation: isolate;
-  overflow: hidden;
+  /* `clip`, not `hidden` — same reason as `#root` in index.css: `hidden`
+     would let a descendant's scrollIntoView scroll this box sideways. */
+  overflow: clip;
 
   /* Theme fallbacks. React overrides these on .app via inline styles
      based on the active palette so the whole UI re-themes when a
@@ -787,12 +789,15 @@
    * and clicking it "did nothing" because the app was already expanding
    * something it believed collapsed.
    *
-   * `overflow-x: clip` is not a scroll container, so there is nothing to
-   * scroll and no descendant can move the layout sideways. Vertical stays
-   * `hidden`: panes below manage their own scrolling.
+   * `clip` is not a scroll container, so there is nothing to scroll and no
+   * descendant can move the layout sideways. It has to be `clip` on BOTH
+   * axes: Chromium normalises `overflow-x: clip` back to `hidden` when the
+   * other axis is a scrolling value, and getComputedStyle then reports
+   * `hidden` — which is how a first attempt at this fix passed review and
+   * changed nothing. Nothing here scrolls vertically either; the panes below
+   * manage their own scrolling.
    */
-  overflow-x: clip;
-  overflow-y: hidden;
+  overflow: clip;
   position: relative;
 }
 
@@ -2177,12 +2182,76 @@
   outline: none;
 }
 
+/* Wraps the cover so the playing mark can sit on it. The cover is an <img>,
+   which cannot hold a child of its own. */
+.sp-library-tile-art {
+  position: relative;
+  display: block;
+}
+
 .sp-library-tile-cover {
   width: 100%;
   aspect-ratio: 1 / 1;
   object-fit: cover;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.04);
+  display: block;
+}
+
+/* The playing tile also takes the accent on its name, the way Spotify turns
+   the playing entry green in its sidebar. The mark alone is easy to miss in
+   a grid; the colour is what you catch scanning. */
+.sp-library-tile[data-playing='true'] .sp-library-tile-name {
+  color: var(--accent-bright, #2ce568);
+}
+
+/* ── "Now playing" mark ── */
+
+.sp-playing-mark {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+  padding: 4px 5px;
+  border-radius: 5px;
+  /* Covers are arbitrary artwork, so the bars need their own backing to stay
+     legible — over a pale cover an accent-on-nothing mark disappears. */
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+.sp-playing-mark i {
+  display: block;
+  width: 2.5px;
+  border-radius: 1px;
+  background: var(--accent-bright, #2ce568);
+  /* Bars stand on the baseline and grow up; the default centre origin makes
+     them pulse outward from the middle, which reads as a glitch. */
+  transform-origin: bottom;
+  animation: playing-bar 900ms ease-in-out infinite;
+}
+
+.sp-playing-mark i:nth-child(1) { height: 5px; animation-delay: -200ms; }
+.sp-playing-mark i:nth-child(2) { height: 9px; animation-delay: -600ms; }
+.sp-playing-mark i:nth-child(3) { height: 6px; animation-delay: -400ms; }
+
+@keyframes playing-bar {
+  0%, 100% { transform: scaleY(0.45); }
+  50% { transform: scaleY(1); }
+}
+
+/* The mark means "playing", not "animating" — hold the bars at a readable
+   height rather than hiding them when motion is unwelcome. */
+@media (prefers-reduced-motion: reduce) {
+  .sp-playing-mark i {
+    animation: none;
+    transform: scaleY(0.8);
+  }
 }
 
 .sp-library-tile-cover-fallback {
@@ -2208,6 +2277,7 @@
 
 /* ─── Playlist folders (local — Spotify has no API for them) ─── */
 .sp-library-folder-cover {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6649,11 +6719,12 @@
   /* Two rows: the art spans the full width, then rank / name / delta share a
      baseline beneath it. A flex column can't keep those three on one line
      without another wrapper element. */
+  position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   grid-template-areas:
-    'art art art'
-    'rank name delta';
+    'art art'
+    'rank name';
   align-items: center;
   gap: 8px 6px;
   padding: 0;
@@ -6730,13 +6801,33 @@
   color: rgba(255, 255, 255, 0.4);
 }
 
+/* Rides the top-right corner of the artwork rather than sitting in a column
+   of its own. In a grid of cards the name is the only thing that wants the
+   width, and a movement column left every badge stranded against the card
+   edge with a gap between it and the name it described. */
 .sp-stats-delta {
-  grid-area: delta;
-  text-align: right;
-  font-size: 10.5px;
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  pointer-events: none;
+}
+
+/* "No change" is the resting state of nine rows out of ten, and a column of
+   identical dashes over the artwork reads as damage rather than data. The
+   badge exists to catch the eye when something moved, so nothing moving
+   should show nothing. */
+.sp-stats-delta[data-dir='same'] {
+  display: none;
 }
 
 /* Palette-derived rather than fixed green/red/yellow, which fought every

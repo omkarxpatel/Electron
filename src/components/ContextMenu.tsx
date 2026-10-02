@@ -43,6 +43,14 @@ interface Props {
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
+  /**
+   * The element the menu was opened from, if there is one.
+   *
+   * Only used to decide whether a scroll should dismiss the menu: a scroll
+   * that cannot move this element cannot strand the menu, so it is ignored.
+   * Omit it and any outside scroll dismisses, which is the older behaviour.
+   */
+  anchor?: HTMLElement | null;
 }
 
 // Used to keep the menu inside the viewport before it has been laid out, so
@@ -59,10 +67,14 @@ const EDGE_PAD = 8;
  *  first crossing makes the submenu impossible to reach diagonally. */
 const SUBMENU_CLOSE_GRACE_MS = 160;
 
-export function ContextMenu({ x, y, items, onClose }: Props): ReactNode {
+export function ContextMenu({ x, y, items, onClose, anchor }: Props): ReactNode {
   /** Index of the item whose submenu is open, or null. */
   const [openSub, setOpenSub] = useState<number | null>(null);
   const closeSubTimerRef = useRef<number | null>(null);
+  // In a ref so a re-rendered anchor doesn't tear down and rebuild the
+  // window listeners below on every parent render.
+  const anchorRef = useRef<HTMLElement | null>(anchor ?? null);
+  anchorRef.current = anchor ?? null;
 
   const cancelSubClose = useCallback((): void => {
     if (closeSubTimerRef.current !== null) {
@@ -105,6 +117,15 @@ export function ContextMenu({ x, y, items, onClose }: Props): ReactNode {
     // otherwise dismiss the menu the moment the wheel moved.
     const onScroll = (e: Event) => {
       if (insideMenu(e.target)) return;
+      // A scroll only strands the menu if it moved what the menu is pinned
+      // to. Closing on every scroll anywhere looked fine until something on
+      // screen scrolled itself: the synced lyrics pane auto-scrolls to follow
+      // the song, which dismissed this menu ~60ms after it opened. That made
+      // the player-bar menu impossible to use and had been quietly closing
+      // track-row menus mid-song too.
+      const target = e.target as Node | null;
+      const pinned = anchorRef.current;
+      if (pinned && target && !target.contains(pinned)) return;
       onClose();
     };
     const onResize = () => onClose();

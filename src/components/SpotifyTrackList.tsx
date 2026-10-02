@@ -5,7 +5,8 @@ import { sourceKey, type TrackSource } from '../spotify/useSpotify';
 import { formatDuration } from '../shared/format';
 import { smallestImage } from '../shared/image';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
-import { addToQueue, canEditPlaylist, isMissingScopeError } from '../spotify/api';
+import { canEditPlaylist, isMissingScopeError } from '../spotify/api';
+import { buildTrackMenuItems, createEditRunner } from '../spotify/trackMenu';
 
 interface Props {
   /** What to show: a playlist, Liked Songs, or nothing picked yet. */
@@ -52,6 +53,9 @@ interface MenuState {
   x: number;
   y: number;
   track: SpotifyTrack;
+  /** The row the menu belongs to — scrolling the list moves it, so that
+   *  scroll should dismiss. See ContextMenu's `anchor`. */
+  anchor: HTMLElement | null;
 }
 
 export const SpotifyTrackList = memo(SpotifyTrackListImpl);
@@ -270,95 +274,25 @@ function SpotifyTrackListImpl({
   const closeMenu = useCallback(() => setMenu(null), []);
   const handleRowContextMenu = useCallback((track: SpotifyTrack, e: React.MouseEvent) => {
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, track });
+    setMenu({ x: e.clientX, y: e.clientY, track, anchor: e.currentTarget as HTMLElement });
   }, []);
 
-  const runEdit = useCallback(
-    (okText: string, fn: () => Promise<void>) => {
-      void fn().then(
-        () => showNotice(okText),
-        (err: unknown) => {
-          console.error('playlist edit failed:', err);
-          // A missing scope never resolves by retrying — the token was issued
-          // before playlist-modify-* was requested, so say what actually
-          // fixes it instead of showing a generic failure.
-          showNotice(
-            isMissingScopeError(err)
-              ? 'Reconnect Spotify in Settings to allow playlist edits'
-              : 'Spotify rejected that — nothing changed',
-          );
-        },
-      );
-    },
-    [showNotice],
-  );
+  const runEdit = useMemo(() => createEditRunner(showNotice), [showNotice]);
 
   const menuItems = useMemo<ContextMenuItem[]>(() => {
-    if (!menu) return [];
-    const track = menu.track;
-
-    const targets: ContextMenuItem[] = playlists
-      .filter((p) => canEditPlaylist(p, userId))
-      .map((p) => ({
-        label: p.name,
-        onClick: () => runEdit(`Added to ${p.name}`, () => onAddToPlaylist(p.id, track)),
-      }));
-
-    // Spotify's playlist remove ignores the position you pass and deletes
-    // every copy of the URI, so the label has to say so when we can see
-    // duplicates. Only the loaded span is countable — further copies may lurk
-    // past it, which is why the singular wording claims nothing about "just
-    // this one". Liked Songs can't hold duplicates at all.
-    const copies = tracks.filter((t) => t.uri === track.uri).length;
-    const liked = source?.kind === 'liked';
-    const editable = liked || (source ? canEditPlaylist(source.playlist, userId) : false);
-    const removeLabel = liked
-      ? 'Remove from Liked Songs'
-      : copies > 1
-        ? `Remove all ${copies} copies from this playlist`
-        : 'Remove from this playlist';
-
-    return [
-      {
-        label: 'Add to playlist',
-        submenu: {
-          items: targets,
-          filterPlaceholder: 'Find a playlist',
-          emptyLabel: userId ? 'No playlists you can edit' : 'Loading your playlists…',
-        },
-      },
-      {
-        label: removeLabel,
-        disabled: !editable,
-        title: editable ? undefined : 'You can only edit playlists you own or collaborate on',
-        onClick: () =>
-          runEdit(liked ? 'Removed from Liked Songs' : 'Removed', () =>
-            onRemoveFromSource(track),
-          ),
-      },
-      {
-        label: 'Add to queue',
-        onClick: () => {
-          void addToQueue(track.uri).catch((err) => {
-            console.error('addToQueue failed:', err);
-          });
-        },
-      },
-      {
-        separator: true,
-        label: 'Go to album',
-        onClick: () => onGoToAlbum(track),
-      },
-      {
-        label: 'Copy Spotify link',
-        onClick: () => {
-          void navigator.clipboard
-            .writeText(`https://open.spotify.com/track/${track.id}`)
-            .then(() => showNotice('Link copied'))
-            .catch((err) => console.error('clipboard write failed:', err));
-        },
-      },
-    ];
+    if (!menu || !source) return [];
+    return buildTrackMenuItems({
+      track: menu.track,
+      playlists,
+      userId,
+      source,
+      sourceTracks: tracks,
+      onAddToPlaylist,
+      onRemoveFromSource,
+      onGoToAlbum,
+      runEdit,
+      showNotice,
+    });
   }, [
     menu,
     tracks,
@@ -506,7 +440,15 @@ function SpotifyTrackListImpl({
         </div>
       )}
 
-      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          anchor={menu.anchor}
+          onClose={closeMenu}
+        />
+      )}
 
       {notice && (
         <div className="sp-track-notice" role="status">

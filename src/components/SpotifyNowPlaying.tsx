@@ -3,6 +3,7 @@ import { useRenderCount } from '../perf';
 import type { SpotifyPlaybackState, SpotifyImage } from '../spotify/types';
 import { formatDuration as formatTime } from '../shared/format';
 import { requestOverlayNav } from '../spotify/navigation';
+import { shouldRestartTrack } from '../spotify/useSpotify';
 
 interface Props {
   playback: SpotifyPlaybackState | null;
@@ -18,6 +19,10 @@ interface Props {
   /** The playing track isn't in the playlist that's open — i.e. Smart Shuffle
    *  spliced it in. Computed by NowPlayingBar, which has the track list. */
   suggested: boolean;
+  /** Right-click on the now-playing item. The menu itself is built and
+   *  rendered by NowPlayingBar, which has the contexts it needs; this
+   *  component stays presentational. */
+  onTrackContextMenu?: (e: React.MouseEvent) => void;
 }
 
 // Selects by measured area rather than relying on Spotify's image ordering,
@@ -50,9 +55,10 @@ function pickArtAtLeast(images: SpotifyImage[], minPx: number): SpotifyImage | n
   return best ?? largest;
 }
 
-// Past this many ms into a track, a single Previous click restarts the track
-// rather than going back. A second click within DOUBLE_CLICK_MS overrides.
-const RESTART_THRESHOLD_MS = 3000;
+// The restart-vs-previous rule itself lives in useSpotify, so the tray, the
+// notch HUD and the arrow keys apply the same one. A second click within
+// DOUBLE_CLICK_MS overrides it and goes back regardless — the mouse-only
+// escape hatch for "no, I really did mean the previous track".
 const DOUBLE_CLICK_MS = 400;
 // Ignore polling for this long after a commit so the slider doesn't snap to a
 // stale value while Spotify catches up.
@@ -86,6 +92,7 @@ function SpotifyNowPlayingImpl({
   toggleSaveCurrent,
   savedCurrent,
   suggested,
+  onTrackContextMenu,
 }: Props) {
   useRenderCount('SpotifyNowPlaying');
   const duration = playback?.item?.duration_ms ?? 0;
@@ -221,8 +228,10 @@ function SpotifyNowPlayingImpl({
     const now = Date.now();
     const isDoubleClick = now - lastPrevClickRef.current < DOUBLE_CLICK_MS;
     lastPrevClickRef.current = now;
-    const currentMs = localProgressRef.current;
-    if (isDoubleClick || currentMs <= RESTART_THRESHOLD_MS) {
+    // The bar interpolates position every frame, so it has a better figure
+    // than the poll-based one previousOrRestart would fall back to — and it
+    // needs the decision synchronously to move the slider on the same tick.
+    if (isDoubleClick || !shouldRestartTrack(localProgressRef.current)) {
       previous();
     } else {
       seekLockUntilRef.current = Date.now() + POLL_LOCKOUT_MS;
@@ -252,7 +261,7 @@ function SpotifyNowPlayingImpl({
 
   return (
     <footer className="sp-player-bar">
-      <div className="sp-player-left">
+      <div className="sp-player-left" onContextMenu={onTrackContextMenu}>
         {albumImage ? (
           <img className="sp-player-art" src={albumImage.url} alt="" />
         ) : (

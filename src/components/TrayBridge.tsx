@@ -12,20 +12,20 @@ import { usePlayback } from '../spotify/SpotifyProvider';
  *   ↓  transport commands from the tray's menu items
  */
 export function TrayBridge(): null {
-  const { playback, togglePlay, next, previous } = usePlayback();
+  const { playback, togglePlay, next, previousOrRestart } = usePlayback();
 
   // The transport subscription is registered once. Actions are read through a
   // ref so a new callback identity from the 1.5 s playback poll doesn't tear
   // the IPC listener down and set it up again.
-  const actionsRef = useRef({ togglePlay, next, previous });
-  actionsRef.current = { togglePlay, next, previous };
+  const actionsRef = useRef({ togglePlay, next, previousOrRestart });
+  actionsRef.current = { togglePlay, next, previousOrRestart };
 
   useEffect(() => {
     return window.api.tray.onTransport((action) => {
       const actions = actionsRef.current;
       if (action === 'toggle') void actions.togglePlay();
       else if (action === 'next') void actions.next();
-      else void actions.previous();
+      else void actions.previousOrRestart();
     });
   }, []);
 

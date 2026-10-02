@@ -113,6 +113,22 @@ export interface SpotifyState {
   userId: string | null;
 }
 
+/**
+ * How far into a track the back control stops meaning "previous track" and
+ * starts meaning "start this one again", as Spotify does it.
+ *
+ * Exported with its predicate so every surface agrees. The player bar, the
+ * arrow-key shortcut, the tray menu and the notch HUD all have a back
+ * control, and only the player bar used to apply the rule — pressing left
+ * four minutes into a song took you to the previous track from everywhere
+ * else.
+ */
+export const RESTART_THRESHOLD_MS = 3000;
+
+export function shouldRestartTrack(progressMs: number): boolean {
+  return progressMs > RESTART_THRESHOLD_MS;
+}
+
 const POLL_INTERVAL_ACTIVE = 1500;   // ms — window visible
 const POLL_INTERVAL_HIDDEN = 10000;  // ms — window hidden, ramp down to save battery + quota
 const POLL_BACKOFF_MAX = 30000;      // ms — 429/503 backoff cap
@@ -170,6 +186,21 @@ export function useSpotify() {
   const shuffleOverrideRef = useRef<boolean | null>(null);
   const repeatLockUntilRef = useRef<number>(0);
   const repeatOverrideRef = useRef<'off' | 'track' | 'context' | null>(null);
+  /**
+   * Where playback was at the last poll, and when that was.
+   *
+   * `playback.progress_ms` on its own cannot answer "are we more than three
+   * seconds in": the poll runs every 1.5 s visible and every 10 s hidden, so
+   * the stored figure is stale by up to that much. Hidden is exactly when the
+   * tray and the notch HUD are the controls being used, so the stale case is
+   * the common one, not the edge case. Interpolating from the timestamp costs
+   * nothing and is right to within a poll's jitter.
+   */
+  const progressRef = useRef<{ ms: number; at: number; playing: boolean }>({
+    ms: 0,
+    at: 0,
+    playing: false,
+  });
   // Spotify can take 3–4 seconds to propagate transport changes through
   // Connect; the lock has to outlast that window or the next poll snaps
   // the UI back. 4s tested against a typical post-idle device.
@@ -766,12 +797,47 @@ export function useSpotify() {
   }, [withDeviceFallback]);
 
   const seek = useCallback(async (ms: number) => {
+    // Ahead of the request, not after it: a second back-press arriving before
+    // Spotify answers must already see the new position, or it reads the old
+    // one and skips to the previous track instead of restarting again.
+    progressRef.current = { ms, at: Date.now(), playing: progressRef.current.playing };
     try {
       await withDeviceFallback((deviceId) => api.seek(ms, deviceId));
     } catch (err) {
       console.error('seek failed:', err);
     }
   }, [withDeviceFallback]);
+
+  /**
+   * The back control, as Spotify behaves: past three seconds it restarts the
+   * current track, before that it goes to the previous one.
+   *
+   * `knownProgressMs` is for callers that track playback position more
+   * precisely than the poll does — the player bar interpolates per frame.
+   * Everyone else omits it and gets the interpolated figure from the ref.
+   *
+   * Resolves true when it restarted, so a caller can move its own progress
+   * UI without waiting for the next poll to confirm.
+   */
+  const previousOrRestart = useCallback(
+    async (knownProgressMs?: number): Promise<boolean> => {
+      let progressMs = knownProgressMs;
+      if (progressMs === undefined) {
+        const p = progressRef.current;
+        // Only advance the clock while actually playing — a track paused four
+        // minutes in is still four minutes in however long it sits there.
+        const elapsed = p.playing && p.at > 0 ? Date.now() - p.at : 0;
+        progressMs = p.ms + elapsed;
+      }
+      if (shouldRestartTrack(progressMs)) {
+        await seek(0);
+        return true;
+      }
+      await previous();
+      return false;
+    },
+    [seek, previous],
+  );
 
   const setVolume = useCallback(async (percent: number) => {
     try {
@@ -990,6 +1056,11 @@ export function useSpotify() {
           // Any future consumer that depends on `playback.progress_ms` via a
           // useEffect deps array or memo input would silently miss updates.
           // The extra commit per 1.5 s is cheap; the hidden contract was not.
+          progressRef.current = {
+            ms: playback.progress_ms ?? 0,
+            at: now,
+            playing: playback.is_playing === true,
+          };
           setState((s) => {
             const prev = s.playback;
             if (!prev) return { ...s, playback };
@@ -1203,6 +1274,7 @@ export function useSpotify() {
     togglePlay,
     next,
     previous,
+    previousOrRestart,
     seek,
     setVolume,
     toggleShuffle,

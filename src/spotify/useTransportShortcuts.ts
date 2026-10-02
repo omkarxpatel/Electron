@@ -40,7 +40,7 @@ function shouldIgnore(target: EventTarget | null): boolean {
 }
 
 export function useTransportShortcuts(): void {
-  const { togglePlay, next, previous } = usePlayback();
+  const { togglePlay, next, previousOrRestart } = usePlayback();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -58,7 +58,7 @@ export function useTransportShortcuts(): void {
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          void previous();
+          void previousOrRestart();
           break;
         case 'ArrowRight':
           e.preventDefault();
@@ -70,5 +70,5 @@ export function useTransportShortcuts(): void {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay, next, previous]);
+  }, [togglePlay, next, previousOrRestart]);
 }

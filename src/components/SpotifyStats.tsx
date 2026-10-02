@@ -301,7 +301,7 @@ function SpotifyStatsImpl({ onBack, onPlayTrack, refreshKey }: Props) {
               </section>
             )}
 
-            <section className="sp-stats-card">
+            <section className="sp-stats-card sp-stats-card-wide">
               <h2 className="sp-stats-heading">Top artists</h2>
               {showMovement && <MoverStrip movers={artistMovers} nameOf={(a) => a.name} />}
               <ol className="sp-stats-list">
@@ -326,7 +326,7 @@ function SpotifyStatsImpl({ onBack, onPlayTrack, refreshKey }: Props) {
               </ol>
             </section>
 
-            <section className="sp-stats-card">
+            <section className="sp-stats-card sp-stats-card-wide">
               <h2 className="sp-stats-heading">Top tracks</h2>
               {showMovement && <MoverStrip movers={trackMovers} nameOf={(t) => t.name} />}
               <ol className="sp-stats-list">

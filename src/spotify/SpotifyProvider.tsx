@@ -28,6 +28,9 @@ export interface PlaybackContextValue {
   togglePlay: () => Promise<void> | void;
   next: () => Promise<void> | void;
   previous: () => Promise<void> | void;
+  /** Back control with Spotify's restart rule — see useSpotify. Resolves
+   *  true when it restarted the track rather than going back one. */
+  previousOrRestart: (knownProgressMs?: number) => Promise<boolean>;
   seek: (ms: number) => Promise<void> | void;
   setVolume: (percent: number) => Promise<void> | void;
   toggleShuffle: () => Promise<void> | void;
@@ -133,6 +136,7 @@ export function SpotifyProvider({ children }: ProviderProps) {
       togglePlay: spotify.togglePlay,
       next: spotify.next,
       previous: spotify.previous,
+      previousOrRestart: spotify.previousOrRestart,
       seek: spotify.seek,
       setVolume: spotify.setVolume,
       toggleShuffle: spotify.toggleShuffle,
@@ -145,6 +149,7 @@ export function SpotifyProvider({ children }: ProviderProps) {
       spotify.togglePlay,
       spotify.next,
       spotify.previous,
+      spotify.previousOrRestart,
       spotify.seek,
       spotify.setVolume,
       spotify.toggleShuffle,

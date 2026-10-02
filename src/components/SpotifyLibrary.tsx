@@ -32,6 +32,9 @@ const DRAG_FOLDER = 'application/x-av-folder';
 interface Props {
   playlists: SpotifyPlaylist[];
   playlistsLoading: boolean;
+  /** Uri the player is playing from, or null. Marks that tile the way
+   *  Spotify marks the playing entry in its sidebar. */
+  playingContextUri: string | null;
   selectedPlaylistId: string | null;
   onSelectPlaylist: (playlist: SpotifyPlaylist) => void;
   onSelectLikedSongs: () => void;
@@ -61,6 +64,7 @@ export const SpotifyLibrary = memo(SpotifyLibraryImpl);
 function SpotifyLibraryImpl({
   playlists,
   playlistsLoading,
+  playingContextUri,
   selectedPlaylistId,
   onSelectPlaylist,
   onSelectLikedSongs,
@@ -247,6 +251,22 @@ function SpotifyLibraryImpl({
    *  fetch — Spotify's own `37i9dQZ…` ones — and the import counts those as
    *  unavailable rather than filing rows that open onto nothing. */
   const playlistIds = useMemo(() => new Set(playlists.map((p) => p.id)), [playlists]);
+
+  /**
+   * Folders that contain what's playing, anywhere beneath them.
+   *
+   * Without this the mark is invisible for anyone who files their playlists:
+   * the playing one sits inside a folder, so the top level shows nothing at
+   * all. Spotify has no equivalent because its sidebar is flat.
+   */
+  const playingFolderIds = useMemo(() => {
+    const id = playingContextUri?.startsWith('spotify:playlist:')
+      ? (playingContextUri.split(':').pop() ?? '')
+      : '';
+    const folderId = id ? folders.assignments[id] : undefined;
+    if (!folderId) return new Set<string>();
+    return new Set(folderPath(folders.folders, folderId).map((f) => f.id));
+  }, [playingContextUri, folders.assignments, folders.folders]);
 
   /** Sub-folders of the open folder. Hidden under the Albums filter — a
    *  folder only ever holds playlists, so it would always read as empty. */
@@ -643,6 +663,7 @@ function SpotifyLibraryImpl({
                     key={`f-${f.id}`}
                     folder={f}
                     count={countIn(folders.assignments, folders.folders, f.id)}
+                    playing={playingFolderIds.has(f.id)}
                     renaming={renamingId === f.id}
                     dropping={dropTarget === f.id}
                     onOpen={() => setOpenFolderId(f.id)}
@@ -670,6 +691,7 @@ function SpotifyLibraryImpl({
                       key={`p-${entry.item.id}`}
                       playlist={entry.item}
                       selected={entry.item.id === selectedPlaylistId}
+                      playing={entry.item.uri === playingContextUri}
                       onClick={() => onSelectPlaylist(entry.item)}
                       onContextMenu={(e) => openPlaylistMenu(e, entry.item)}
                       onDragStart={(e) => {
@@ -724,6 +746,8 @@ function countIn(
 interface FolderTileProps {
   folder: PlaylistFolder;
   count: number;
+  /** Something beneath this folder is what's playing. */
+  playing: boolean;
   renaming: boolean;
   dropping: boolean;
   onOpen: () => void;
@@ -739,6 +763,7 @@ interface FolderTileProps {
 function FolderTile({
   folder,
   count,
+  playing,
   renaming,
   dropping,
   onOpen,
@@ -786,6 +811,7 @@ function FolderTile({
       type="button"
       className="sp-library-tile sp-library-folder-tile"
       data-drop={dropping ? 'true' : 'false'}
+      data-playing={playing ? 'true' : 'false'}
       onClick={onOpen}
       onContextMenu={onContextMenu}
       draggable
@@ -793,10 +819,15 @@ function FolderTile({
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
-      title={`${folder.name} — ${count} playlist${count === 1 ? '' : 's'}`}
+      title={
+        playing
+          ? `${folder.name} — ${count} playlist${count === 1 ? '' : 's'} (playing from this folder)`
+          : `${folder.name} — ${count} playlist${count === 1 ? '' : 's'}`
+      }
     >
-      <div className="sp-library-tile-cover sp-library-folder-cover" aria-hidden>
+      <div className="sp-library-tile-cover sp-library-folder-cover">
         <IconFolder />
+        {playing && <EqualizerMark />}
       </div>
       <div className="sp-library-tile-name">{folder.name}</div>
       <div className="sp-library-tile-meta">
@@ -928,6 +959,8 @@ function FilterPill({ label, active, onClick }: FilterPillProps) {
 interface PlaylistTileProps {
   playlist: SpotifyPlaylist;
   selected: boolean;
+  /** This playlist is what the player is playing from. */
+  playing: boolean;
   onClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onDragStart: (e: React.DragEvent) => void;
@@ -936,6 +969,7 @@ interface PlaylistTileProps {
 function PlaylistTile({
   playlist,
   selected,
+  playing,
   onClick,
   onContextMenu,
   onDragStart,
@@ -947,20 +981,47 @@ function PlaylistTile({
       type="button"
       className="sp-library-tile"
       data-selected={selected ? 'true' : 'false'}
+      data-playing={playing ? 'true' : 'false'}
       onClick={onClick}
       onContextMenu={onContextMenu}
       draggable
       onDragStart={onDragStart}
-      title={`${playlist.name} — ${ownerLabel}`}
+      title={
+        playing
+          ? `${playlist.name} — ${ownerLabel} (playing)`
+          : `${playlist.name} — ${ownerLabel}`
+      }
     >
-      {coverUrl ? (
-        <img className="sp-library-tile-cover" src={coverUrl} alt="" loading="lazy" draggable={false} />
-      ) : (
-        <div className="sp-library-tile-cover sp-library-tile-cover-fallback" />
-      )}
+      <span className="sp-library-tile-art">
+        {coverUrl ? (
+          <img className="sp-library-tile-cover" src={coverUrl} alt="" loading="lazy" draggable={false} />
+        ) : (
+          <span className="sp-library-tile-cover sp-library-tile-cover-fallback" />
+        )}
+        {playing && <EqualizerMark />}
+      </span>
       <div className="sp-library-tile-name">{playlist.name}</div>
       <div className="sp-library-tile-meta">Playlist · {ownerLabel}</div>
     </button>
+  );
+}
+
+/**
+ * The "this is what's playing" mark, as Spotify puts on the playing entry in
+ * its sidebar. Three bars rather than a speaker glyph: at tile size the
+ * motion is what reads, and a static icon on a busy cover just looks like
+ * part of the artwork.
+ *
+ * `aria-label` rather than a title, because the tile's own title already
+ * says "(playing)" and two tooltips on one control fight each other.
+ */
+function EqualizerMark() {
+  return (
+    <span className="sp-playing-mark" role="img" aria-label="Playing">
+      <i />
+      <i />
+      <i />
+    </span>
   );
 }
 

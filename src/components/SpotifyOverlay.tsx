@@ -42,6 +42,8 @@ interface Props {
   playTrack: (track: SpotifyTrack, contextUri?: string) => void;
   playContext: (contextUri: string) => void;
   currentlyPlayingId: string | null;
+  /** Uri the player is playing from, so the library can mark that tile. */
+  playingContextUri: string | null;
   /** True when the panel is open. Bumps refresh keys for inner views that
    *  should refetch on each open (saved albums, queue). */
   open: boolean;
@@ -84,6 +86,7 @@ function SpotifyOverlayImpl({
   playTrack,
   playContext,
   currentlyPlayingId,
+  playingContextUri,
   open,
   onClose,
   albumRequest,
@@ -241,6 +244,7 @@ function SpotifyOverlayImpl({
         <SpotifyLibrary
           playlists={playlists}
           playlistsLoading={playlistsLoading}
+          playingContextUri={playingContextUri}
           selectedPlaylistId={selectedPlaylistId}
           onSelectPlaylist={handleSelectPlaylist}
           onSelectLikedSongs={handleSelectLikedSongs}

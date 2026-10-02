@@ -8,6 +8,16 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.15 (prompt)
+
+- Right-click the track in the player bar for the same menu the track rows have: add to a playlist, add to the queue, save or remove from Liked Songs, go to the album or artist, copy a link.
+- Context menus no longer close themselves a moment after opening. Any scrolling anywhere dismissed them, and the synced lyrics pane scrolls itself as the song plays.
+- The back button restarts the track when you're more than a few seconds in, instead of jumping to the previous one. The player bar already did this; the arrow keys, the menu bar and the notch HUD now do it too. Double-click it to go back regardless.
+- Your Stats shows top artists and top tracks as artwork rather than a list of thumbnails, and movement badges sit on the artwork instead of a column of dashes.
+- The playlist you're listening to is marked in your library, and so is the folder holding it.
+- Fixed the dock icon and menu bar going missing when the window opened.
+- Fixed the right-hand panel sliding back over the visualizer after it had been collapsed.
+
 ## 1.4.14 (prompt)
 
 - New DJ view, in the library panel next to Queue. Pick a playlist or a folder and it ranks what should play next against whatever is playing — on key, tempo and loudness — says why ("9B, one step round the wheel, and four BPM up"), and queues it. It'll read that out loud too, ducking the music under the voice.
