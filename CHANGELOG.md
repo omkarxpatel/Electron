@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.17 (silent)
+
+- Fixed the window emptying out after updating to 1.4.15: the equalizer stretched to fill everything and the visualizer and player controls were pushed off the bottom of the screen.
+- Fixed update checks reporting "Couldn't reach the update server". 1.4.16 published without the file the updater reads, so every check failed.
+
 ## 1.4.16 (silent)
 
 - Fixed the window emptying out after updating to 1.4.15: the equalizer stretched to fill everything and the visualizer and player controls were pushed off the bottom of the screen.

@@ -2,7 +2,7 @@
   "name": "audio-visualizer",
   "productName": "Electron",
   "private": true,
-  "version": "1.4.16",
+  "version": "1.4.17",
   "description": "Local macOS audio visualizer + system-wide EQ + Spotify control surface.",
   "homepage": "https://github.com/omkarxpatel/Electron",
   "repository": {
@@ -88,7 +88,7 @@
       "type": "distribution"
     },
     "dmg": {
-      "title": "Electron ${version}",
+      "title": "Electron ${version}${arch}",
       "icon": "build/icon.icns",
       "iconSize": 110,
       "background": null,
