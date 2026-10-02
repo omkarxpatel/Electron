@@ -485,6 +485,24 @@ function createWindow(startHidden = false) {
    */
   win.on('close', () => app.quit());
 
+  /*
+   * The dock icon — and with it the menu bar — follows the window's real
+   * visibility, not a guess made earlier in startup.
+   *
+   * The one-shot `syncDockVisibility()` in `whenReady` runs while the window
+   * is still `show: false` waiting for `ready-to-show`, so `isVisible()` is
+   * false, so it hides the dock, and nothing looked again once the window
+   * actually appeared: a visible window with no dock icon, no Cmd+Tab entry
+   * and no menu bar. Measured with `lsappinfo`, which reported the process as
+   * `type="UIElement"` for as long as it ran.
+   *
+   * Only `show`, deliberately. Cmd+H fires `hide` too, and dropping to an
+   * accessory there would take the Cmd+Tab entry with it — leaving a merely
+   * hidden app reachable from nothing but the tray. The deliberate hide paths
+   * (`hideWindow`, the tray item) call this themselves.
+   */
+  win.on('show', syncDockVisibility);
+
   // Block renderer-initiated new windows. The only legitimate "open externally"
   // path is the allowlisted `shell:open-external` IPC handler.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

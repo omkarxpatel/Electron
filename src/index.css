@@ -4,6 +4,14 @@
   padding: 0;
 }
 
+/* `overflow: clip`, not `hidden`. The app is a fixed-size shell and none of
+   these three ever scrolls — but `hidden` still makes them scroll CONTAINERS,
+   and anything that asks to be scrolled into view can move them. A collapsed
+   right column is parked just past the right edge, and LyricsPane's
+   per-line `scrollIntoView` dragged the whole shell sideways to reveal it, so
+   a panel every control reported as collapsed slid back over the visualizer.
+   `clip` cannot be scrolled, so there is nothing to drag. See `.main-area`
+   in App.css, which has to say the same thing one box further down. */
 html,
 body,
 #root {
@@ -11,7 +19,7 @@ body,
   background: #0a0a0a;
   color: #e8e8e8;
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
-  overflow: hidden;
+  overflow: clip;
   user-select: none;
 }
 
