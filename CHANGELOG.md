@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.18 (prompt)
+
+- The notch HUD waits a moment before it opens. Moving the pointer across the notch on the way to a tab or a menu no longer drops the panel on top of what you were reaching for.
+- Smoother opening and closing on the notch HUD. The panel, its artwork and its text now arrive together and settle, instead of landing at four slightly different times and drifting to a stop.
+
 ## 1.4.17 (silent)
 
 - Fixed the window emptying out after updating to 1.4.15: the equalizer stretched to fill everything and the visualizer and player controls were pushed off the bottom of the screen.

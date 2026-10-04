@@ -96,6 +96,23 @@ const MENU_BAR_FALLBACK_H = 32;
  */
 const HOVER_POLL_MS = 55;
 
+/**
+ * How long the cursor has to sit on the notch before the panel opens.
+ *
+ * There was no dwell at all, and the panel is 580pt wide: a pointer merely
+ * crossing the menu-bar band on its way to a tab or a menu dropped the HUD
+ * directly on top of whatever it was aiming at. A deliberate hover lasts far
+ * longer than a pass-through does, so the two separate cleanly on time alone.
+ *
+ * Resolved at HOVER_POLL_MS, so the wait is really 200-310ms: the sample that
+ * first sees the cursor arrive can be a poll late, and so can the one that
+ * sees the dwell elapse. Tightening the poll would buy back ~50ms of that for
+ * a syscall every 30ms instead of every 55, and it is not worth it — what
+ * this has to reject is a pointer that is gone again in well under 200ms
+ * either way.
+ */
+const HOVER_DWELL_MS = 200;
+
 /** Grace period before collapsing. Without it, clipping a corner of the panel
  *  on the way to a button collapses it out from under the pointer. */
 const COLLAPSE_GRACE_MS = 220;
@@ -123,6 +140,9 @@ let enabled = false;
 let expanded = false;
 let hoverTimer: NodeJS.Timeout | null = null;
 let leftAt = 0;
+/** When the cursor first landed on the hover target, or 0 while it is off it.
+ *  See HOVER_DWELL_MS. */
+let enteredAt = 0;
 let lastAssertAt = 0;
 /** Last state pushed by the renderer, replayed when the window (re)loads so a
  *  reload doesn't leave the panel blank until the next Spotify poll. */
@@ -232,10 +252,17 @@ function pollHover(): void {
     return;
   }
 
-  if (contains(hoverTargetBounds(d), p)) {
-    leftAt = 0;
-    setExpanded(true);
+  if (!contains(hoverTargetBounds(d), p)) {
+    enteredAt = 0;
+    return;
   }
+
+  if (enteredAt === 0) enteredAt = Date.now();
+  if (Date.now() - enteredAt < HOVER_DWELL_MS) return;
+
+  leftAt = 0;
+  enteredAt = 0;
+  setExpanded(true);
 }
 
 /** Runs on the same timer as the hover poll — see REASSERT_MS. */
@@ -351,6 +378,7 @@ function destroy(): void {
     hoverTimer = null;
   }
   expanded = false;
+  enteredAt = 0;
   if (win && !win.isDestroyed()) win.destroy();
   win = null;
 }
@@ -373,6 +401,7 @@ export function shutdownNotch(): void {
     hoverTimer = null;
   }
   expanded = false;
+  enteredAt = 0;
   if (win && !win.isDestroyed()) win.destroy();
   win = null;
 }

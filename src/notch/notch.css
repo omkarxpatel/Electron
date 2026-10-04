@@ -8,6 +8,40 @@
 
 :root {
   color-scheme: dark;
+
+  /*
+   * One clock for the open and one for the close.
+   *
+   * The panel's shape, its fill, its contents and the idle pill each used to
+   * carry their own duration and curve, and what you noticed was not any one
+   * of them: the fill reached full opacity at 170ms while the shape kept
+   * drifting for another 230, and the contents landed somewhere in between.
+   * Four things arriving separately read as a stutter even when every one of
+   * them is individually smooth. Every duration and delay below is expressed
+   * against these, so they cannot drift apart again.
+   */
+  --notch-open-ms: 320ms;
+  --notch-close-ms: 260ms;
+  /*
+   * Decelerating, then a settle of ~1.8% — measured at the compositor as 5pt
+   * of width and 3pt of height past the mark, peaking around 230ms and back
+   * by 320. Both halves of that are deliberate:
+   *
+   * The overshoot has to be big enough to see. The curve this replaced
+   * (0.22, 1.12, 0.36, 1) was written for a settle and delivered 1.7pt of
+   * one, which is nothing — what it actually did was reach 99% of full size
+   * in 250ms and then spend another 130ms crawling the last two points.
+   * Dead time at the end of a gesture is what reads as sluggish.
+   *
+   * And small enough not to wobble the text: at 1.8% a 14.5px title is
+   * momentarily 14.8px. A springier curve is where that starts to show.
+   */
+  --notch-open-ease: cubic-bezier(0.22, 0.92, 0.3, 1.08);
+  /* Near-linear for the first third, then eased in, so the panel starts
+     moving the instant the pointer leaves instead of hanging for a beat the
+     way an ease-in-out does. No overshoot — an elastic retract reads as a
+     bug. */
+  --notch-close-ease: cubic-bezier(0.4, 0.05, 0.25, 1);
 }
 
 html,
@@ -80,9 +114,12 @@ body,
   padding: 0 11px;
   background: #000;
   border-radius: 0 0 13px 13px;
-  /* Delayed: coming back before the panel has finished retracting shows both
-     shapes stacked for a frame or two. */
-  transition: opacity 160ms ease 150ms;
+  /* Held until the retract is ~90% done, then crossfaded with the tail of it.
+     The panel is still a little larger than this at that point (measured
+     328x48 against the pill's 300x32), but both are black and concentric, so
+     they resolve into one shape. Crossing any earlier is where the panel is
+     visibly the bigger of the two and you see them stacked. */
+  transition: opacity 170ms ease calc(var(--notch-close-ms) - 90ms);
 }
 
 .notch-root[data-expanded='true'] .notch-idle-pill {
@@ -204,11 +241,18 @@ body,
 
   transform-origin: top center;
   will-change: transform, opacity;
-  /* Collapsing: quick and no overshoot — an elastic retract reads as a bug. */
+  /*
+   * Collapsing. The fade is held back and then eased IN, so the panel stays
+   * visible for most of the retract and goes out exactly as it reaches the
+   * pill's silhouette. Fading it first (140ms against a 240ms shape) left the
+   * shape to finish shrinking invisibly, which is why the close read as a
+   * fade while the open read as a grow — the same motion, run backwards,
+   * should look like the same motion.
+   */
   transition:
-    opacity 140ms ease,
-    transform 240ms cubic-bezier(0.4, 0, 0.2, 1),
-    border-radius 240ms ease;
+    opacity calc(var(--notch-close-ms) - 60ms) ease-in 60ms,
+    transform var(--notch-close-ms) var(--notch-close-ease),
+    border-radius var(--notch-close-ms) var(--notch-close-ease);
 }
 
 /* Collapsed: the notch is physically black, so a black panel scaled into it
@@ -229,12 +273,13 @@ body,
 .notch-root[data-expanded='true'] .notch-panel {
   opacity: 1;
   transform: none;
-  /* Opening overshoots a touch; that tiny settle is most of what makes it
-     feel physical instead of linear. */
+  /* The fill lands at 55% of the open, which on this curve is the frame the
+     shape first reaches full size — so the settle that follows happens at
+     full opacity, instead of the panel going opaque long before it stops. */
   transition:
-    opacity 170ms ease,
-    transform 400ms cubic-bezier(0.22, 1.12, 0.36, 1),
-    border-radius 400ms ease;
+    opacity calc(var(--notch-open-ms) * 0.55) ease,
+    transform var(--notch-open-ms) var(--notch-open-ease),
+    border-radius var(--notch-open-ms) var(--notch-open-ease);
 }
 
 /* Contents settle in just behind the container, so you read the shape opening
@@ -243,18 +288,27 @@ body,
 .notch-info {
   opacity: 0;
   transform: translateY(7px);
+  /* Gone by the time the panel is down to ~40% of its height, so the last
+     half of the retract is an empty shape. Content still drawn while the
+     container is squashing towards 17% is content squashed with it, and a
+     flattened title is the one part of this that cannot read as anything but
+     a glitch. Keep this comfortably under --notch-close-ms. */
   transition:
-    opacity 150ms ease,
-    transform 150ms ease;
+    opacity 120ms ease,
+    transform 180ms ease;
 }
 
 .notch-root[data-expanded='true'] .notch-art,
 .notch-root[data-expanded='true'] .notch-info {
   opacity: 1;
   transform: none;
+  /* Starts 30% in — by which point the panel is tall enough to hold a line of
+     text at close to its real height — and lands on the same frame as the
+     container, on the container's own curve. */
   transition:
-    opacity 220ms ease 90ms,
-    transform 340ms cubic-bezier(0.22, 1, 0.36, 1) 90ms;
+    opacity calc(var(--notch-open-ms) * 0.55) ease calc(var(--notch-open-ms) * 0.3),
+    transform calc(var(--notch-open-ms) * 0.7) var(--notch-open-ease)
+      calc(var(--notch-open-ms) * 0.3);
 }
 
 /* ── Album art ──────────────────────────────────────────────────────────── */
