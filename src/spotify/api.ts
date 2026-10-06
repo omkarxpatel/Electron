@@ -85,6 +85,42 @@ export async function getPlaylistTracks(
   return data;
 }
 
+interface TrackUriPage {
+  items: Array<{ track: { uri?: string } | null } | null>;
+  next: string | null;
+}
+
+/**
+ * Every track URI in a playlist, for the "already in this playlist" markers.
+ *
+ * `fields` is what makes this affordable. Measured against a real playlist, a
+ * 100-item page is **5.8 KB** projected down to `next,items(track(uri))` and
+ * **679 KB** without — so indexing a 14,000-track library costs 2.85 MB
+ * rather than 330. Do not drop the projection to "reuse" getPlaylistTracks:
+ * that fetches full track objects and would make this feature too expensive
+ * to ship.
+ *
+ * `limit=100` is Spotify's maximum here, so this is the fewest requests the
+ * endpoint allows. Local tracks and podcast episodes come back with no `uri`
+ * and are skipped rather than stored as holes.
+ */
+export async function getPlaylistTrackUris(playlistId: string): Promise<Set<string>> {
+  const uris = new Set<string>();
+  for (let offset = 0; ; offset += 100) {
+    const page = await request<TrackUriPage>(
+      `/playlists/${playlistId}/items?limit=100&offset=${offset}` +
+        `&fields=next,items(track(uri))`,
+    );
+    if (!page) break;
+    for (const row of page.items ?? []) {
+      const uri = row?.track?.uri;
+      if (uri) uris.add(uri);
+    }
+    if (!page.next) break;
+  }
+  return uris;
+}
+
 /** Single playlist by id — used to restore the last-opened playlist on
  *  launch, which may sit outside the first page of `/me/playlists`. */
 export async function getPlaylist(playlistId: string): Promise<SpotifyPlaylist | null> {
@@ -650,9 +686,10 @@ interface ArtistAlbumsResponse {
 /**
  * An artist's own releases, newest first.
  *
- * This is what makes an artist page possible at all: `/artists/{id}/top-tracks`
- * and `/artists/{id}/related-artists` were both removed, so a discography
- * list is the only substantial thing left to show.
+ * `/artists/{id}/related-artists` is gone, so there is no "fans also like".
+ * `top-tracks` survived for grandfathered client IDs — see
+ * getArtistTopTracks, which is why that is a separate, failure-tolerant call
+ * rather than part of the artist page's required data.
  *
  * `include_groups` excludes `appears_on` and `compilation`, which otherwise
  * bury an artist's own records under every playlist compilation they were
@@ -667,6 +704,39 @@ export async function getArtistAlbums(id: string, limit = 50): Promise<SpotifyAl
   const items = data?.items ?? [];
   // Spotify returns these roughly grouped by type, not by date.
   return [...items].sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''));
+}
+
+interface TopTracksResponse {
+  tracks: SpotifyTrack[];
+}
+
+/**
+ * An artist's most popular tracks — Spotify's own "Popular" list.
+ *
+ * Returns `[]` rather than throwing, because whether this endpoint exists
+ * depends on which client ID is asking. The Feb 2026 migration guide lists
+ * `/artists/{id}/top-tracks` as removed, and it is — for client IDs created
+ * after the cutover. Probed live 2026-10-06 against a grandfathered ID it
+ * still answers 200 with ten tracks. Both populations use this build, so the
+ * caller hides the section instead of reporting an error for something half
+ * the users were never going to get. Same reasoning as `stats.ts` returning
+ * null for a withdrawn field.
+ *
+ * `market=from_token` rather than a country code: Spotify resolves the market
+ * from the token's own user, so the ranking matches what their client would
+ * show. Passing the country explicitly is not an option anyway — `/me` now
+ * returns `country: null` (probed 2026-10-06), so there is nothing to pass.
+ */
+export async function getArtistTopTracks(id: string): Promise<SpotifyTrack[]> {
+  try {
+    const data = await request<TopTracksResponse>(
+      `/artists/${id}/top-tracks?market=from_token`,
+    );
+    return data?.tracks ?? [];
+  } catch (err) {
+    console.warn('top-tracks unavailable for this client ID:', err);
+    return [];
+  }
 }
 
 /* ─── Search ─── */

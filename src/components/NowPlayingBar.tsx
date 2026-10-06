@@ -3,6 +3,7 @@ import { SpotifyNowPlaying } from './SpotifyNowPlaying';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { usePlayback, useLibrary } from '../spotify/SpotifyProvider';
 import { buildTrackMenuItems, createEditRunner } from '../spotify/trackMenu';
+import { usePlaylistIndex } from '../spotify/usePlaylistIndex';
 import { requestOverlayNav } from '../spotify/navigation';
 
 /** Matches the track list's notice, which this mirrors. */
@@ -93,6 +94,9 @@ export function NowPlayingBar() {
     [item],
   );
 
+  // Re-renders the menu as the playlist index fills; see playlistIndex.ts.
+  const indexRevision = usePlaylistIndex();
+
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu || !item) return [];
     // "Remove from this playlist" is offered only when the playlist you have
@@ -122,7 +126,17 @@ export function NowPlayingBar() {
       runEdit,
       showNotice,
     });
-  }, [menu, item, contextUri, lib, p.savedCurrent, p.toggleSaveCurrent, runEdit, showNotice]);
+  }, [
+    menu,
+    item,
+    contextUri,
+    lib,
+    p.savedCurrent,
+    p.toggleSaveCurrent,
+    runEdit,
+    showNotice,
+    indexRevision,
+  ]);
 
   return (
     <>

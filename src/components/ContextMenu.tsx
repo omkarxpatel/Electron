@@ -22,6 +22,10 @@ export interface ContextMenuItem {
   title?: string;
   /** Draws a hairline rule above this item. */
   separator?: boolean;
+  /** Short note shown right-aligned after the label — "Added", a count.
+   *  Positive information only; see playlistIndex.ts on why the absence of a
+   *  badge must never be read as a negative. */
+  badge?: string;
   /**
    * Children shown in a panel beside this item, opened on hover. One level
    * only — a submenu item's own `submenu` is ignored. A parent item runs no
@@ -36,6 +40,10 @@ export interface ContextMenuSubmenu {
   filterPlaceholder?: string;
   /** Shown when there are no items, or none survive the filter. */
   emptyLabel?: string;
+  /** Pinned under the list. For saying that the list is still being filled
+   *  in, which the rows themselves cannot say — a row with no badge looks
+   *  the same whether it was checked or not. */
+  footerLabel?: string;
 }
 
 interface Props {
@@ -200,6 +208,7 @@ export function ContextMenu({ x, y, items, onClose, anchor }: Props): ReactNode 
               }}
             >
               <span className="context-menu-label">{item.label}</span>
+              {item.badge && <span className="context-menu-badge">{item.badge}</span>}
               {hasSub && <span className="context-menu-caret" aria-hidden>›</span>}
             </button>
             {subOpen && item.submenu && (
@@ -227,7 +236,7 @@ interface SubmenuProps {
 }
 
 function Submenu({ submenu, flipX, flipY, onClose }: SubmenuProps) {
-  const { items, filterPlaceholder, emptyLabel } = submenu;
+  const { items, filterPlaceholder, emptyLabel, footerLabel } = submenu;
   const [query, setQuery] = useState('');
 
   const shown = useMemo(() => {
@@ -280,10 +289,12 @@ function Submenu({ submenu, flipX, flipY, onClose }: SubmenuProps) {
               }}
             >
               <span className="context-menu-label">{item.label}</span>
+              {item.badge && <span className="context-menu-badge">{item.badge}</span>}
             </button>
           ))
         )}
       </div>
+      {footerLabel && <div className="context-submenu-footer">{footerLabel}</div>}
     </div>
   );
 }

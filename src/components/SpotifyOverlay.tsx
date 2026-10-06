@@ -4,6 +4,7 @@ import {
   getAlbum,
   getArtist,
   getArtistAlbums,
+  getArtistTopTracks,
   type AlbumWithTracks,
   type SearchResults,
   type SearchType,
@@ -20,9 +21,16 @@ import type {
 } from '../spotify/types';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { addToQueue, canEditPlaylist, isMissingScopeError } from '../spotify/api';
+import {
+  ensureIndexed,
+  isIndexing,
+  noteAdded,
+  playlistsContaining,
+} from '../spotify/playlistIndex';
+import { usePlaylistIndex } from '../spotify/usePlaylistIndex';
 import { formatDuration } from '../shared/format';
 import type { TrackProfile } from '../audio/trackProfile';
-import { pickMediumImage } from '../shared/image';
+import { pickMediumImage, smallestImage } from '../shared/image';
 
 type View = 'library' | 'album' | 'artist' | 'queue' | 'stats' | 'dj';
 
@@ -97,7 +105,7 @@ function SpotifyOverlayImpl({
   const [view, setView] = useState<View>('library');
   const [selectedAlbum, setSelectedAlbum] = useState<AlbumWithTracks | null>(null);
   const [selectedArtist, setSelectedArtist] = useState<
-    { artist: SpotifyArtist; albums: SpotifyAlbum[] } | null
+    { artist: SpotifyArtist; albums: SpotifyAlbum[]; topTracks: SpotifyTrack[] } | null
   >(null);
   const [albumLoading, setAlbumLoading] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState<number>(0);
@@ -168,12 +176,16 @@ function SpotifyOverlayImpl({
   const openArtist = useCallback(async (artistId: string): Promise<void> => {
     setAlbumLoading(true);
     try {
-      const [artist, albums] = await Promise.all([
+      // topTracks resolves to [] rather than rejecting when the endpoint is
+      // not available to this client ID, so it cannot take the page down with
+      // it — see getArtistTopTracks.
+      const [artist, albums, topTracks] = await Promise.all([
         getArtist(artistId),
         getArtistAlbums(artistId),
+        getArtistTopTracks(artistId),
       ]);
       if (!artist) return;
-      setSelectedArtist({ artist, albums });
+      setSelectedArtist({ artist, albums, topTracks });
       setView('artist');
     } catch (err) {
       console.error('getArtist failed:', err);
@@ -267,6 +279,8 @@ function SpotifyOverlayImpl({
           album={selectedAlbum}
           onBack={backToLibrary}
           onPlay={(track, contextUri) => playTrack(track, contextUri)}
+          onPlayAlbum={() => playContext(selectedAlbum.uri)}
+          onGoToArtist={(artistId) => void openArtist(artistId)}
           currentlyPlayingId={currentlyPlayingId}
           playlists={playlists}
           userId={userId}
@@ -277,8 +291,11 @@ function SpotifyOverlayImpl({
         <ArtistDetailView
           artist={selectedArtist.artist}
           albums={selectedArtist.albums}
+          topTracks={selectedArtist.topTracks}
           onBack={backToLibrary}
           onPlay={() => playContext(selectedArtist.artist.uri)}
+          onPlayTrack={handlePlayTrackFromLibrary}
+          currentlyPlayingId={currentlyPlayingId}
           onSelectAlbum={handleSelectAlbum}
         />
       )}
@@ -318,13 +335,42 @@ function SpotifyOverlayImpl({
   );
 }
 
+/**
+ * The colour wash behind an album or artist header: the art itself, blurred
+ * past recognition, under a scrim that holds the title's contrast no matter
+ * how bright the cover is.
+ *
+ * It is an <img> rather than a CSS background so the browser decodes it once
+ * and composites the blurred result as a layer — the same shape as
+ * `.album-backdrop`, which has to survive the visualizer running at 120fps
+ * behind the panel.
+ */
+function DetailWash({ src }: { src: string }) {
+  return (
+    <div className="sp-album-detail-wash" aria-hidden>
+      <img src={src} alt="" draggable={false} />
+    </div>
+  );
+}
+
 interface ArtistDetailViewProps {
   artist: SpotifyArtist;
   albums: SpotifyAlbum[];
+  /** Spotify's own "Popular" ranking. Empty when the endpoint is not
+   *  available to this client ID, and the section then does not render. */
+  topTracks: SpotifyTrack[];
   onBack: () => void;
   onPlay: () => void;
+  /** Plays a top track inside its album, so playback carries on past it —
+   *  the same reason search results do. */
+  onPlayTrack: (track: SpotifyTrack) => void;
+  currentlyPlayingId: string | null;
   onSelectAlbum: (album: SpotifyAlbum) => void;
 }
+
+/** How many of the ten show before "Show all", as Spotify does. Enough to
+ *  recognise the artist by, without burying the discography below the fold. */
+const POPULAR_COLLAPSED = 5;
 
 /**
  * An artist's page: their picture, whatever metadata survived, and their
@@ -335,17 +381,29 @@ interface ArtistDetailViewProps {
  * no replacement. `genres` and `followers` render only when present, since
  * post-cutover client IDs get neither.
  */
-function ArtistDetailView({ artist, albums, onBack, onPlay, onSelectAlbum }: ArtistDetailViewProps) {
+function ArtistDetailView({
+  artist,
+  albums,
+  topTracks,
+  onBack,
+  onPlay,
+  onPlayTrack,
+  currentlyPlayingId,
+  onSelectAlbum,
+}: ArtistDetailViewProps) {
   const image = artist.images?.[0]?.url ?? artist.images?.[1]?.url;
   const genres = artist.genres?.slice(0, 3).join(' · ');
+  const [showAllPopular, setShowAllPopular] = useState(false);
+  const popular = showAllPopular ? topTracks : topTracks.slice(0, POPULAR_COLLAPSED);
   return (
     <div className="sp-album-detail">
-      <div className="sp-overlay-back-row">
-        <button type="button" className="sp-overlay-back" onClick={onBack}>
-          ← Library
-        </button>
-      </div>
       <header className="sp-album-detail-header">
+        {image ? <DetailWash src={image} /> : null}
+        <div className="sp-overlay-back-row">
+          <button type="button" className="sp-overlay-back" onClick={onBack}>
+            ← Library
+          </button>
+        </div>
         <div className="sp-album-detail-meta">
           {image ? (
             <img className="sp-album-detail-cover sp-artist-avatar" src={image} alt="" draggable={false} />
@@ -371,6 +429,38 @@ function ArtistDetailView({ artist, albums, onBack, onPlay, onSelectAlbum }: Art
         </div>
       </header>
       <div className="sp-album-detail-scroll">
+        {/* Absent entirely rather than shown empty: a client ID that cannot
+            reach top-tracks would otherwise get a "Popular" heading over
+            nothing, which reads as a bug in the app rather than a limit of
+            the API. */}
+        {topTracks.length > 0 && (
+          <section className="sp-popular">
+            <h2 className="sp-popular-heading">Popular</h2>
+            <table className="sp-track-table">
+              <tbody>
+                {popular.map((track, index) => (
+                  <PopularRow
+                    key={track.id}
+                    track={track}
+                    rank={index + 1}
+                    isPlaying={track.id === currentlyPlayingId}
+                    onPlay={onPlayTrack}
+                  />
+                ))}
+              </tbody>
+            </table>
+            {topTracks.length > POPULAR_COLLAPSED && (
+              <button
+                type="button"
+                className="sp-popular-more"
+                onClick={() => setShowAllPopular((v) => !v)}
+              >
+                {showAllPopular ? 'Show less' : `Show all ${topTracks.length}`}
+              </button>
+            )}
+          </section>
+        )}
+        {albums.length > 0 && <h2 className="sp-popular-heading">Discography</h2>}
         {albums.length === 0 ? (
           <div className="sp-empty-state">
             <div className="sp-empty-sub">No releases to show.</div>
@@ -410,6 +500,70 @@ function ArtistDetailView({ artist, albums, onBack, onPlay, onSelectAlbum }: Art
   );
 }
 
+/**
+ * One row of the artist's Popular list.
+ *
+ * No play-count column, though Spotify's own page has one: the Web API does
+ * not expose play counts at any tier. It exposes `popularity`, a 0-100 score,
+ * which is a different number and would be a lie under that heading. Rank
+ * order is the part that is real, so rank order is what this shows.
+ */
+function PopularRow({
+  track,
+  rank,
+  isPlaying,
+  onPlay,
+}: {
+  track: SpotifyTrack;
+  rank: number;
+  isPlaying: boolean;
+  onPlay: (track: SpotifyTrack) => void;
+}) {
+  const thumb = smallestImage(track.album?.images);
+  return (
+    <tr
+      className="sp-track-row"
+      data-play="dblclick"
+      data-playing={isPlaying ? 'true' : 'false'}
+      onDoubleClick={() => onPlay(track)}
+    >
+      <td className="sp-track-index">
+        {isPlaying ? (
+          <span className="sp-track-playing-icon">♫</span>
+        ) : (
+          <>
+            <span className="sp-track-number">{rank}</span>
+            <button
+              type="button"
+              className="sp-track-play-btn"
+              onClick={() => onPlay(track)}
+              aria-label={`Play ${track.name}`}
+              title={`Play ${track.name}`}
+            >
+              <IconPlaySmall />
+            </button>
+          </>
+        )}
+      </td>
+      <td className="sp-track-title-cell">
+        {thumb ? (
+          <img className="sp-track-thumb" src={thumb} alt="" loading="lazy" draggable={false} />
+        ) : (
+          <div className="sp-track-thumb sp-track-thumb-fallback" />
+        )}
+        <div className="sp-track-text">
+          <div className="sp-track-name">{track.name}</div>
+          <div className="sp-track-artists">
+            {track.explicit ? <span className="sp-track-explicit">E</span> : null}
+            {track.album?.name}
+          </div>
+        </div>
+      </td>
+      <td className="sp-track-duration">{formatDuration(track.duration_ms)}</td>
+    </tr>
+  );
+}
+
 function IconPlaySmall() {
   return (
     <svg width="11" height="12" viewBox="0 0 11 12" aria-hidden="true">
@@ -422,6 +576,13 @@ interface AlbumDetailViewProps {
   album: AlbumWithTracks;
   onBack: () => void;
   onPlay: (track: SpotifyTrack, contextUri: string) => void;
+  /** Starts the album as a context, so what follows is the rest of the record
+   *  rather than nothing — the same thing the artist header's Play does. */
+  onPlayAlbum: () => void;
+  /** Drills into a track's artist. Still useful from inside an album, where
+   *  "Go to album" is not — a feature is often the reason you opened the row
+   *  menu at all. */
+  onGoToArtist: (artistId: string) => void;
   currentlyPlayingId: string | null;
   playlists: SpotifyPlaylist[];
   userId: string | null;
@@ -432,6 +593,8 @@ function AlbumDetailView({
   album,
   onBack,
   onPlay,
+  onPlayAlbum,
+  onGoToArtist,
   currentlyPlayingId,
   playlists,
   userId,
@@ -441,6 +604,11 @@ function AlbumDetailView({
   const artistNames = album.artists.map((a) => a.name).join(', ');
   const tracks = album.tracks.items;
   const year = album.release_date?.slice(0, 4);
+  // Spotify's smallest image (64px) is the wash source, not the 640px cover.
+  // It is already soft once stretched across the header, so the blur behind it
+  // can be a third of what .album-backdrop needs — and it is usually cached
+  // from the library grid, so the header paints without a second fetch.
+  const washUrl = smallestImage(album.images) ?? coverUrl;
 
   const [menu, setMenu] = useState<{ x: number; y: number; track: SpotifyTrack } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -464,31 +632,47 @@ function AlbumDetailView({
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
+  // Re-renders the menu as the playlist index fills; see playlistIndex.ts.
+  const indexRevision = usePlaylistIndex();
+
   // Same shape as the main track list's row menu, minus the entries that
   // can't mean anything here: there's no "Go to album" from inside the album,
   // and no source playlist to remove from.
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu) return [];
     const track = menu.track;
-    const targets: ContextMenuItem[] = playlists
-      .filter((p) => canEditPlaylist(p, userId))
-      .map((p) => ({
-        label: p.name,
-        onClick: () => {
-          void onAddToPlaylist(p.id, track).then(
-            () => showNotice(`Added to ${p.name}`),
-            (err: unknown) => {
-              console.error('playlist edit failed:', err);
-              // A missing scope never resolves by retrying — say what fixes it.
-              showNotice(
-                isMissingScopeError(err)
-                  ? 'Reconnect Spotify in Settings to allow playlist edits'
-                  : 'Spotify rejected that — nothing changed',
-              );
-            },
-          );
-        },
-      }));
+    // Same markers as the shared menu — see playlistIndex.ts. The album view
+    // builds its own targets because its menu deliberately omits "Go to
+    // album", but there is no reason for it to know less than the others.
+    const editable = playlists.filter((p) => canEditPlaylist(p, userId));
+    ensureIndexed(editable);
+    const already = playlistsContaining(
+      track.uri,
+      editable.map((p) => p.id),
+    );
+    const targets: ContextMenuItem[] = editable.map((p) => ({
+      label: p.name,
+      badge: already.has(p.id) ? 'Added' : undefined,
+      onClick: () => {
+        void onAddToPlaylist(p.id, track).then(
+          () => {
+            noteAdded(p.id, track.uri);
+            showNotice(`Added to ${p.name}`);
+          },
+          (err: unknown) => {
+            console.error('playlist edit failed:', err);
+            // A missing scope never resolves by retrying — say what fixes it.
+            showNotice(
+              isMissingScopeError(err)
+                ? 'Reconnect Spotify in Settings to allow playlist edits'
+                : 'Spotify rejected that — nothing changed',
+            );
+          },
+        );
+      },
+    }));
+    targets.sort((a, b) => Number(!!b.badge) - Number(!!a.badge));
+    const artistId = track.artists[0]?.id;
     return [
       {
         label: 'Add to playlist',
@@ -496,6 +680,7 @@ function AlbumDetailView({
           items: targets,
           filterPlaceholder: 'Find a playlist',
           emptyLabel: userId ? 'No playlists you can edit' : 'Loading your playlists…',
+          footerLabel: isIndexing() ? 'Checking your playlists…' : undefined,
         },
       },
       {
@@ -508,6 +693,11 @@ function AlbumDetailView({
       },
       {
         separator: true,
+        label: 'Go to artist',
+        disabled: !artistId,
+        onClick: () => artistId && onGoToArtist(artistId),
+      },
+      {
         label: 'Copy Spotify link',
         onClick: () => {
           void navigator.clipboard
@@ -517,16 +707,17 @@ function AlbumDetailView({
         },
       },
     ];
-  }, [menu, playlists, userId, onAddToPlaylist, showNotice]);
+  }, [menu, playlists, userId, onAddToPlaylist, onGoToArtist, showNotice, indexRevision]);
 
   return (
     <div className="sp-album-detail">
-      <div className="sp-overlay-back-row">
-        <button type="button" className="sp-overlay-back" onClick={onBack}>
-          ← Library
-        </button>
-      </div>
       <header className="sp-album-detail-header">
+        {washUrl ? <DetailWash src={washUrl} /> : null}
+        <div className="sp-overlay-back-row">
+          <button type="button" className="sp-overlay-back" onClick={onBack}>
+            ← Library
+          </button>
+        </div>
         <div className="sp-album-detail-meta">
           {coverUrl ? (
             <img className="sp-album-detail-cover" src={coverUrl} alt="" draggable={false} />
@@ -535,10 +726,26 @@ function AlbumDetailView({
           )}
           <div className="sp-album-detail-text">
             <div className="sp-track-header-eyebrow">Album</div>
-            <h1 className="sp-album-detail-title">{album.name}</h1>
+            <h1 className="sp-album-detail-title" title={album.name}>
+              {album.name}
+            </h1>
             <div className="sp-album-detail-sub">
-              {artistNames}
-              {year ? ` · ${year}` : ''} · {album.total_tracks ?? tracks.length} tracks
+              <span className="sp-album-detail-byline">{artistNames}</span>
+              {year ? <span className="sp-album-detail-dot">·</span> : null}
+              {year}
+              <span className="sp-album-detail-dot">·</span>
+              {album.total_tracks ?? tracks.length} tracks
+            </div>
+            <div className="sp-track-header-actions">
+              <button
+                type="button"
+                className="sp-track-header-play"
+                onClick={onPlayAlbum}
+                aria-label={`Play ${album.name}`}
+              >
+                <IconPlaySmall />
+                Play
+              </button>
             </div>
           </div>
         </div>
@@ -556,6 +763,13 @@ function AlbumDetailView({
             {tracks.map((track, index) => {
               const isPlaying = track.id === currentlyPlayingId;
               const trackForPlay = track as unknown as SpotifyTrack;
+              const trackArtists = track.artists.map((a) => a.name).join(', ');
+              // Every track on an album is credited to the album's artist, so
+              // printing it on each row just repeats the header once per track
+              // — fourteen "Grimes" under "Grimes". Features are the exception,
+              // and the one credit on this page worth reading, so the line
+              // renders only when the credits actually differ.
+              const showArtists = trackArtists !== artistNames;
               return (
                 <tr
                   key={`${track.id}-${index}`}
@@ -591,10 +805,12 @@ function AlbumDetailView({
                   <td className="sp-track-title-cell">
                     <div className="sp-track-text">
                       <div className="sp-track-name">{track.name}</div>
-                      <div className="sp-track-artists">
-                        {track.explicit ? <span className="sp-track-explicit">E</span> : null}
-                        {track.artists.map((a) => a.name).join(', ')}
-                      </div>
+                      {showArtists || track.explicit ? (
+                        <div className="sp-track-artists">
+                          {track.explicit ? <span className="sp-track-explicit">E</span> : null}
+                          {showArtists ? trackArtists : null}
+                        </div>
+                      ) : null}
                     </div>
                   </td>
                   <td className="sp-track-duration">{formatDuration(track.duration_ms)}</td>

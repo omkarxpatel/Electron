@@ -164,6 +164,18 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
     [openAlbum],
   );
 
+  // The first credited artist, which is the one the track is filed under.
+  // Features get no entry of their own here — a submenu per track for the
+  // handful of collaborations that have one is more menu than it is worth.
+  const handleGoToArtist = useCallback(
+    (track: SpotifyTrack): void => {
+      const artistId = track.artists[0]?.id;
+      if (!artistId) return;
+      openArtist(artistId);
+    },
+    [openArtist],
+  );
+
   // The player bar is a sibling, not a child — it asks for these by window
   // event rather than through App. See src/spotify/navigation.ts.
   useEffect(
@@ -260,6 +272,7 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
           onAddToPlaylist={library.addTrackToPlaylist}
           onRemoveFromSource={library.removeTrackFromSource}
           onGoToAlbum={handleGoToAlbum}
+          onGoToArtist={handleGoToArtist}
           onRenamePlaylist={library.renamePlaylist}
           onDeletePlaylist={library.deletePlaylist}
           onMoveTrack={library.moveTrackInPlaylist}

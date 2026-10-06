@@ -2578,12 +2578,82 @@
   position: relative;
 }
 
+/* One block — the back button, the cover and the title all ride on the same
+   wash, instead of a bare button strip sitting above a flat header band.
+   Padding moved onto the children so the wash can reach the panel edges. */
 .sp-album-detail-header {
-  padding: 14px 22px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  position: relative;
+  /* The wash is scaled past its box to hide blur()'s soft transparent edge;
+     this is what keeps the overspill from showing. */
+  overflow: hidden;
+  padding: 0 0 22px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  flex-shrink: 0;
+  /* Carries the header on its own when there is no art to wash with. */
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0));
+}
+
+/* Both children sit above the wash. Stated per child rather than as
+   `> *:not(.sp-album-detail-wash)` because .sp-track-notice is also a
+   descendant here and is positioned absolute — a blanket `position: relative`
+   would have re-anchored it. */
+.sp-album-detail-header > .sp-overlay-back-row,
+.sp-album-detail-meta {
+  position: relative;
+  z-index: 1;
+}
+
+.sp-album-detail-header > .sp-overlay-back-row {
+  padding: 14px 24px 0;
+}
+
+/* ── Header wash ──
+   The cover, blurred past recognition, so the page takes its colour from the
+   record it is showing. Kept inside the header rather than behind the whole
+   view: the track list needs a flat, readable ground. */
+.sp-album-detail-wash {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Fades out downward so the header dissolves into the track list instead of
+     stopping on a hard edge above it. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 38%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 38%, transparent 100%);
+  animation: album-backdrop-in 450ms ease-out;
+}
+
+.sp-album-detail-wash img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Source is Spotify's 64px thumbnail (see DetailWash), which is already soft
+     stretched this wide — so this only has to kill the JPEG blocking, not the
+     72px .album-backdrop spends on a 640px image. scale() hides the soft
+     transparent edge blur() leaves at the bounds. */
+  filter: blur(28px) saturate(2) brightness(0.8);
+  transform: scale(1.4);
+  opacity: 0.88;
+}
+
+/* Scrim. Without it a pale cover — which is most of them — leaves the white
+   title sitting on near-white, and the eyebrow unreadable outright. Fixed
+   rather than tuned per image, because nothing here knows how bright the art
+   is until it has been decoded. */
+.sp-album-detail-wash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(8, 8, 11, 0.28) 0%,
+    rgba(8, 8, 11, 0.52) 48%,
+    rgba(8, 8, 11, 0.9) 100%
+  );
 }
 
 .sp-album-back {
@@ -2607,17 +2677,23 @@
 
 .sp-album-detail-meta {
   display: flex;
-  gap: 18px;
+  gap: 24px;
   align-items: flex-end;
+  padding: 8px 24px 0;
 }
 
 .sp-album-detail-cover {
-  width: 132px;
-  height: 132px;
+  /* 168, up from 132: this view gets the full panel width, where the playlist
+     header's 160 is sized for the 340px right column. */
+  width: 168px;
+  height: 168px;
   object-fit: cover;
-  border-radius: 6px;
+  border-radius: 8px;
   flex-shrink: 0;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  /* The hairline is doing real work now that the cover sits on a blurred copy
+     of itself — without it a dark record has no edge at all against its own
+     wash. The spread shadow is what lifts it off that wash. */
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.09);
 }
 
 .sp-album-detail-text {
@@ -2625,23 +2701,127 @@
 }
 
 .sp-album-detail-title {
-  margin: 4px 0 6px;
-  font-size: 28px;
+  margin: 6px 0 9px;
+  /* Clamped rather than fixed at 28px: "A Moon Shaped Pool (Deluxe Edition)"
+     ran to three lines and pushed the cover's baseline out of the block.
+     Letting the type give way keeps the header one height. */
+  font-size: clamp(22px, 3vw, 34px);
   font-weight: 700;
+  letter-spacing: -0.02em;
   color: #ffffff;
-  line-height: 1.1;
+  line-height: 1.08;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .sp-album-detail-sub {
-  font-size: 12.5px;
-  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.68);
+}
+
+/* The shared eyebrow is 55% white, which is legible on the playlist header's
+   flat ground and marginal over a pale album's wash. Lifted here only. */
+.sp-album-detail-text .sp-track-header-eyebrow {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+/* The artist is the one thing on this line anyone navigates by, so it is the
+   one thing that is not dimmed. */
+.sp-album-detail-byline {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* Separators held below the text they separate — at the same weight the line
+   read as four items, not one fact with two footnotes. */
+.sp-album-detail-dot {
+  color: rgba(255, 255, 255, 0.32);
+  padding: 0 6px;
 }
 
 .sp-album-detail-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 22px 18px;
+  padding: 0 24px 18px;
+}
+
+/* The discography grid has no <thead> to space it off the header rule, so it
+   sat flush against it. Margin, not padding on the scroller — padding would
+   also push the album view's sticky <thead> down off its rest position. */
+.sp-album-detail-scroll .sp-library-grid {
+  margin-top: 16px;
+}
+
+/* ── Artist "Popular" list ── */
+
+.sp-popular {
+  margin-top: 18px;
+}
+
+/* Section label, used for Popular and Discography both, so the artist page
+   reads as two named blocks rather than a list that changes shape halfway. */
+.sp-popular-heading {
+  margin: 22px 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #f0f0f0;
+}
+
+.sp-popular .sp-popular-heading:first-child {
+  margin-top: 0;
+}
+
+/* The Popular rows are shorter than a playlist's — ten of them plus the
+   discography is a lot of page, and these carry one line of text, not two. */
+.sp-popular .sp-track-row {
+  height: 46px;
+}
+
+.sp-popular-more {
+  margin: 6px 0 0 28px;
+  padding: 4px 0;
+  /* `transparent`, not `none`: `background: none` only clears the image, and
+     Chromium keeps drawing the native button chrome until background-COLOR is
+     set. Same spelling as .eq-reset for the same reason. */
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.55);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 90ms ease;
+}
+
+.sp-popular-more:hover {
+  color: #ffffff;
+}
+
+.sp-popular-more:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* The column labels used to scroll away with the first few tracks, so most of
+   a long album was an unlabelled list of numbers. Sticky on the <th>, not the
+   <thead>: with `border-collapse: collapse` a sticky thead does not stay put
+   in Chromium. That collapse also eats a sticky cell's own border-bottom,
+   which is why the rule underneath is an inset shadow. */
+.sp-album-detail-scroll .sp-track-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(13, 13, 16, 0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: none;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.07);
 }
 
 .sp-overlay-floating-loader {
@@ -5224,6 +5404,26 @@
   opacity: 0.55;
 }
 
+/* "Added" beside a playlist that already holds the track. `margin-left: auto`
+   pushes it to the right edge and, with the label's own `overflow: hidden`,
+   lets a long playlist name ellipsise into it rather than shoving it out of
+   the row. Accent-coloured because it is the answer to the question the
+   submenu was opened to ask. */
+.context-menu-badge {
+  flex: none;
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent, #1ed760);
+}
+
+.context-menu-item:disabled .context-menu-badge {
+  color: rgba(255, 255, 255, 0.3);
+}
+
 /* Keep the parent row lit while its panel is open, so the pointer sitting in
    the submenu still shows where it came from. */
 .context-menu-item[data-submenu-open='true'] {
@@ -5300,6 +5500,16 @@
 .context-submenu-empty {
   padding: 8px 12px;
   color: #777;
+}
+
+/* Pinned below the scrolling list, not inside it — it describes the whole
+   list, so scrolling away from it would be scrolling away from the caveat. */
+.context-submenu-footer {
+  flex: none;
+  padding: 6px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.4);
 }
 
 /* Result line for the row-menu actions. Floats over the bottom of the track

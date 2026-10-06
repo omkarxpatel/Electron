@@ -7,6 +7,7 @@ import { smallestImage } from '../shared/image';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { canEditPlaylist, isMissingScopeError } from '../spotify/api';
 import { buildTrackMenuItems, createEditRunner } from '../spotify/trackMenu';
+import { usePlaylistIndex } from '../spotify/usePlaylistIndex';
 
 interface Props {
   /** What to show: a playlist, Liked Songs, or nothing picked yet. */
@@ -41,6 +42,7 @@ interface Props {
   /** Removes from whichever source is open (playlist row, or unlike). */
   onRemoveFromSource: (track: SpotifyTrack) => Promise<void>;
   onGoToAlbum: (track: SpotifyTrack) => void;
+  onGoToArtist: (track: SpotifyTrack) => void;
   onRenamePlaylist: (playlistId: string, name: string) => Promise<void>;
   onDeletePlaylist: (playlist: SpotifyPlaylist) => Promise<void>;
   onMoveTrack: (from: number, to: number) => Promise<void>;
@@ -79,6 +81,7 @@ function SpotifyTrackListImpl({
   onAddToPlaylist,
   onRemoveFromSource,
   onGoToAlbum,
+  onGoToArtist,
   onRenamePlaylist,
   onDeletePlaylist,
   onMoveTrack,
@@ -279,6 +282,10 @@ function SpotifyTrackListImpl({
 
   const runEdit = useMemo(() => createEditRunner(showNotice), [showNotice]);
 
+  // The index fills in over a few seconds; without this the submenu would
+  // show whatever was known at the instant it opened. See playlistIndex.ts.
+  const indexRevision = usePlaylistIndex();
+
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu || !source) return [];
     return buildTrackMenuItems({
@@ -290,6 +297,7 @@ function SpotifyTrackListImpl({
       onAddToPlaylist,
       onRemoveFromSource,
       onGoToAlbum,
+      onGoToArtist,
       runEdit,
       showNotice,
     });
@@ -303,7 +311,9 @@ function SpotifyTrackListImpl({
     onAddToPlaylist,
     onRemoveFromSource,
     onGoToAlbum,
+    onGoToArtist,
     showNotice,
+    indexRevision,
   ]);
 
   // Precompute artist-name strings once per track so the row component can

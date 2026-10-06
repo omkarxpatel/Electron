@@ -1,6 +1,13 @@
 import type { ContextMenuItem } from '../components/ContextMenu';
 import type { SpotifyPlaylist, SpotifyTrack } from './types';
 import { addToQueue, canEditPlaylist, isMissingScopeError } from './api';
+import {
+  ensureIndexed,
+  isIndexing,
+  noteAdded,
+  noteRemoved,
+  playlistsContaining,
+} from './playlistIndex';
 
 /**
  * The one definition of a track's right-click menu.
@@ -98,12 +105,42 @@ export function buildTrackMenuItems(opts: TrackMenuOptions): ContextMenuItem[] {
     showNotice,
   } = opts;
 
-  const targets: ContextMenuItem[] = playlists
-    .filter((p) => canEditPlaylist(p, userId))
-    .map((p) => ({
-      label: p.name,
-      onClick: () => runEdit(`Added to ${p.name}`, () => onAddToPlaylist(p.id, track)),
-    }));
+  const editable = playlists.filter((p) => canEditPlaylist(p, userId));
+
+  // Reading every playlist is what answers "is it already in there", and it
+  // only happens because a menu asked: this function is only reached with a
+  // menu open, so a user who never opens one never pays for the crawl.
+  //
+  // Yes, this kicks off network work from a render-phase useMemo. It is safe
+  // because ensureIndexed is idempotent — a double render under StrictMode,
+  // or a render React throws away, starts nothing twice. The alternative was
+  // the same useEffect duplicated in all three components that own one of
+  // these menus. See playlistIndex.ts.
+  ensureIndexed(editable);
+  const already = playlistsContaining(
+    track.uri,
+    editable.map((p) => p.id),
+  );
+
+  const targets: ContextMenuItem[] = editable.map((p) => ({
+    label: p.name,
+    // Marked, not disabled. Spotify allows duplicates and sometimes you want
+    // one; this says what is true and leaves the choice alone.
+    badge: already.has(p.id) ? 'Added' : undefined,
+    onClick: () =>
+      runEdit(`Added to ${p.name}`, async () => {
+        await onAddToPlaylist(p.id, track);
+        // Keep the marker honest straight away rather than waiting for the
+        // next session's crawl to notice.
+        noteAdded(p.id, track.uri);
+      }),
+  }));
+
+  // Playlists holding the track first, each group still alphabetical-by-arrival
+  // within itself. The whole reason to open this submenu is to decide where a
+  // track should go, and the ones it is already in are the answer you need
+  // before you pick.
+  targets.sort((a, b) => Number(!!b.badge) - Number(!!a.badge));
 
   const items: ContextMenuItem[] = [
     {
@@ -112,6 +149,9 @@ export function buildTrackMenuItems(opts: TrackMenuOptions): ContextMenuItem[] {
         items: targets,
         filterPlaceholder: 'Find a playlist',
         emptyLabel: userId ? 'No playlists you can edit' : 'Loading your playlists…',
+        // Says why some rows have no marker yet, so a half-filled list reads
+        // as "still looking" rather than "definitely not in those".
+        footerLabel: isIndexing() ? 'Checking your playlists…' : undefined,
       },
     },
   ];
@@ -136,7 +176,12 @@ export function buildTrackMenuItems(opts: TrackMenuOptions): ContextMenuItem[] {
       disabled: !editable,
       title: editable ? undefined : 'You can only edit playlists you own or collaborate on',
       onClick: () =>
-        runEdit(liked ? 'Removed from Liked Songs' : 'Removed', () => onRemoveFromSource(track)),
+        runEdit(liked ? 'Removed from Liked Songs' : 'Removed', async () => {
+          await onRemoveFromSource(track);
+          // Drop the marker too, or the submenu keeps claiming the track is
+          // in a playlist we just took it out of.
+          if (!liked) noteRemoved(source.playlist.id, track.uri);
+        }),
     });
   }
 
