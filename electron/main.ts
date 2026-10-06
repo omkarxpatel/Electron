@@ -286,12 +286,6 @@ function toggleNotch(enabled: boolean): void {
  * has no Spotify session, the renderer does.
  */
 function sendNotchCommand(cmd: NotchCommand): void {
-  // Handled here, not in the renderer: showing the window is main's job and
-  // the renderer has no way to raise itself.
-  if (cmd.kind === 'activate') {
-    void showWindow();
-    return;
-  }
   if (!win || win.isDestroyed()) return;
   win.webContents.send('notch:command', cmd);
 }

@@ -206,7 +206,10 @@ body,
    * Band height comes from main; the +12 is breathing room under it.
    */
   padding: calc(var(--notch-menubar-h, 32px) + 12px) 18px 14px;
-  cursor: pointer;
+  /* Not `pointer`: clicking the panel does nothing on purpose, and a hand
+     cursor over dead space is the control lying about what it does. The
+     transport buttons set their own. */
+  cursor: default;
   /*
    * Ambient wash, album-derived. Both light sources sit LOW on purpose: the
    * top strip has to stay pure black so it disappears against the physical

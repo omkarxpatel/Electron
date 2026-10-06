@@ -122,18 +122,6 @@ export function NotchPanel() {
     [durationMs, send],
   );
 
-  /** Click anywhere that isn't a control → bring the app forward. Controls
-   *  are excluded by walking up from the target rather than by stopping
-   *  propagation on each one, so a new button added later is safe by
-   *  default instead of silently activating the app. */
-  const onPanelClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if ((e.target as HTMLElement).closest('button, .notch-progress')) return;
-      send({ kind: 'activate' });
-    },
-    [send],
-  );
-
   const accent = state?.accent || DEFAULT_ACCENT;
   const ambient = state?.ambient || DEFAULT_AMBIENT;
 
@@ -169,7 +157,7 @@ export function NotchPanel() {
         )}
       </div>
 
-      <div className="notch-panel" onClick={onPanelClick} role="presentation">
+      <div className="notch-panel">
         {state ? (
           <>
             <div className="notch-art">

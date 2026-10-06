@@ -201,8 +201,6 @@ export interface NotchState {
 }
 
 export type NotchCommand =
-  /** Clicking the panel itself (not a control) brings the app forward. */
-  | { kind: 'activate' }
   | { kind: 'toggle' }
   | { kind: 'next' }
   | { kind: 'previous' }

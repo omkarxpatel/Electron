@@ -48,8 +48,6 @@ export interface NotchState {
 }
 
 export type NotchCommand =
-  /** Clicking the panel itself (not a control) brings the app forward. */
-  | { kind: 'activate' }
   | { kind: 'toggle' }
   | { kind: 'next' }
   | { kind: 'previous' }
@@ -70,6 +68,21 @@ export type NotchCommand =
  */
 const PANEL_W = 600;
 const PANEL_H = 212;
+
+/**
+ * The VISIBLE panel inside that window — the same 580x188 as `.notch-panel`
+ * in notch.css. Main has to know it now, not just the renderer.
+ *
+ * The difference between this and the window is transparent margin, and it
+ * used to behave exactly like the panel. Expanding armed the WHOLE window for
+ * mouse input, so a 600x212 box at the top of the screen swallowed clicks
+ * aimed at whatever was underneath — on a laptop that is the browser's tab
+ * strip, and the click became "bring the music player forward" instead of
+ * "switch tabs". Hover-out and mouse capture are both measured against this
+ * rect now, so the margin stays click-through at all times.
+ */
+const VISIBLE_W = 580;
+const VISIBLE_H = 188;
 
 /** Width of the hover target over the notch. Must stay >= the idle pill's
  *  width in notch.css, or part of the visible pill doesn't respond to hover.
@@ -143,6 +156,10 @@ let leftAt = 0;
 /** When the cursor first landed on the hover target, or 0 while it is off it.
  *  See HOVER_DWELL_MS. */
 let enteredAt = 0;
+/** Whether the window is currently taking mouse input. Tracked rather than
+ *  set every poll because `setIgnoreMouseEvents` is a per-call round trip and
+ *  this is re-derived 18 times a second. */
+let mouseCaptured = false;
 let lastAssertAt = 0;
 /** Last state pushed by the renderer, replayed when the window (re)loads so a
  *  reload doesn't leave the panel blank until the next Spotify poll. */
@@ -160,6 +177,15 @@ function panelBounds(d: Display): Electron.Rectangle {
     y: d.bounds.y,
     width: PANEL_W,
     height: PANEL_H,
+  };
+}
+
+function visiblePanelBounds(d: Display): Electron.Rectangle {
+  return {
+    x: Math.round(d.bounds.x + (d.bounds.width - VISIBLE_W) / 2),
+    y: d.bounds.y,
+    width: VISIBLE_W,
+    height: VISIBLE_H,
   };
 }
 
@@ -223,11 +249,30 @@ export function notchActivationPolicyChanged(): void {
 }
 
 /** Push the current state to the panel, whether or not it changed. */
+/**
+ * Take or release mouse input.
+ *
+ * Deliberately NOT tied to `expanded`. An expanded panel still leaves its
+ * transparent margin click-through, and only takes input while the pointer is
+ * genuinely over the visible panel — see VISIBLE_W. Being armed is what makes
+ * a click land here instead of on the window underneath, so the window has to
+ * be armed over exactly the pixels the user can see.
+ */
+function setMouseCapture(next: boolean, force = false): void {
+  if (!win || win.isDestroyed()) return;
+  if (next === mouseCaptured && !force) return;
+  mouseCaptured = next;
+  win.setIgnoreMouseEvents(!next);
+}
+
 function applyExpanded(next: boolean): void {
   if (!win || win.isDestroyed()) return;
   expanded = next;
-  // Click-through while collapsed, so the menu bar underneath keeps working.
-  win.setIgnoreMouseEvents(!next);
+  // Collapsed is unconditionally click-through, so the menu bar underneath
+  // keeps working. Forced, so the once-a-second re-assert still repairs a
+  // window that somehow ended up collapsed AND swallowing clicks — which is
+  // the state this re-assert exists to make impossible.
+  if (!next) setMouseCapture(false, true);
   win.webContents.send('notch:expanded', next);
   lastAssertAt = Date.now();
 }
@@ -243,7 +288,13 @@ function pollHover(): void {
   const p = screen.getCursorScreenPoint();
 
   if (expanded) {
-    if (contains(panelBounds(d), p)) {
+    // Measured against the visible panel, not the window: the window carries
+    // 10pt of transparent margin either side and 24pt below, and holding the
+    // panel open — and armed — while the pointer sits in dead space is what
+    // put it in front of the tab the user was reaching for.
+    const onPanel = contains(visiblePanelBounds(d), p);
+    setMouseCapture(onPanel);
+    if (onPanel) {
       leftAt = 0;
       return;
     }
@@ -346,7 +397,7 @@ function create(): void {
    */
   win.setBounds(panelBounds(d));
 
-  win.setIgnoreMouseEvents(true);
+  setMouseCapture(false, true);
 
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
@@ -379,6 +430,7 @@ function destroy(): void {
   }
   expanded = false;
   enteredAt = 0;
+  mouseCaptured = false;
   if (win && !win.isDestroyed()) win.destroy();
   win = null;
 }
@@ -402,6 +454,7 @@ export function shutdownNotch(): void {
   }
   expanded = false;
   enteredAt = 0;
+  mouseCaptured = false;
   if (win && !win.isDestroyed()) win.destroy();
   win = null;
 }
