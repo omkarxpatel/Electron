@@ -291,8 +291,24 @@ This is safe unsigned because macOS only Gatekeeper-checks bundles carrying
 `com.apple.quarantine`, and that flag comes from browsers — not from our own download.
 
 `electron/updater.ts` owns the state machine, the three-way prompt, skip persistence and the
-IPC surface. Its `UpdateState` union is mirrored in `src/types/api.d.ts` and rendered by
-`src/components/UpdateBanner.tsx`. **If you change the union, change all three.**
+IPC surface. Its `UpdateState` union has **five** mirrors, not the two this file used to
+claim — the missing three cost a session's worth of rediscovery:
+
+- `src/types/api.d.ts` — the contract.
+- `src/lib/updateService.ts` — the singleton store every component reads through. Nothing
+  calls `window.api.update.onState` directly.
+- `src/components/UpdateBanner.tsx` — renders the actionable kinds. Its switch ends in
+  `default: return null`, so **a new kind renders nothing here and does not fail the build.**
+- `src/components/UpdateDialog.tsx` — owns `available`, which the banner deliberately refuses
+  (the strip would clip the release notes).
+- `src/components/SettingsPanel.tsx` — `formatStateSummary` is an exhaustive switch with no
+  `default`, so it is the one place that *does* fail the build. That is the safety net; keep
+  it exhaustive.
+
+**If you change the union, change all six files.** Before adding a kind, ask whether it is
+really a state of the update machine: "you were just updated" is not — it describes something
+that finished in a previous process — so it is a separate method on `window.api.update`
+(`getJustInstalled`) rather than a sixth mirror to keep in sync.
 
 ---
 

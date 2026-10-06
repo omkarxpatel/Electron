@@ -197,6 +197,21 @@ const api = {
     setActivity(active: boolean): void {
       ipcRenderer.send('update:set-activity', active);
     },
+    getAutoInstall(): Promise<boolean> {
+      return ipcRenderer.invoke('update:get-auto-install');
+    },
+    /** Resolves to the value main actually holds after the write, not the one
+     *  we asked for, so a preference that failed to persist snaps the switch
+     *  back instead of claiming the app will restart itself. */
+    setAutoInstall(on: boolean): Promise<boolean> {
+      return ipcRenderer.invoke('update:set-auto-install', on);
+    },
+    getJustInstalled(): Promise<unknown> {
+      return ipcRenderer.invoke('update:get-just-installed');
+    },
+    acknowledgeInstalled(): Promise<void> {
+      return ipcRenderer.invoke('update:acknowledge-installed');
+    },
   },
 
   /**

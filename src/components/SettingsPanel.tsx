@@ -626,6 +626,38 @@ function openIssue(kind: 'bug' | 'feedback'): Promise<void> {
 function AboutSection() {
   const version = window.api.app.version;
   const state = useUpdateState();
+  /** null until main answers. Same shape as the notch toggle above: the
+   *  value is owned by main, so there is a window where we do not know it
+   *  and must not render a switch claiming either position. */
+  const [autoInstall, setAutoInstall] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void window.api.update
+      .getAutoInstall()
+      .then((on) => {
+        if (alive) setAutoInstall(on);
+      })
+      .catch(() => {
+        if (alive) setAutoInstall(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const toggleAutoInstall = useCallback((): void => {
+    if (autoInstall === null) return;
+    const next = !autoInstall;
+    setAutoInstall(next);
+    void window.api.update
+      .setAutoInstall(next)
+      // Main returns what it actually persisted, so a preference that failed
+      // to write puts the switch back instead of promising a restart.
+      .then((actual) => setAutoInstall(actual))
+      .catch(() => setAutoInstall(!next));
+  }, [autoInstall]);
+
   const handleCheck = useCallback(() => void checkForUpdate(), []);
   const handleDownload = useCallback(() => void downloadUpdate(), []);
   const handleInstall = useCallback(() => void installUpdate(), []);
@@ -648,6 +680,24 @@ function AboutSection() {
         <span className="settings-about-label">Status</span>
         <span className="settings-about-value">{formatStateSummary(state)}</span>
       </div>
+
+      <ToggleRow
+        title="Install updates automatically"
+        hint={
+          autoInstall
+            ? 'Restarts on its own once nothing is playing'
+            : 'Ask before installing, as now'
+        }
+        value={autoInstall ?? false}
+        onToggle={toggleAutoInstall}
+        tooltip={
+          'When on, every update downloads and installs itself without asking, ' +
+          'and the app restarts to apply it as soon as nothing is playing — it ' +
+          'will not interrupt a song, but it will not wait for you to quit ' +
+          'either. What changed is shown when it comes back. When off, updates ' +
+          'still download in the background but ask before restarting.'
+        }
+      />
 
       <div className="settings-about-action">
         <button

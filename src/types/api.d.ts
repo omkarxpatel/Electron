@@ -147,6 +147,19 @@ export interface ElectronApi {
     /** Report whether audio is playing, so a silent update never restarts
      *  the app mid-listen. */
     setActivity(active: boolean): void;
+    /** Whether updates install themselves without asking. Owned by main
+     *  rather than the renderer's settings blob: the first check runs 8s
+     *  after launch, which can be before any window has reported in. */
+    getAutoInstall(): Promise<boolean>;
+    /** Resolves to the value after the write, so a failed persist snaps the
+     *  switch back rather than lying about what will happen. */
+    setAutoInstall(on: boolean): Promise<boolean>;
+    /** What an unattended install applied since this app last ran, or null.
+     *  Deliberately not an UpdateState: by the time it is read the update
+     *  already happened, in a process that no longer exists. */
+    getJustInstalled(): Promise<JustInstalled | null>;
+    /** The user has seen it; stop reporting it. */
+    acknowledgeInstalled(): Promise<void>;
   };
 }
 
@@ -259,6 +272,14 @@ export interface ResolvedDeviceProfile {
   profile: DeviceProfile;
   capability: Capability;
   prompt: TestPrompt;
+}
+
+/** Mirrors JustInstalled in electron/updater.ts. */
+export interface JustInstalled {
+  version: string;
+  /** Raw CHANGELOG section, parsed with parseReleaseNotes. Absent for a
+   *  release that published no notes asset. */
+  notes?: string;
 }
 
 export interface UpdateProgress {

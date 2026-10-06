@@ -55,9 +55,18 @@ const INVOKE = [
   'spotify-auth:listen', 'spotify-auth:cancel', 'system-audio:set-mute',
   'spotify-app:launch-hidden', 'update:check', 'update:state', 'update:install',
   'update:open-fallback', 'update:dismiss-version',
+  // null here is the answer we want, not a fallback: it means "this app did
+  // not just update itself", which keeps the post-update notice out of every
+  // screenshot.
+  'update:get-just-installed', 'update:acknowledge-installed',
   'sink-volume:pin', 'sink-volume:restore',
 ];
 for (const ch of INVOKE) ipcMain.handle(ch, () => null);
+// The automatic-update switch reads a boolean, and null would leave it in its
+// "not loaded yet" state rather than rendering Off.
+for (const ch of ['update:get-auto-install', 'update:set-auto-install']) {
+  ipcMain.handle(ch, () => false);
+}
 for (const ch of ['tray:now-playing', 'notch:state', 'notch:command', 'update:set-activity']) {
   ipcMain.on(ch, () => {});
 }

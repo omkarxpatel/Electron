@@ -8,6 +8,16 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.19 (prompt)
+
+- New in Settings: "Install updates automatically". With it on, an update installs itself and the app restarts as soon as nothing is playing — it won't cut off a song, and it tells you what changed when it comes back. Off by default; updates keep asking first as they do now.
+- The notch HUD no longer swallows clicks meant for the window behind it. An open panel claimed the whole strip across the top of the screen, transparent margin included, so a click aimed at a browser tab brought the music player forward instead. Clicking the panel itself no longer brings the app forward either — only its buttons do anything.
+- Album and artist pages are rebuilt. The artwork's colour washes behind the header, albums have a Play button for the whole record, and the column headings stay put as you scroll a long one. Album tracks no longer repeat the album's artist on every row, so a guest credit stands out.
+- Right-click a track and you can go to its artist — from a playlist row, and from inside an album.
+- "Add to playlist" now marks the playlists that already have the song, and lists those first, so you can see where it is before deciding where it goes. The list fills in over a few seconds the first time you open it each session; a playlist it has not read yet is simply unmarked rather than claimed to be missing the song.
+- Artist pages have a Popular section — the artist's top tracks, playable from there, with the full ten behind "Show all". No play counts: Spotify's API does not publish them at any tier, and the number it does publish is a different thing.
+- Update checks ask for less and run twice as often, so a new version reaches you sooner.
+
 ## 1.4.18 (prompt)
 
 - The notch HUD waits a moment before it opens. Moving the pointer across the notch on the way to a tab or a menu no longer drops the panel on top of what you were reaching for.

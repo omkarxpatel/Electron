@@ -131,12 +131,49 @@ export async function findReplaceableBundle(): Promise<
   return { ok: true, bundlePath };
 }
 
+/*
+ * Conditional-request state for the channel file.
+ *
+ * A check is three HTTPS GETs — the channel file, the notes and the install
+ * class — and it used to make all three every time, whether or not anything
+ * had moved. At the 30-minute cadence that is 144 requests a day to re-learn
+ * the same answer.
+ *
+ * GitHub's release CDN honours `If-None-Match`. Measured against a real
+ * release: an unchanged `latest-mac.yml` returns 304 with a zero-byte body,
+ * against 811 bytes for the 200. The ETag survives the cross-origin redirect
+ * from github.com to the blob store, which is the part worth checking rather
+ * than assuming — headers do not always make it through one.
+ */
+let cachedEtag: string | null = null;
+let cachedUpdate: RemoteUpdate | null = null;
+
+/** Forget the cached answer. Called after a failure, so a release that was
+ *  re-published under the same version — a retag, with different artifacts
+ *  and therefore a different sha512 — cannot be served from cache forever
+ *  once its download has failed verification. */
+export function invalidateUpdateCache(): void {
+  cachedEtag = null;
+  cachedUpdate = null;
+}
+
 /**
  * The newest published release, or null when it isn't newer than `version`.
  * Throws on network/parse failures so the caller can categorize and retry.
  */
 export async function fetchLatestUpdate(repoUrl: string): Promise<RemoteUpdate> {
-  const res = await net.fetch(`${repoUrl}/releases/latest/download/${CHANNEL_FILE}`);
+  const res = await net.fetch(
+    `${repoUrl}/releases/latest/download/${CHANNEL_FILE}`,
+    cachedEtag !== null ? { headers: { 'If-None-Match': cachedEtag } } : {},
+  );
+
+  // 304 is trustworthy for the whole answer: the ETag is derived from the
+  // file's content, so an unchanged one means the zip list, hashes and sizes
+  // are all still what we parsed last time.
+  if (res.status === 304 && cachedUpdate !== null) {
+    return cachedUpdate;
+  }
+
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} fetching ${CHANNEL_FILE}`);
   }
@@ -166,16 +203,27 @@ export async function fetchLatestUpdate(repoUrl: string): Promise<RemoteUpdate> 
     throw new Error(`${CHANNEL_FILE} entry for ${match.url} is missing its sha512 or size`);
   }
 
-  return {
+  // Everything above is re-derived from THIS response, never reused: a
+  // re-published release keeps its version but changes its sha512, and
+  // serving a stale hash would reject a download that was actually fine.
+  // Only the two cosmetic fetches below are skipped on an unchanged version,
+  // which is where the saving is — they are a whole request each.
+  const unchanged = cachedUpdate !== null && cachedUpdate.version === version;
+
+  const update: RemoteUpdate = {
     version,
     // Same "latest" pointer as the feed, so we never have to assume how the
     // release tag is spelled.
     zipUrl: `${repoUrl}/releases/latest/download/${match.url}`,
     sha512: match.sha512,
     size: match.size,
-    notes: await fetchReleaseNotes(repoUrl),
-    installClass: await fetchInstallClass(repoUrl),
+    notes: unchanged ? cachedUpdate!.notes : await fetchReleaseNotes(repoUrl),
+    installClass: unchanged ? cachedUpdate!.installClass : await fetchInstallClass(repoUrl),
   };
+
+  cachedEtag = res.headers.get('etag');
+  cachedUpdate = update;
+  return update;
 }
 
 /**

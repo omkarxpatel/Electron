@@ -1,5 +1,5 @@
 import { BrowserWindow, app, ipcMain, powerMonitor, shell } from 'electron';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   applyStagedUpdate,
@@ -7,6 +7,7 @@ import {
   downloadUpdate,
   fetchLatestUpdate,
   findReplaceableBundle,
+  invalidateUpdateCache,
   stageUpdate,
   type DownloadProgress,
   type RemoteUpdate,
@@ -42,6 +43,16 @@ const RELEASES_URL = `${REPO_URL}/releases`;
 
 const SKIP_FILE_NAME = 'update-skip.json';
 
+/** The "Install updates automatically" preference. Its own file for the same
+ *  reason notch.json is its own file: losing a user's update policy to some
+ *  unrelated file's invalidation would be a baffling bug to track down. */
+const PREFS_FILE_NAME = 'update-prefs.json';
+
+/** What an unattended install applied, written before we quit to apply it and
+ *  read back by the next launch so it can say what changed. It has to be on
+ *  disk because the process that knew is the one being replaced. */
+const APPLIED_FILE_NAME = 'update-applied.json';
+
 /* ── Silent delivery ──
  *
  * A release marked `silent` in its CHANGELOG heading installs without asking.
@@ -65,7 +76,12 @@ const IDLE_INSTALL_SECONDS = 10 * 60;
  *  the install lands within a minute of the machine going quiet. */
 const IDLE_POLL_INTERVAL_MS = 60_000;
 
-const PERIODIC_CHECK_INTERVAL_MS = 60 * 60 * 1000;  // 1 hr
+/* A check is one conditional GET of latest-mac.yml, and when nothing has
+ * moved GitHub answers 304 with a zero-byte body — measured, see the ETag
+ * note in updateInstaller.ts. At that price the cadence is not worth
+ * rationing, and halving it halves how long someone keeps running a version
+ * we already know has been superseded. */
+const PERIODIC_CHECK_INTERVAL_MS = 30 * 60 * 1000;  // 30 min
 const INITIAL_CHECK_DELAY_MS = 8 * 1000;            // 8 s after ready
 const NETWORK_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -142,6 +158,28 @@ let installWhenDownloaded = false;
  *  user answered that question themselves and the answer wasn't "whenever". */
 let silentInstallArmed = false;
 
+/*
+ * "Install updates automatically" — the user's standing answer.
+ *
+ * Off by default, and deliberately so. Turning it on is someone accepting
+ * that the app may restart itself without asking, which is not a position to
+ * inherit by never having formed one.
+ *
+ * On, it changes two things. Every release installs itself, not only the ones
+ * the CHANGELOG marks `silent`: the user has opted out of being asked, so the
+ * class stops deciding whether to prompt and goes back to only describing
+ * what the release was. And the bar for "now is a fine moment" drops from an
+ * unattended machine to simply nothing playing — they have already said a
+ * restart is fine while they are working, so making them walk away from the
+ * keyboard for ten minutes first would be answering a question they did not
+ * ask.
+ *
+ * What it does NOT change is the audio check. Restarting out from under a
+ * song is wrong whatever the user has agreed to, and that is the one
+ * condition both paths share.
+ */
+let autoInstallEnabled = false;
+
 /** Renderer's word on whether audio is actually playing through us. The one
  *  thing `powerMonitor` cannot see: someone listening with the window in the
  *  background is not idle, however long since they touched the keyboard. */
@@ -174,6 +212,77 @@ function writeSkippedVersion(version: string | null): void {
     writeFileSync(skipFilePath(), JSON.stringify({ version }), 'utf-8');
   } catch (err) {
     log('warn', 'could not persist skipped version:', err);
+  }
+}
+
+// ── Automatic-install preference ───────────────────────────────────────────
+
+function prefsFilePath(): string {
+  return join(app.getPath('userData'), PREFS_FILE_NAME);
+}
+
+/** Note `=== true`, not `!== false`. A missing, truncated or corrupt file has
+ *  to mean "keep asking"; the failure that reads as a bug is an app that
+ *  restarts itself because it could not parse its own preferences. */
+function readAutoInstallPref(): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(prefsFilePath(), 'utf-8'));
+    return (parsed as { autoInstall?: unknown } | null)?.autoInstall === true;
+  } catch {
+    return false;
+  }
+}
+
+function writeAutoInstallPref(on: boolean): void {
+  try {
+    writeFileSync(prefsFilePath(), JSON.stringify({ autoInstall: on }), 'utf-8');
+  } catch (err) {
+    log('warn', 'could not persist the automatic-install preference:', err);
+  }
+}
+
+// ── "What you were just updated to" ────────────────────────────────────────
+
+/** Deliberately NOT a member of UpdateState. That union is mirrored in five
+ *  places, and this is not a state of the update machine anyway — by the time
+ *  it is read, the update it describes already happened, in a previous
+ *  process. */
+export interface JustInstalled {
+  version: string;
+  notes?: string;
+}
+
+function appliedFilePath(): string {
+  return join(app.getPath('userData'), APPLIED_FILE_NAME);
+}
+
+function readAppliedRecord(): JustInstalled | null {
+  try {
+    const parsed = JSON.parse(readFileSync(appliedFilePath(), 'utf-8')) as {
+      version?: unknown;
+      notes?: unknown;
+    } | null;
+    const version = parsed?.version;
+    if (typeof version !== 'string' || version.length === 0) return null;
+    return { version, notes: typeof parsed?.notes === 'string' ? parsed.notes : undefined };
+  } catch {
+    return null;
+  }
+}
+
+function writeAppliedRecord(record: JustInstalled): void {
+  try {
+    writeFileSync(appliedFilePath(), JSON.stringify(record), 'utf-8');
+  } catch (err) {
+    log('warn', 'could not record what was installed:', err);
+  }
+}
+
+function clearAppliedRecord(): void {
+  try {
+    rmSync(appliedFilePath(), { force: true });
+  } catch (err) {
+    log('warn', 'could not clear the installed record:', err);
   }
 }
 
@@ -370,12 +479,18 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
       return;
     }
 
-    if (update.installClass === 'silent') {
-      // Never restart the moment it lands — that is the one thing a silent
-      // update must not do. It waits for quit or for genuine idleness.
+    if (autoInstallEnabled || update.installClass === 'silent') {
+      // Never restart the moment it lands — that is the one thing neither of
+      // these may do. Both wait for a moment that costs the user nothing;
+      // they only disagree on how quiet it has to be. See autoInstallEnabled.
       installWhenDownloaded = false;
       silentInstallArmed = true;
-      log('info', `v${update.version} is a silent release; downloading without prompting`);
+      log(
+        'info',
+        autoInstallEnabled
+          ? `v${update.version} downloading without prompting (automatic updates are on)`
+          : `v${update.version} is a silent release; downloading without prompting`,
+      );
       await startDownload(update, target.bundlePath);
       return;
     }
@@ -397,20 +512,29 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
 }
 
 /**
- * Apply a silently-staged update if nobody would notice.
+ * Apply a staged update if nobody would notice.
  *
- * Both conditions matter. `powerMonitor` says whether anyone has touched the
- * machine; `audioActive` says whether we are making sound, which is the case
- * `powerMonitor` gets wrong — the notch HUD exists precisely so people can
- * listen while working in another app, and they have not touched a key in an
- * hour.
+ * `audioActive` is checked whatever the user has agreed to, and is the
+ * renderer's word rather than anything inferred here: `powerMonitor` sees an
+ * untouched keyboard and calls that idle, which is exactly wrong for someone
+ * listening through the notch HUD while working in another app.
+ *
+ * The keyboard-idle condition is the one automatic mode drops. For a `silent`
+ * release the user was never asked, so the bar has to be a machine nobody is
+ * sitting at. With automatic updates on they have answered, and the answer
+ * was "whenever nothing is playing".
  */
-function maybeInstallWhileIdle(): void {
+function maybeApplyStagedUpdate(): void {
   if (!silentInstallArmed || stagedUpdate === null) return;
   if (audioActive) return;
-  if (powerMonitor.getSystemIdleTime() < IDLE_INSTALL_SECONDS) return;
+  if (!autoInstallEnabled && powerMonitor.getSystemIdleTime() < IDLE_INSTALL_SECONDS) return;
 
-  log('info', 'machine idle and silent; applying staged update now');
+  log(
+    'info',
+    autoInstallEnabled
+      ? 'nothing playing; applying staged update now (automatic updates are on)'
+      : 'machine idle and silent; applying staged update now',
+  );
   silentInstallArmed = false;
   stopIdlePoll();
   triggerInstall();
@@ -418,7 +542,7 @@ function maybeInstallWhileIdle(): void {
 
 function startIdlePoll(): void {
   if (idlePollTimer !== null) return;
-  idlePollTimer = setInterval(maybeInstallWhileIdle, IDLE_POLL_INTERVAL_MS);
+  idlePollTimer = setInterval(maybeApplyStagedUpdate, IDLE_POLL_INTERVAL_MS);
 }
 
 function stopIdlePoll(): void {
@@ -446,13 +570,32 @@ async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<
     consecutiveFailures = 0;
     log('info', `v${update.version} staged at ${stagedUpdate.appPath}`);
     // Only now is there something for the idle poll to apply.
-    if (silentInstallArmed) startIdlePoll();
+    if (silentInstallArmed) {
+      // Recorded for the automatic path ONLY, and not merely because the
+      // release was classed `silent`. A silent release is by definition one
+      // where the user has nothing to decide and nothing to learn, so
+      // announcing it afterwards would contradict the whole classification.
+      // Automatic mode is the opposite case: it swallows releases that WOULD
+      // have prompted, and saying what landed is what is owed in exchange.
+      //
+      // Written at stage time rather than at install time because the process
+      // that knows what this release contains is the one about to be replaced.
+      if (autoInstallEnabled) {
+        writeAppliedRecord({ version: update.version, notes: update.notes });
+      }
+      startIdlePoll();
+    }
     broadcast({
       kind: 'downloaded',
       version: update.version,
       releaseNotes: update.notes,
       releasePageUrl: releasePageUrlFor(update.version),
     });
+
+    // The poll fires once a minute, and the moment may already be here. With
+    // automatic updates on, waiting for the next tick is an arbitrary minute
+    // of running the old version for no reason.
+    if (silentInstallArmed) maybeApplyStagedUpdate();
 
     // "Install when I quit" needs nothing here: the `will-quit` handler
     // applies whatever is staged.
@@ -519,6 +662,10 @@ function handleError(err: unknown): void {
   // half-finished download around to be applied on quit.
   void clearStaged();
   pendingUpdate = null;
+  // Don't retry against the cached channel file either. If this was a hash
+  // mismatch because a release was re-published under the same version, the
+  // cached answer is precisely the wrong one to try again with.
+  invalidateUpdateCache();
 
   if (cat.category === 'network' && cat.canRetry) {
     broadcast({
@@ -558,6 +705,8 @@ async function clearStaged(): Promise<void> {
   installWhenDownloaded = false;
   silentInstallArmed = false;
   stopIdlePoll();
+  // Nothing was installed, so the next launch must not claim otherwise.
+  clearAppliedRecord();
   try {
     await discardStagedUpdate(staged);
   } catch (err) {
@@ -570,6 +719,22 @@ async function clearStaged(): Promise<void> {
 export function setupAutoUpdater(): void {
   suppressUntilNewerThan = readSkippedVersion();
   if (suppressUntilNewerThan) log('info', `v${suppressUntilNewerThan} is skipped (persisted)`);
+
+  // Read before the first check, which is 8s away. Main has to own this
+  // preference rather than the renderer's settings blob for exactly that
+  // reason: the decision can be needed before any window has reported in.
+  autoInstallEnabled = readAutoInstallPref();
+  log('info', `automatic updates are ${autoInstallEnabled ? 'on' : 'off'}`);
+
+  // Reconcile what we recorded on the way out against what actually came up.
+  // A record naming a version we are NOT running means the swap failed and
+  // the helper rolled us back — and announcing an update that did not happen
+  // is worse than announcing nothing.
+  const applied = readAppliedRecord();
+  if (applied !== null && applied.version !== app.getVersion()) {
+    log('warn', `discarding install record for v${applied.version}; running v${app.getVersion()}`);
+    clearAppliedRecord();
+  }
 
   // Where the bundle swap actually gets kicked off, for both "install now"
   // (which quits immediately) and "install when I quit". Registered on
@@ -616,6 +781,31 @@ export function setupAutoUpdater(): void {
   // which is exactly wrong for someone listening via the notch HUD.
   ipcMain.on('update:set-activity', (_e, active: unknown) => {
     audioActive = active === true;
+  });
+
+  ipcMain.handle('update:get-auto-install', () => autoInstallEnabled);
+
+  // Returns the value AFTER the write, so a toggle that failed to persist
+  // snaps the switch back rather than lying about what will happen.
+  ipcMain.handle('update:set-auto-install', (_e, on: unknown) => {
+    autoInstallEnabled = on === true;
+    writeAutoInstallPref(autoInstallEnabled);
+    log('info', `automatic updates turned ${autoInstallEnabled ? 'on' : 'off'}`);
+    // Something may already be staged and waiting on a bar that just moved.
+    if (autoInstallEnabled) maybeApplyStagedUpdate();
+    return readAutoInstallPref();
+  });
+
+  /** What the last unattended install applied, or null. Guarded on the
+   *  running version a second time: the file is only meaningful if the swap
+   *  it describes actually took. */
+  ipcMain.handle('update:get-just-installed', (): JustInstalled | null => {
+    const record = readAppliedRecord();
+    return record !== null && record.version === app.getVersion() ? record : null;
+  });
+
+  ipcMain.handle('update:acknowledge-installed', () => {
+    clearAppliedRecord();
   });
 
   // Sync IPC so the renderer can hydrate its initial state at preload time
