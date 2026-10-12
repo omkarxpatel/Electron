@@ -62,13 +62,25 @@ Verification here means:
    node) for capability detection and every profile-invalidation path. The
    failures it guards are silent by construction: nothing errors, the app just
    runs at the wrong quality tier, or half the frame rate, forever.
-5. `npm run check:sink-volume` — if you touched `electron/deviceVolume.ts` or
+5. `npm run check:contrast` — if you touched `src/shared/contrast.ts`, the
+   accent vars in `App.tsx`, or the lyrics rules in `App.css`. Asserts the
+   WCAG maths against the specification's own worked values, that a lifted
+   accent clears its target without washing out toward white, and — the
+   expensive one — that every built-in palette's accent comes back BYTE
+   IDENTICAL. A contrast floor that nudges colours which were already fine
+   re-themes the whole app, and nothing errors when it does.
+
+   `LYRIC_SURFACE` in that module is a pixel measurement off a real window,
+   not a guess, and no check can tell you it has gone stale. Re-measure with
+   `npm run capture -- --only lyrics` if the lyrics pane's background or the
+   album backdrop's brightness changes.
+6. `npm run check:sink-volume` — if you touched `electron/deviceVolume.ts` or
    `build/helpers/avvolume.swift`. This is the only code in the app that can
    leave the *machine* worse than it found it: pinning means we raised
    someone's output device to 100%, and a broken restore strands it there.
    The check drives the real helper against a real device and asserts every
    crash-recovery path, then hands the device back.
-6. Run the app and look at it. See below, because launching it has traps.
+7. Run the app and look at it. See below, because launching it has traps.
 
 `npm run capture` renders the app into an offscreen window and photographs it
 with `webContents.capturePage()`, which reads that window's own buffer — no
