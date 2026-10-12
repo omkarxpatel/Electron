@@ -34,6 +34,7 @@ import { PALETTES, buildCustomPalette } from './visualizers/palettes';
 import { useAlbumPalette } from './visualizers/useAlbumPalette';
 import { pickMediumImage } from './shared/image';
 import { hexToRgba } from './shared/color';
+import { readableLyricAccent } from './shared/contrast';
 import './App.css';
 
 /** Spotify's own normalisation reference, so the two agree rather than fight. */
@@ -290,6 +291,15 @@ function AppContent() {
       ['--accent-border' as string]: hexToRgba(accentColor, 0.5),
       ['--accent-soft-bg' as string]: hexToRgba(accentColor, 0.15),
       ['--accent-glow' as string]: hexToRgba(accentColor, 0.4),
+      // Same colour as --accent-bright on every palette that is legible on
+      // the lyrics pane, which is all of the built-in ones. It differs only
+      // for the album-derived accents that are not: a sleeve of dark browns
+      // or deep greens hands back a stop[0] at around 3:1, which put the one
+      // line you are meant to be reading below the inactive lines either side
+      // of it. Separate var rather than lifting --accent-bright itself —
+      // that one is a background, a border and a gradient stop in forty other
+      // rules, and a contrast floor is only meaningful for text.
+      ['--lyric-accent' as string]: readableLyricAccent(accentBright),
     };
     return { accent: accentColor, themeStyle: style };
   }, [effectivePalette]);

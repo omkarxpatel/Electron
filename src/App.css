@@ -142,6 +142,7 @@
   --accent-border: rgba(29, 185, 84, 0.5);
   --accent-soft-bg: rgba(29, 185, 84, 0.15);
   --accent-glow: rgba(29, 215, 96, 0.4);
+  --lyric-accent: #2ce568;
 }
 
 .viz-banner {
@@ -3320,7 +3321,9 @@
 }
 
 .lyrics-line.is-current {
-  color: var(--accent-bright);
+  /* Not --accent-bright: see readableLyricAccent(). Identical to it unless
+     the album handed back an accent too dark to read here. */
+  color: var(--lyric-accent);
   text-shadow: 0 0 14px var(--accent-glow);
   transform: scale(1.06);
 }

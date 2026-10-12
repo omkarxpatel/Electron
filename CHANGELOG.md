@@ -8,6 +8,10 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.20 (silent)
+
+- Fixed the highlighted line of lyrics being hard to read on some albums. When the artwork's colour came back dark — a sleeve of deep greens or browns — the current line ended up fainter than the unhighlighted lines around it, so the one line you were meant to be reading was the dimmest on screen. It is now lightened just enough to read, keeping the album's colour, and only on the albums where it was too dark to begin with. Every built-in palette, and every album whose colour already read well, is untouched.
+
 ## 1.4.19 (prompt)
 
 - New in Settings: "Install updates automatically". With it on, an update installs itself and the app restarts as soon as nothing is playing — it won't cut off a song, and it tells you what changed when it comes back. Off by default; updates keep asking first as they do now.

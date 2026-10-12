@@ -143,6 +143,22 @@ const SCENES = [
     settleMs: 3000,
   },
   {
+    // The lyrics pane with auto-tint on. The fixture sleeves are dark
+    // gradients, which is exactly the case that used to produce an unreadable
+    // current line: extraction hands back a dark accent, and the line you are
+    // meant to be reading ends up fainter than the inactive ones around it.
+    name: 'lyrics',
+    width: 1440, height: 900,
+    capture: {
+      settings: {
+        waveformStyle: 'bars', palette: 'aurora', glow: 0.6, sensitivity: 1.6,
+        autoTintFromAlbumArt: true, albumArtBackdrop: true,
+      },
+      playlistId: 'pl1',
+    },
+    settleMs: 3200,
+  },
+  {
     name: 'notch-expanded',
     page: 'notch', width: 600, height: 212,
     send: [
