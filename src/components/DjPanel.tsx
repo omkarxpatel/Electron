@@ -10,6 +10,7 @@ import { describeIntent } from '../dj/intent';
 import { useDjSuggestions, hitScanCap, type DjSource } from '../dj/useDjSuggestions';
 import { useDjVoice } from '../dj/useDjVoice';
 import { smallestImage } from '../shared/image';
+import { useTrackMenu } from '../spotify/useTrackMenu';
 
 /** How many suggestions are worth looking at. Past a handful this stops being
  *  a recommendation and starts being the playlist again, in a new order. */
@@ -64,6 +65,9 @@ export function DjPanel({
   duckGainRef,
   voiceGainRef,
 }: Props) {
+  // Suggestions are computed, not a list you can edit — no source to remove
+  // from. The row keeps its own Queue button; the menu adds the rest.
+  const trackMenu = useTrackMenu();
   const folders = usePlaylistFolders();
   const [sourceId, setSourceId] = useState<string>('');
   const [request, setRequest] = useState<string>('');
@@ -161,6 +165,7 @@ export function DjPanel({
 
   return (
     <div className="dj-wrap">
+      {trackMenu.node}
       <div className="sp-overlay-back-row">
         <button type="button" className="sp-overlay-back" onClick={onBack}>
           ← Library
@@ -293,6 +298,7 @@ export function DjPanel({
                       type="button"
                       className="dj-row-main"
                       onClick={() => onPlay(pick.track)}
+                      onContextMenu={(e) => trackMenu.open(pick.track, e)}
                       title={sentence}
                     >
                       {thumb ? (

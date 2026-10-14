@@ -9,7 +9,6 @@ import {
   useState,
 } from 'react';
 import {
-  addToQueue,
   SEARCH_MAX_OFFSET,
   SEARCH_PAGE_SIZE,
   type SearchResults,
@@ -23,7 +22,7 @@ import type {
 } from '../spotify/types';
 import { formatDuration } from '../shared/format';
 import { pickMediumImage, smallestImage } from '../shared/image';
-import { ContextMenu, type ContextMenuItem } from './ContextMenu';
+import { useTrackMenu } from '../spotify/useTrackMenu';
 
 /**
  * Remote search results for the library overlay: type tabs, a top-result
@@ -227,27 +226,10 @@ function SpotifySearchResultsImpl(
 
   /* ─── Right-click → add to queue (tracks only) ─── */
 
-  const [menu, setMenu] = useState<{ x: number; y: number; track: SpotifyTrack } | null>(null);
-  const closeMenu = useCallback(() => setMenu(null), []);
-  const handleTrackContextMenu = useCallback(
-    (track: SpotifyTrack, e: React.MouseEvent): void => {
-      e.preventDefault();
-      setMenu({ x: e.clientX, y: e.clientY, track });
-    },
-    [],
-  );
-  const menuItems = useMemo<ContextMenuItem[]>(() => {
-    if (!menu) return [];
-    const uri = menu.track.uri;
-    return [
-      {
-        label: 'Add to queue',
-        onClick: () => {
-          void addToQueue(uri).catch((err) => console.error('addToQueue failed:', err));
-        },
-      },
-    ];
-  }, [menu]);
+  // Search results are not a list you can edit, so no source to remove from.
+  // This was a one-item menu offering only "Add to queue" — and swallowing its
+  // failures — while the same right-click in the main track list offered six.
+  const trackMenu = useTrackMenu();
 
   /* ─── Paging (single-type tabs only — "All" mixes types) ─── */
 
@@ -321,6 +303,16 @@ function SpotifySearchResultsImpl(
               row={view.top}
               active={activeIndex === 0}
               onClick={() => view.top && activate(view.top)}
+              onContextMenu={
+                // Artists, albums and playlists share this card and have no
+                // track menu; only narrow to a track.
+                view.top.kind === 'track'
+                  ? (e) => {
+                      const top = view.top;
+                      if (top?.kind === 'track') trackMenu.open(top.item, e);
+                    }
+                  : undefined
+              }
             />
           </section>
         )}
@@ -337,7 +329,7 @@ function SpotifySearchResultsImpl(
                     active={activeIndex === view.trackStart + i}
                     playing={track.id === currentlyPlayingId}
                     onClick={() => onPlayTrack(track)}
-                    onContextMenu={(e) => handleTrackContextMenu(track, e)}
+                    onContextMenu={(e) => trackMenu.open(track, e)}
                   />
                 ))}
               </tbody>
@@ -411,7 +403,7 @@ function SpotifySearchResultsImpl(
         )}
       </div>
 
-      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />}
+      {trackMenu.node}
     </>
   );
 }
@@ -422,9 +414,11 @@ interface TopResultCardProps {
   row: Row;
   active: boolean;
   onClick: () => void;
+  /** Absent for artist, album and playlist rows, which have no track menu. */
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
-function TopResultCard({ row, active, onClick }: TopResultCardProps) {
+function TopResultCard({ row, active, onClick, onContextMenu }: TopResultCardProps) {
   const { title, meta, imageUrl, round } = describeRow(row);
   return (
     <button
@@ -432,6 +426,7 @@ function TopResultCard({ row, active, onClick }: TopResultCardProps) {
       className="sp-search-top-card"
       data-active-row={active ? 'true' : 'false'}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       title={`${title} — ${meta}`}
     >
       {imageUrl ? (

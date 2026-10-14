@@ -321,8 +321,6 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
             }
             onSelectPlaylist={library.selectPlaylist}
             onSelectLikedSongs={library.selectLikedSongs}
-            userId={library.userId}
-            onAddToPlaylist={library.addTrackToPlaylist}
             likedSelected={library.source?.kind === 'liked'}
             onCreatePlaylist={library.createPlaylist}
             searchAll={library.searchAll}

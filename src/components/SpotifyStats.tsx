@@ -16,6 +16,7 @@ import {
 } from '../spotify/stats';
 import type { SpotifyArtist, SpotifyTrack, TopTimeRange } from '../spotify/types';
 import { smallestImage } from '../shared/image';
+import { useTrackMenu } from '../spotify/useTrackMenu';
 
 /**
  * Listening stats built from `/me/top/{tracks,artists}`.
@@ -73,6 +74,9 @@ interface Loaded {
 export const SpotifyStats = memo(SpotifyStatsImpl);
 
 function SpotifyStatsImpl({ onBack, onPlayTrack, refreshKey }: Props) {
+  // Both track lists here are rankings, not editable lists, so there is no
+  // source to remove from.
+  const trackMenu = useTrackMenu();
   const [range, setRange] = useState<TopTimeRange>('short_term');
   const [data, setData] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(true);
@@ -141,6 +145,7 @@ function SpotifyStatsImpl({ onBack, onPlayTrack, refreshKey }: Props) {
 
   return (
     <div className="sp-stats">
+      {trackMenu.node}
       {/* Album-art tint carried behind the panel, the same wash the viz banner
           and player bar sit on. Without it this pane read as a grey dashboard
           bolted onto a colour-reactive app. */}
@@ -217,7 +222,11 @@ function SpotifyStatsImpl({ onBack, onPlayTrack, refreshKey }: Props) {
                     <ul className="sp-stats-deep">
                       {popularity.deepestCuts.map((t) => (
                         <li key={t.id}>
-                          <button type="button" onClick={() => onPlayTrack(t)}>
+                          <button
+                            type="button"
+                            onClick={() => onPlayTrack(t)}
+                            onContextMenu={(e) => trackMenu.open(t, e)}
+                          >
                             <span className="sp-stats-deep-name">{t.name}</span>
                             <span className="sp-stats-deep-artist">
                               {t.artists.map((a) => a.name).join(', ')}
@@ -348,6 +357,7 @@ function SpotifyStatsImpl({ onBack, onPlayTrack, refreshKey }: Props) {
                       type="button"
                       className="sp-stats-row-name sp-stats-row-play"
                       onClick={() => onPlayTrack(entry.item)}
+                      onContextMenu={(e) => trackMenu.open(entry.item, e)}
                       title={`Play ${entry.item.name}`}
                     >
                       {entry.item.name}

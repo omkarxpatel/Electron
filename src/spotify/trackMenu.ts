@@ -53,8 +53,14 @@ export interface TrackMenuOptions {
   onToggleSaved?: () => Promise<void> | void;
   onAddToPlaylist: (playlistId: string, track: SpotifyTrack) => Promise<void>;
   onRemoveFromSource: (track: SpotifyTrack) => Promise<void>;
-  onGoToAlbum: (track: SpotifyTrack) => void;
-  /** Omitted where there is nowhere to navigate to. */
+  /**
+   * Both omitted where the item would navigate to the view it was opened
+   * from. The album page leaves out "Go to album" and the artist page leaves
+   * out "Go to artist" — an entry that reloads the page you are looking at
+   * reads as broken, and disabling it instead just raises the question of
+   * why it is there.
+   */
+  onGoToAlbum?: (track: SpotifyTrack) => void;
   onGoToArtist?: (track: SpotifyTrack) => void;
   /** Runs a write and reports it — see createEditRunner. */
   runEdit: (okText: string, fn: () => Promise<void>) => void;
@@ -214,22 +220,34 @@ export function buildTrackMenuItems(opts: TrackMenuOptions): ContextMenuItem[] {
     },
   });
 
-  items.push({
-    separator: true,
-    label: 'Go to album',
-    disabled: !track.album?.id,
-    onClick: () => onGoToAlbum(track),
-  });
+  // `separator` sits on whichever of the two comes first, so the rule above
+  // the navigation group survives either one being left out.
+  let needsSeparator = true;
+  if (onGoToAlbum) {
+    items.push({
+      separator: true,
+      label: 'Go to album',
+      // An album page's tracks arrive as Spotify SimplifiedTrackObjects with
+      // no `album` key at all, despite the declared type — so this is a real
+      // runtime case, not defensive padding.
+      disabled: !track.album?.id,
+      onClick: () => onGoToAlbum(track),
+    });
+    needsSeparator = false;
+  }
 
   if (onGoToArtist) {
     items.push({
+      separator: needsSeparator,
       label: 'Go to artist',
       disabled: !track.artists[0]?.id,
       onClick: () => onGoToArtist(track),
     });
+    needsSeparator = false;
   }
 
   items.push({
+    separator: needsSeparator,
     label: 'Copy Spotify link',
     onClick: () => {
       void navigator.clipboard

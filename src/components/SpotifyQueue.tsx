@@ -3,6 +3,7 @@ import { getQueue, invalidateQueueCache, QUEUE_CHANGED_EVENT, wasUserQueued } fr
 import type { SpotifyTrack } from '../spotify/types';
 import { formatDuration } from '../shared/format';
 import { smallestImage } from '../shared/image';
+import { useTrackMenu } from '../spotify/useTrackMenu';
 
 interface Props {
   onPlay: (track: SpotifyTrack) => void;
@@ -18,6 +19,10 @@ interface QueueState {
 }
 
 export function SpotifyQueue({ onPlay, currentlyPlayingId, refreshKey }: Props) {
+  // No `source`: the queue is not a list you can edit. Spotify has no
+  // remove-from-queue endpoint at all, so there is nothing to offer beyond
+  // the standard actions.
+  const trackMenu = useTrackMenu();
   const [data, setData] = useState<QueueState | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   // Bumped to trigger a refetch from inside this component — used by the
@@ -79,10 +84,16 @@ export function SpotifyQueue({ onPlay, currentlyPlayingId, refreshKey }: Props) 
 
   return (
     <div className="sp-queue-view">
+      {trackMenu.node}
       {nowPlaying && (
         <section className="sp-queue-section">
           <h3 className="sp-queue-heading">Now Playing</h3>
-          <QueueRow track={nowPlaying} highlight onClick={undefined} />
+          <QueueRow
+            track={nowPlaying}
+            highlight
+            onClick={undefined}
+            onContextMenu={(e) => trackMenu.open(nowPlaying, e)}
+          />
         </section>
       )}
       <section className="sp-queue-section">
@@ -100,6 +111,7 @@ export function SpotifyQueue({ onPlay, currentlyPlayingId, refreshKey }: Props) 
                   highlight={track.id === currentlyPlayingId}
                   source={wasUserQueued(track.uri) ? 'queued' : 'auto'}
                   onClick={() => onPlay(track)}
+                  onContextMenu={(e) => trackMenu.open(track, e)}
                 />
               </li>
             ))}
@@ -121,9 +133,10 @@ interface QueueRowProps {
    *    null     = no badge (e.g. now-playing row) */
   source?: QueueRowSource;
   onClick: (() => void) | undefined;
+  onContextMenu: (e: React.MouseEvent) => void;
 }
 
-function QueueRow({ track, highlight, source = null, onClick }: QueueRowProps) {
+function QueueRow({ track, highlight, source = null, onClick, onContextMenu }: QueueRowProps) {
   const thumb = smallestImage(track.album?.images);
   const artistNames = track.artists.map((a) => a.name).join(', ');
   return (
@@ -132,7 +145,15 @@ function QueueRow({ track, highlight, source = null, onClick }: QueueRowProps) {
       className="sp-queue-row"
       data-playing={highlight ? 'true' : 'false'}
       onClick={onClick}
-      disabled={!onClick}
+      /* Not `disabled`: Chromium fires no contextmenu on a disabled control,
+         and the now-playing row passes no onClick — so the one row you would
+         most expect to right-click was the one row that could not be. Inert
+         by hand instead, which also keeps it announced rather than dropping
+         it out of the accessibility tree. */
+      aria-disabled={!onClick}
+      data-inert={!onClick ? 'true' : 'false'}
+      tabIndex={onClick ? undefined : -1}
+      onContextMenu={onContextMenu}
     >
       {thumb ? (
         <img className="sp-track-thumb" src={thumb} alt="" loading="lazy" draggable={false} />

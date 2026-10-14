@@ -8,6 +8,12 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.21 (prompt)
+
+- Right-click a song anywhere and you get the full menu. Artist pages, album pages, search results, the queue, your listening stats and the DJ suggestions all had songs you could only play — now every one of them offers Add to playlist, Add to queue, Go to album, Go to artist and Copy Spotify link, the same as the main track list always has.
+- Search results used to offer only "Add to queue" on right-click, and album pages a shortened menu of their own. Both now show the same options as everywhere else, and both report it when Spotify refuses an action instead of failing quietly.
+- The menu leaves out whatever would not mean anything where you opened it: no "Go to artist" on an artist's own page, no "Go to album" inside an album, and no "Remove from this playlist" on a list that isn't one.
+
 ## 1.4.20 (silent)
 
 - Fixed the highlighted line of lyrics being hard to read on some albums. When the artwork's colour came back dark — a sleeve of deep greens or browns — the current line ended up fainter than the unhighlighted lines around it, so the one line you were meant to be reading was the dimmest on screen. It is now lightened just enough to read, keeping the album's colour, and only on the albums where it was too dark to begin with. Every built-in palette, and every album whose colour already read well, is untouched.

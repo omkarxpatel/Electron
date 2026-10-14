@@ -165,5 +165,35 @@
       el.click();
       return true;
     },
+    /**
+     * Right-click the nth match, for photographing a row's context menu.
+     *
+     * `el.click()` has no contextmenu equivalent, and the handlers read
+     * `clientX`/`clientY` to place the menu — a synthetic event without them
+     * puts it in the top-left corner, which looks like a positioning bug
+     * rather than the missing coordinates it is. So the position comes from
+     * the element's own box.
+     */
+    rightClick(sel, nth = 0) {
+      const el = document.querySelectorAll(sel)[nth];
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: Math.round(r.left + Math.min(180, r.width / 2)),
+          clientY: Math.round(r.top + r.height / 2),
+        }),
+      );
+      return true;
+    },
+    /** Drive the overlay straight to an album or artist view. SpotifySection
+     *  owns this listener and opens the panel itself, so no clicking. */
+    nav(detail) {
+      window.dispatchEvent(new CustomEvent('av:overlay-nav', { detail }));
+      return true;
+    },
   };
 })();

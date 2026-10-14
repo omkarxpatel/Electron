@@ -2891,11 +2891,13 @@
   transition: background 100ms ease;
 }
 
-.sp-queue-row:hover:not(:disabled) {
+.sp-queue-row:hover:not([data-inert='true']) {
   background: rgba(255, 255, 255, 0.05);
 }
 
-.sp-queue-row:disabled {
+/* `[data-inert]`, not `:disabled` — the now-playing row has to stay an enabled
+   control so it can be right-clicked. See QueueRow. */
+.sp-queue-row[data-inert='true'] {
   cursor: default;
 }
 

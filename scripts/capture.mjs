@@ -159,6 +159,19 @@ const SCENES = [
     settleMs: 3200,
   },
   {
+    // The row menu on an artist's Popular list. Stands in for all nine track
+    // surfaces that share it through useTrackMenu — the queue and the stats
+    // view reach it with no props at all, which is the part worth re-checking
+    // if that hook ever changes. "Go to artist" is deliberately absent here:
+    // it is this page.
+    name: 'menu-artist',
+    width: 1440, height: 900,
+    capture: { settings: { waveformStyle: 'bars', palette: 'aurora' }, playlistId: 'pl1' },
+    prepare: `window.__cap.nav({ kind: 'artist', artistId: 'art1' }),
+              new Promise((r) => setTimeout(() => r(window.__cap.rightClick('.sp-popular .sp-track-row', 1)), 1400))`,
+    settleMs: 2400,
+  },
+  {
     name: 'notch-expanded',
     page: 'notch', width: 600, height: 212,
     send: [

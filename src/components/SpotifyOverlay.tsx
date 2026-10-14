@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useRenderCount } from '../perf';
 import {
   getAlbum,
@@ -19,15 +19,7 @@ import type {
   SpotifyPlaylist,
   SpotifyTrack,
 } from '../spotify/types';
-import { ContextMenu, type ContextMenuItem } from './ContextMenu';
-import { addToQueue, canEditPlaylist, isMissingScopeError } from '../spotify/api';
-import {
-  ensureIndexed,
-  isIndexing,
-  noteAdded,
-  playlistsContaining,
-} from '../spotify/playlistIndex';
-import { usePlaylistIndex } from '../spotify/usePlaylistIndex';
+import { useTrackMenu } from '../spotify/useTrackMenu';
 import { formatDuration } from '../shared/format';
 import type { TrackProfile } from '../audio/trackProfile';
 import { pickMediumImage, smallestImage } from '../shared/image';
@@ -37,9 +29,6 @@ type View = 'library' | 'album' | 'artist' | 'queue' | 'stats' | 'dj';
 interface Props {
   playlists: SpotifyPlaylist[];
   playlistsLoading: boolean;
-  /** Needed to tell which playlists the user may actually write to. */
-  userId: string | null;
-  onAddToPlaylist: (playlistId: string, track: SpotifyTrack) => Promise<void>;
   selectedPlaylistId: string | null;
   onSelectPlaylist: (playlist: SpotifyPlaylist) => void;
   onSelectLikedSongs: () => void;
@@ -82,8 +71,6 @@ export const SpotifyOverlay = memo(SpotifyOverlayImpl);
 function SpotifyOverlayImpl({
   playlists,
   playlistsLoading,
-  userId,
-  onAddToPlaylist,
   selectedPlaylistId,
   onSelectPlaylist,
   onSelectLikedSongs,
@@ -280,11 +267,7 @@ function SpotifyOverlayImpl({
           onBack={backToLibrary}
           onPlay={(track, contextUri) => playTrack(track, contextUri)}
           onPlayAlbum={() => playContext(selectedAlbum.uri)}
-          onGoToArtist={(artistId) => void openArtist(artistId)}
           currentlyPlayingId={currentlyPlayingId}
-          playlists={playlists}
-          userId={userId}
-          onAddToPlaylist={onAddToPlaylist}
         />
       )}
       {view === 'artist' && selectedArtist && (
@@ -395,8 +378,12 @@ function ArtistDetailView({
   const genres = artist.genres?.slice(0, 3).join(' · ');
   const [showAllPopular, setShowAllPopular] = useState(false);
   const popular = showAllPopular ? topTracks : topTracks.slice(0, POPULAR_COLLAPSED);
+  // "Go to artist" is left out: it is this page. Top tracks carry a full
+  // album object, so "Go to album" works here and is the useful one.
+  const trackMenu = useTrackMenu({ omitGoToArtist: true });
   return (
     <div className="sp-album-detail">
+      {trackMenu.node}
       <header className="sp-album-detail-header">
         {image ? <DetailWash src={image} /> : null}
         <div className="sp-overlay-back-row">
@@ -445,6 +432,7 @@ function ArtistDetailView({
                     rank={index + 1}
                     isPlaying={track.id === currentlyPlayingId}
                     onPlay={onPlayTrack}
+                    onContextMenu={trackMenu.open}
                   />
                 ))}
               </tbody>
@@ -513,11 +501,13 @@ function PopularRow({
   rank,
   isPlaying,
   onPlay,
+  onContextMenu,
 }: {
   track: SpotifyTrack;
   rank: number;
   isPlaying: boolean;
   onPlay: (track: SpotifyTrack) => void;
+  onContextMenu: (track: SpotifyTrack, e: React.MouseEvent) => void;
 }) {
   const thumb = smallestImage(track.album?.images);
   return (
@@ -526,6 +516,7 @@ function PopularRow({
       data-play="dblclick"
       data-playing={isPlaying ? 'true' : 'false'}
       onDoubleClick={() => onPlay(track)}
+      onContextMenu={(e) => onContextMenu(track, e)}
     >
       <td className="sp-track-index">
         {isPlaying ? (
@@ -579,14 +570,7 @@ interface AlbumDetailViewProps {
   /** Starts the album as a context, so what follows is the rest of the record
    *  rather than nothing — the same thing the artist header's Play does. */
   onPlayAlbum: () => void;
-  /** Drills into a track's artist. Still useful from inside an album, where
-   *  "Go to album" is not — a feature is often the reason you opened the row
-   *  menu at all. */
-  onGoToArtist: (artistId: string) => void;
   currentlyPlayingId: string | null;
-  playlists: SpotifyPlaylist[];
-  userId: string | null;
-  onAddToPlaylist: (playlistId: string, track: SpotifyTrack) => Promise<void>;
 }
 
 function AlbumDetailView({
@@ -594,11 +578,7 @@ function AlbumDetailView({
   onBack,
   onPlay,
   onPlayAlbum,
-  onGoToArtist,
   currentlyPlayingId,
-  playlists,
-  userId,
-  onAddToPlaylist,
 }: AlbumDetailViewProps) {
   const coverUrl = album.images[0]?.url ?? album.images[1]?.url;
   const artistNames = album.artists.map((a) => a.name).join(', ');
@@ -610,104 +590,17 @@ function AlbumDetailView({
   // from the library grid, so the header paints without a second fetch.
   const washUrl = smallestImage(album.images) ?? coverUrl;
 
-  const [menu, setMenu] = useState<{ x: number; y: number; track: SpotifyTrack } | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const noticeTimerRef = useRef<number | null>(null);
+  // "Go to album" is left out: it is this album. It would be disabled anyway —
+  // Spotify's /albums/{id} inlines its tracks as SimplifiedTrackObjects with
+  // no `album` key, whatever AlbumWithTracks claims — but an item that can
+  // never fire is worse than no item.
+  //
+  // This used to be ninety lines of hand-rolled menu sitting next to the
+  // shared one, and it had already drifted: its "Add to queue" reported
+  // nothing when Spotify refused, so a failed queue looked exactly like a
+  // successful one.
+  const trackMenu = useTrackMenu({ omitGoToAlbum: true });
 
-  const showNotice = useCallback((text: string) => {
-    setNotice(text);
-    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
-    noticeTimerRef.current = window.setTimeout(() => {
-      setNotice(null);
-      noticeTimerRef.current = null;
-    }, 2600);
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
-    },
-    [],
-  );
-
-  const closeMenu = useCallback(() => setMenu(null), []);
-
-  // Re-renders the menu as the playlist index fills; see playlistIndex.ts.
-  const indexRevision = usePlaylistIndex();
-
-  // Same shape as the main track list's row menu, minus the entries that
-  // can't mean anything here: there's no "Go to album" from inside the album,
-  // and no source playlist to remove from.
-  const menuItems = useMemo<ContextMenuItem[]>(() => {
-    if (!menu) return [];
-    const track = menu.track;
-    // Same markers as the shared menu — see playlistIndex.ts. The album view
-    // builds its own targets because its menu deliberately omits "Go to
-    // album", but there is no reason for it to know less than the others.
-    const editable = playlists.filter((p) => canEditPlaylist(p, userId));
-    ensureIndexed(editable);
-    const already = playlistsContaining(
-      track.uri,
-      editable.map((p) => p.id),
-    );
-    const targets: ContextMenuItem[] = editable.map((p) => ({
-      label: p.name,
-      badge: already.has(p.id) ? 'Added' : undefined,
-      onClick: () => {
-        void onAddToPlaylist(p.id, track).then(
-          () => {
-            noteAdded(p.id, track.uri);
-            showNotice(`Added to ${p.name}`);
-          },
-          (err: unknown) => {
-            console.error('playlist edit failed:', err);
-            // A missing scope never resolves by retrying — say what fixes it.
-            showNotice(
-              isMissingScopeError(err)
-                ? 'Reconnect Spotify in Settings to allow playlist edits'
-                : 'Spotify rejected that — nothing changed',
-            );
-          },
-        );
-      },
-    }));
-    targets.sort((a, b) => Number(!!b.badge) - Number(!!a.badge));
-    const artistId = track.artists[0]?.id;
-    return [
-      {
-        label: 'Add to playlist',
-        submenu: {
-          items: targets,
-          filterPlaceholder: 'Find a playlist',
-          emptyLabel: userId ? 'No playlists you can edit' : 'Loading your playlists…',
-          footerLabel: isIndexing() ? 'Checking your playlists…' : undefined,
-        },
-      },
-      {
-        label: 'Add to queue',
-        onClick: () => {
-          void addToQueue(track.uri).catch((err) => {
-            console.error('addToQueue failed:', err);
-          });
-        },
-      },
-      {
-        separator: true,
-        label: 'Go to artist',
-        disabled: !artistId,
-        onClick: () => artistId && onGoToArtist(artistId),
-      },
-      {
-        label: 'Copy Spotify link',
-        onClick: () => {
-          void navigator.clipboard
-            .writeText(`https://open.spotify.com/track/${track.id}`)
-            .then(() => showNotice('Link copied'))
-            .catch((err) => console.error('clipboard write failed:', err));
-        },
-      },
-    ];
-  }, [menu, playlists, userId, onAddToPlaylist, onGoToArtist, showNotice, indexRevision]);
 
   return (
     <div className="sp-album-detail">
@@ -777,10 +670,7 @@ function AlbumDetailView({
                   data-play="dblclick"
                   data-playing={isPlaying ? 'true' : 'false'}
                   onDoubleClick={() => onPlay(trackForPlay, album.uri)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setMenu({ x: e.clientX, y: e.clientY, track: trackForPlay });
-                  }}
+                  onContextMenu={(e) => trackMenu.open(trackForPlay, e)}
                 >
                   <td className="sp-track-index">
                     {isPlaying ? (
@@ -820,12 +710,7 @@ function AlbumDetailView({
           </tbody>
         </table>
       </div>
-      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />}
-      {notice && (
-        <div className="sp-track-notice" role="status">
-          {notice}
-        </div>
-      )}
+      {trackMenu.node}
     </div>
   );
 }
