@@ -172,6 +172,16 @@ const SCENES = [
     settleMs: 2400,
   },
   {
+    // The album view. Its rows are the only ones in the app with no artwork
+    // column, which is what made .sp-track-title-cell's `display: flex`
+    // visible here and nowhere else — see that rule.
+    name: 'album',
+    width: 1440, height: 900,
+    capture: { settings: { waveformStyle: 'bars', palette: 'aurora' }, playlistId: 'pl1' },
+    prepare: `window.__cap.nav({ kind: 'album', albumId: 'alb0' })`,
+    settleMs: 2600,
+  },
+  {
     name: 'notch-expanded',
     page: 'notch', width: 600, height: 212,
     send: [

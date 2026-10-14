@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.22 (silent)
+
+- Fixed the album page's track list. Each row was being underlined in three places at three slightly different heights, and the song title floated above its own track number and duration instead of sitting level with them.
+- Album rows are a little tighter now. They carry no artwork, and on most albums every track is credited to the album artist, so each row was holding a single line of text in space meant for two.
+
 ## 1.4.21 (prompt)
 
 - Right-click a song anywhere and you get the full menu. Artist pages, album pages, search results, the queue, your listening stats and the DJ suggestions all had songs you could only play — now every one of them offers Add to playlist, Add to queue, Go to album, Go to artist and Copy Spotify link, the same as the main track list always has.

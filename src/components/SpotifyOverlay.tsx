@@ -644,7 +644,11 @@ function AlbumDetailView({
         </div>
       </header>
       <div className="sp-album-detail-scroll">
-        <table className="sp-track-table">
+        {/* `sp-album-track-table` because the ARTIST page reuses
+            .sp-album-detail-scroll for its own Popular table, and that one has
+            an artwork column while this one does not. Rules meant for these
+            rows have to say so by name or they reach both. */}
+        <table className="sp-track-table sp-album-track-table">
           <thead>
             <tr>
               <th className="sp-track-index">#</th>

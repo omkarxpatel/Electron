@@ -1433,6 +1433,18 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
+/* `display: flex` on a <td> takes the cell OUT of its row box: the table wraps
+   it in an anonymous cell, and the padding, the border-bottom and
+   `vertical-align: middle` all apply to the flex box inside rather than to the
+   row. So the cell's own bottom border is drawn at the height of its contents
+   while its neighbours draw theirs at the row's full height, and a row ends up
+   underlined in three places at three different heights.
+
+   Every table that keeps this has a 36px thumbnail padding the flex box out to
+   nearly the row height, so the step is a pixel or two and invisible. The album
+   view is the one table with no artwork column — every track has the same cover
+   — so there the flex box collapses to the text, and the break is obvious: see
+   the override below. */
 .sp-track-title-cell {
   display: flex;
   align-items: center;
@@ -2814,7 +2826,25 @@
    <thead>: with `border-collapse: collapse` a sticky thead does not stay put
    in Chromium. That collapse also eats a sticky cell's own border-bottom,
    which is why the rule underneath is an inset shadow. */
-.sp-album-detail-scroll .sp-track-table thead th {
+/* No thumbnail in these rows, so there is nothing for a flex container to
+   place and every reason not to be one — as a real table cell the title sits on
+   the row's own middle alignment and its border-bottom lands with the rest of
+   the row's. This is what fixes the stepped underlines; see
+   `.sp-track-title-cell`. */
+.sp-album-track-table .sp-track-title-cell {
+  display: table-cell;
+}
+
+/* Shorter than a playlist's 56px for the same reason .sp-popular is: these
+   rows carry no artwork, and on most albums every track is credited to the
+   album artist, so the second line is absent too and 56px of row held a single
+   13.5px line. Not as short as Popular's 46px — a track WITH a featured credit
+   still gets two lines here, and they need about 45px between them. */
+.sp-album-track-table .sp-track-row {
+  height: 48px;
+}
+
+.sp-album-track-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
