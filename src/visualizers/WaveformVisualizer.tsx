@@ -87,7 +87,10 @@ function WaveformVisualizerImpl({
   const scratchRRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const needsStereoRef = useRef<boolean>(false);
   needsStereoRef.current =
-    settings.waveformStyle === 'lissajous' || settings.waveformStyle === 'crystal';
+    settings.waveformStyle === 'lissajous' ||
+    settings.waveformStyle === 'crystal' ||
+    settings.waveformStyle === 'expanse' ||
+    settings.waveformStyle === 'nova';
   const initedRef = useRef<boolean>(false);
 
   useEffect(() => {

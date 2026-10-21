@@ -18,7 +18,7 @@ export type PaletteId =
   | 'candy'
   | 'mono2'
   | 'custom';
-export type WaveformStyle = 'ribbon' | 'radial' | 'dots' | 'mirror' | 'bars' | 'line' | 'filled' | 'spectrum' | 'particles' | 'silk' | 'lissajous' | 'crystal' | 'ripples';
+export type WaveformStyle = 'ribbon' | 'radial' | 'dots' | 'mirror' | 'bars' | 'line' | 'filled' | 'spectrum' | 'particles' | 'silk' | 'lissajous' | 'crystal' | 'ripples' | 'expanse' | 'nova';
 
 /**
  * Per-stage visual tuning.
@@ -44,16 +44,19 @@ export interface VisualProfile {
   particleDensity: number;
   /** 0.3..2.5 — multiplier on particle radius, independent of count. */
   particleSize: number;
-  /** 0.05..1 — shared by the two radial styles, meaning slightly different
-   *  things in each. For Scope it is the fraction of analyser samples plotted:
+  /** 0.05..1 — shared by the four radial styles (Scope and Bloom, and their
+   *  full-stage copies Expanse and Nova), meaning slightly different things
+   *  in each. For Scope it is the fraction of analyser samples plotted:
    *  the full 2048-point trace draws as a hairball at any real amplitude, and
    *  taking every Nth point after the smoothing pass thins it into readable
    *  curves. For Crystal the figure is a single closed outline either way, so
    *  it sets that outline's resolution — faceted at the low end, smooth at
    *  the high. */
   scopeDensity: number;
-  /** 0..2 — brightness of the peripheral corner lighting, on both radial
-   *  styles. A literal multiplier on that layer's alpha: 0 turns it off
+  /** 0..2 — brightness of the peripheral lighting on the radial styles: the
+   *  corner wash on all four, plus Expanse's and Nova's perimeter spectrum
+   *  band, which is the same peripheral layer by another means.
+   *  A literal multiplier on that layer's alpha: 0 turns it off
    *  entirely, 1 is the tuned level, and the top of the range is deliberately
    *  past it so the surround can be pushed brighter than the default if that
    *  is the look wanted. Immersive only — four corner glows across the banner

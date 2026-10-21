@@ -8,6 +8,12 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.23 (prompt)
+
+- Two new visualizer styles built to fill a fullscreen stage: Expanse and Nova. Scope and Bloom draw one figure in the middle of the screen and leave the corners dark; these take the same two figures and spread them across the whole picture — tiled like wallpaper, radiating outward past the edges, mirrored into all four corners, or orbiting the centre. Nova also throws rings that expand off the screen on the beat. Which arrangement you get changes with the music, on the same rule that already decides when the figure changes shape.
+- Scope and Bloom themselves are untouched. The new styles sit beside them in Settings, so nothing you already had set up has moved.
+- A soft band of spectrum now runs around the very edge of the stage on the two new styles, under the Ambience slider that already dims the corner lighting.
+
 ## 1.4.22 (silent)
 
 - Fixed the album page's track list. Each row was being underlined in three places at three slightly different heights, and the song title floated above its own track number and duration instead of sitting level with them.

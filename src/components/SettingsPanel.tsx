@@ -96,6 +96,18 @@ function StageNotice({ immersive, onReset }: { immersive: boolean; onReset: () =
 }
 
 const BAR_STYLES = new Set<WaveformStyle>(['bars', 'mirror', 'dots', 'spectrum']);
+/** The four styles that share scopeDensity and scopeAmbience: the two radial
+ *  ones and the two full-stage copies of them. */
+const RADIAL_STYLES = new Set<WaveformStyle>(['lissajous', 'crystal', 'expanse', 'nova']);
+/** The two whose figure is a closed curve, where the density slider reads as
+ *  resolution rather than as how much of the trace is plotted. */
+const CURVE_STYLES = new Set<WaveformStyle>(['crystal', 'nova']);
+const RADIAL_LABELS: Partial<Record<WaveformStyle, string>> = {
+  lissajous: 'Scope',
+  crystal: 'Crystal',
+  expanse: 'Expanse',
+  nova: 'Nova',
+};
 
 interface Props {
   open: boolean;
@@ -169,6 +181,8 @@ export function SettingsPanel({
               { id: 'lissajous', label: 'Scope' },
               { id: 'crystal', label: 'Bloom' },
               { id: 'ripples', label: 'Ripples' },
+              { id: 'expanse', label: 'Expanse' },
+              { id: 'nova', label: 'Nova' },
             ]}
             onChange={(v) => updateVisual('waveformStyle', v as VisualProfile['waveformStyle'])}
           />
@@ -197,11 +211,11 @@ export function SettingsPanel({
           </Section>
         )}
 
-        {(settings.waveformStyle === 'lissajous' || settings.waveformStyle === 'crystal') && (
-          <Section title={settings.waveformStyle === 'crystal' ? 'Crystal' : 'Scope'} defaultOpen>
+        {RADIAL_STYLES.has(settings.waveformStyle) && (
+          <Section title={RADIAL_LABELS[settings.waveformStyle] ?? 'Scope'} defaultOpen>
             {/* One stored value, two meanings — see scopeDensity in settings.ts. */}
             <Slider
-              label={settings.waveformStyle === 'crystal' ? 'Resolution' : 'Density'}
+              label={CURVE_STYLES.has(settings.waveformStyle) ? 'Resolution' : 'Density'}
               value={settings.scopeDensity}
               min={0.05}
               max={1}

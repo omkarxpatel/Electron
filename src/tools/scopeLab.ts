@@ -33,7 +33,14 @@ interface Cell {
   state: DrawState;
   /** Applied before every frame. Undefined entries are left to the engine,
    *  which is how the "live" cell shows the real re-roll behaviour. */
-  pin?: { symmetry?: number; ratio?: number; lattice?: number; gridKind?: number };
+  pin?: {
+    symmetry?: number;
+    ratio?: number;
+    lattice?: number;
+    gridKind?: number;
+    fieldMode?: number;
+    fieldCount?: number;
+  };
   style: WaveformStyle;
 }
 
@@ -50,6 +57,7 @@ const ui = {
   // actually draws.
   density: 0.14,
   glow: 0.55,
+  ambience: 1,
   running: true,
 };
 
@@ -75,10 +83,10 @@ function settingsFor(style: WaveformStyle): ResolvedSettings {
     particleDensity: 0.45,
     particleSize: 0.85,
     scopeDensity: ui.density,
-    // Off. Lab cells are 250px, below the threshold at which the ambience
-    // draws at all, so the value is inert here — it is set only to satisfy
-    // the type.
-    scopeAmbience: 0,
+    // Live, because the full-stage sections below use 428px-tall cells —
+    // above the height at which the peripheral layers draw at all. In the
+    // 250px sections it stays inert whatever this says.
+    scopeAmbience: ui.ambience,
   };
 }
 
@@ -146,9 +154,15 @@ interface Section {
   heading: string;
   blurb: string;
   specs: Spec[];
+  /** Render at 16:9 and tall enough to clear isLargeStage (h/110 >= 3).
+   *  The full-stage layouts only exist above that threshold, and a square
+   *  250px cell would show none of them. */
+  stage?: boolean;
 }
 
 const GRID_NAMES = ['polar', 'square', 'diamond', 'triangle'];
+/** Mirrors FIELD_* in draw.ts, which does not export them. */
+const FIELD_NAMES = ['tile', 'radiate', 'mirror', 'orbit', 'shells'];
 
 // Ratios are the set the engine actually draws from.
 const RATIOS = [0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 5 / 3, 2, 2.5, 3, 4];
@@ -259,6 +273,99 @@ const SECTIONS: Section[] = [
       'mid/side, morphing between curated curved presets.',
     specs: [{ title: 'Bloom', note: 'Curved counterpart to Scope.', style: 'crystal' }],
   },
+  {
+    heading: '7 · Expanse — Scope stamped across the stage',
+    blurb:
+      'The same trace, laid out to fill a 16:9 stage instead of the circle ' +
+      'inscribed in it. Each cell pins one layout; the app re-rolls between ' +
+      'them on the same novelty-arms-it, onset-lands-it rule that re-rolls ' +
+      'symmetry, at about four in ten of those rolls. Detail per copy falls ' +
+      'as the copy count rises, which is what keeps a twelve-tile field ' +
+      'inside the single figure\u2019s frame budget.',
+    stage: true,
+    specs: [
+      {
+        title: 'tile \u00b7 4 columns',
+        note: 'Wallpaper. Alternate cells mirror in x so neighbours meet along the seam.',
+        style: 'expanse',
+        pin: { fieldMode: 0, fieldCount: 4, lattice: 1, symmetry: 4, ratio: 1.5, gridKind: 1 },
+      },
+      {
+        title: 'radiate \u00b7 step 3',
+        note: 'Concentric ladder outward until a copy has cleared the corners. Alternate shells counter-rotate.',
+        style: 'expanse',
+        pin: { fieldMode: 1, fieldCount: 3, lattice: 1, symmetry: 5, ratio: 1.5, gridKind: 0 },
+      },
+      {
+        title: 'mirror',
+        note: 'One copy per quadrant, stretched to touch its own corner. Covers the rectangle exactly.',
+        style: 'expanse',
+        pin: { fieldMode: 2, fieldCount: 3, lattice: 1, symmetry: 3, ratio: 1.5, gridKind: 2 },
+      },
+      {
+        title: 'orbit \u00b7 6 satellites',
+        note: 'Centre copy plus an ellipse sized off w and h separately, which puts geometry in the columns either side.',
+        style: 'expanse',
+        pin: { fieldMode: 3, fieldCount: 3, lattice: 1, symmetry: 5, ratio: 1.5, gridKind: 3 },
+      },
+      {
+        title: 'Expanse \u2014 unpinned',
+        note: 'Live. Layout, symmetry, ratio, lattice and grid all re-rolling.',
+        style: 'expanse',
+      },
+      {
+        title: 'Scope \u2014 unpinned, same stage',
+        note: 'The parent, unchanged, for comparison. Note how much of the stage it leaves black.',
+        style: 'lissajous',
+      },
+    ],
+  },
+  {
+    heading: '8 · Nova — Bloom stamped across the stage',
+    blurb:
+      'The superformula outline in the same layouts, plus the one that is ' +
+      'its own: shells born on bass onsets that multiply outward until they ' +
+      'have left the stage. A closed curve is the only figure here where an ' +
+      'expanding copy reads as a ring rather than as a smear, which is why ' +
+      'Nova gets the shells and Expanse gets the quadrant mirror.',
+    stage: true,
+    specs: [
+      {
+        title: 'shells',
+        note: 'Born at a quarter size on each onset, 3.5x a second outward, fading over the last third of the trip.',
+        style: 'nova',
+        pin: { fieldMode: 4 },
+      },
+      {
+        title: 'radiate \u00b7 step 2',
+        note: 'Static ladder rather than travelling shells \u2014 the same coverage, holding still.',
+        style: 'nova',
+        pin: { fieldMode: 1, fieldCount: 2 },
+      },
+      {
+        title: 'orbit \u00b7 5 satellites',
+        note: 'Layers are capped to 2 once there is more than one stamp; a three-deep nest in each is unreadable.',
+        style: 'nova',
+        pin: { fieldMode: 3, fieldCount: 2 },
+      },
+      {
+        title: 'tile \u00b7 3 columns',
+        note: 'Hue fans across stamps rather than across layers.',
+        style: 'nova',
+        pin: { fieldMode: 0, fieldCount: 3 },
+      },
+      {
+        title: 'Nova \u2014 unpinned',
+        note: 'Live. Shape, spin, layers and layout all re-rolling.',
+        style: 'nova',
+      },
+      {
+        title: 'Bloom \u2014 unpinned, same stage',
+        note: 'The parent, unchanged, for comparison.',
+        style: 'crystal',
+      },
+    ],
+  },
 ];
 
 /* ── Build the page ───────────────────────────────────────────────────── */
@@ -287,6 +394,7 @@ function buildControls() {
   );
   bar.appendChild(range('Density', 0.05, 1, 0.01, ui.density, (v) => (ui.density = v)));
   bar.appendChild(range('Glow', 0, 1, 0.01, ui.glow, (v) => (ui.glow = v)));
+  bar.appendChild(range('Ambience', 0, 2, 0.05, ui.ambience, (v) => (ui.ambience = v)));
 
   const pause = document.createElement('button');
   pause.textContent = 'Pause';
@@ -370,13 +478,15 @@ function buildGallery() {
     grid.className = 'grid';
     root.appendChild(grid);
 
+    if (section.stage) grid.classList.add('stage');
+
     for (const spec of section.specs) {
       const card = document.createElement('figure');
       const size = section.specs.length <= 2 ? 460 : 250;
 
       const canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
+      canvas.width = section.stage ? 760 : size;
+      canvas.height = section.stage ? 428 : size;
       card.appendChild(canvas);
 
       const cap = document.createElement('figcaption');
@@ -422,6 +532,8 @@ function tick() {
       if (cell.pin.ratio !== undefined) cell.state.scopeRatio = cell.pin.ratio;
       if (cell.pin.lattice !== undefined) cell.state.scopeLattice = cell.pin.lattice;
       if (cell.pin.gridKind !== undefined) cell.state.scopeGridKind = cell.pin.gridKind;
+      if (cell.pin.fieldMode !== undefined) cell.state.fieldMode = cell.pin.fieldMode;
+      if (cell.pin.fieldCount !== undefined) cell.state.fieldCount = cell.pin.fieldCount;
     }
 
     drawFrame(
@@ -441,12 +553,18 @@ function tick() {
     if (frame % 15 === 0) {
       const r = readouts.get(cell);
       if (r) {
+        const field =
+          cell.style === 'expanse' || cell.style === 'nova'
+            ? `${FIELD_NAMES[cell.state.fieldMode]} ${cell.state.fieldCount} · `
+            : '';
         r.textContent =
-          cell.style === 'crystal'
-            ? `m=${cell.state.crystalM1}${
+          cell.style === 'crystal' || cell.style === 'nova'
+            ? field +
+            `m=${cell.state.crystalM1}${
               cell.state.crystalM2 !== cell.state.crystalM1 ? '/' + cell.state.crystalM2 : ''
             } layers=${cell.state.crystalLayers}`
-            : `sym ${cell.state.scopeSymmetry} · ratio ${cell.state.scopeRatio.toFixed(2)}` +
+            : field +
+            `sym ${cell.state.scopeSymmetry} · ratio ${cell.state.scopeRatio.toFixed(2)}` +
             ` · lattice ${cell.state.scopeLattice} · ${GRID_NAMES[cell.state.scopeGridKind]}`;
       }
     }
