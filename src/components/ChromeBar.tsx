@@ -64,11 +64,18 @@ function ChromeBarImpl({
           onUseSystemAudio={onUseSystemAudio}
           onUseDevice={onUseDevice}
           onDisconnect={onDisconnect}
+          // null here means "System default", which is not a non-choice — it
+          // routes to the OS default output, the device enumerateDevices()
+          // lists under the id `default`.
+          outputDeviceId={outputDeviceId ?? 'default'}
         />
         <OutputDeviceSelector
           outputDeviceId={outputDeviceId}
           onSelect={onSelectOutput}
           sinkVolume={sinkVolume}
+          // Only 'device' mode captures a device. System-audio capture takes
+          // whatever the OS plays, so there is no one device to collide with.
+          inputDeviceId={sourceMode === 'device' ? sourceDeviceId : null}
         />
         <button
           className="icon-button"

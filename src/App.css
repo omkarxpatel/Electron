@@ -5310,6 +5310,25 @@
   cursor: default;
 }
 
+/* A device that is already in use at the other end of the chain. Left in the
+   list rather than hidden: a missing row reads as a broken device list, and
+   the point is to say why this one can't be picked. */
+.source-row.is-blocked {
+  color: rgba(255, 255, 255, 0.32);
+  cursor: not-allowed;
+}
+.source-row.is-blocked:hover {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.32);
+}
+.source-row-note {
+  margin-left: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
 .source-row-disconnect {
   color: rgba(255, 107, 107, 0.7);
   border-top: 1px solid rgba(255, 255, 255, 0.05);

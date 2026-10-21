@@ -1,5 +1,12 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SourceMode } from '../audio/useAudioSource';
+import { useDismissOnOutside } from '../hooks/useDismissOnOutside';
+import {
+  FEEDBACK_NOTE,
+  FEEDBACK_REASON,
+  isSameDevice,
+  resolveGroupId,
+} from '../audio/deviceConflict';
 
 interface Props {
   mode: SourceMode;
@@ -9,6 +16,10 @@ interface Props {
   onUseSystemAudio: () => void;
   onUseDevice: (id: string) => void;
   onDisconnect: () => void;
+  /** Where processed audio is playing. Inputs on the same physical device are
+   *  offered but not selectable — see deviceConflict.ts. `'default'` stands
+   *  for the OS default output, which is what "System default" routes to. */
+  outputDeviceId: string;
 }
 
 export const AudioSourceSelector = memo(AudioSourceSelectorImpl);
@@ -21,18 +32,23 @@ function AudioSourceSelectorImpl({
   onUseSystemAudio,
   onUseDevice,
   onDisconnect,
+  outputDeviceId,
 }: Props) {
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [allDevices, setAllDevices] = useState<MediaDeviceInfo[]>([]);
   const [showDevices, setShowDevices] = useState(false);
   const [permissionNeeded, setPermissionNeeded] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const closeDevices = useCallback(() => setShowDevices(false), []);
+  useDismissOnOutside(rootRef, showDevices, closeDevices);
 
   useEffect(() => {
     let cancelled = false;
     async function refresh() {
       const all = await navigator.mediaDevices.enumerateDevices();
       if (cancelled) return;
+      setAllDevices(all);
       const inputs = all.filter((d) => d.kind === 'audioinput');
-      setDevices(inputs);
       setPermissionNeeded(inputs.length > 0 && inputs.every((d) => !d.label));
     }
     refresh();
@@ -48,13 +64,20 @@ function AudioSourceSelectorImpl({
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((t) => t.stop());
-      const all = await navigator.mediaDevices.enumerateDevices();
-      setDevices(all.filter((d) => d.kind === 'audioinput'));
+      setAllDevices(await navigator.mediaDevices.enumerateDevices());
       setPermissionNeeded(false);
     } catch {
       // ignore
     }
   }
+
+  const devices = useMemo(
+    () => allDevices.filter((d) => d.kind === 'audioinput'),
+    [allDevices],
+  );
+
+  // Every input on this group is the output device wearing its other hat.
+  const outputGroup = resolveGroupId(allDevices, 'audiooutput', outputDeviceId);
 
   const activeLabel =
     mode === 'system'
@@ -64,7 +87,7 @@ function AudioSourceSelectorImpl({
       : 'No source';
 
   return (
-    <div className="audio-source-selector">
+    <div className="audio-source-selector" ref={rootRef}>
       <button
         className={`source-btn primary ${mode === 'system' ? 'is-active' : ''}`}
         onClick={onUseSystemAudio}
@@ -94,20 +117,28 @@ function AudioSourceSelectorImpl({
           ) : devices.length === 0 ? (
             <div className="source-row source-row-empty">No input devices</div>
           ) : (
-            devices.map((d) => (
-              <button
-                key={d.deviceId}
-                role="option"
-                aria-selected={mode === 'device' && deviceId === d.deviceId}
-                className={`source-row ${mode === 'device' && deviceId === d.deviceId ? 'is-active' : ''}`}
-                onClick={() => {
-                  onUseDevice(d.deviceId);
-                  setShowDevices(false);
-                }}
-              >
-                {d.label || `Input (${d.deviceId.slice(0, 8)})`}
-              </button>
-            ))
+            devices.map((d) => {
+              const blocked = isSameDevice(d.groupId, outputGroup);
+              return (
+                <button
+                  key={d.deviceId}
+                  role="option"
+                  aria-selected={mode === 'device' && deviceId === d.deviceId}
+                  disabled={blocked}
+                  title={blocked ? FEEDBACK_REASON : undefined}
+                  className={`source-row ${
+                    mode === 'device' && deviceId === d.deviceId ? 'is-active' : ''
+                  } ${blocked ? 'is-blocked' : ''}`}
+                  onClick={() => {
+                    onUseDevice(d.deviceId);
+                    setShowDevices(false);
+                  }}
+                >
+                  {d.label || `Input (${d.deviceId.slice(0, 8)})`}
+                  {blocked && <span className="source-row-note">{FEEDBACK_NOTE}</span>}
+                </button>
+              );
+            })
           )}
           {mode !== 'none' && (
             <button

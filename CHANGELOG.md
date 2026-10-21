@@ -13,6 +13,8 @@ section here.
 - Two new visualizer styles built to fill a fullscreen stage: Expanse and Nova. Scope and Bloom draw one figure in the middle of the screen and leave the corners dark; these take the same two figures and spread them across the whole picture — tiled like wallpaper, radiating outward past the edges, mirrored into all four corners, or orbiting the centre. Nova also throws rings that expand off the screen on the beat. Which arrangement you get changes with the music, on the same rule that already decides when the figure changes shape.
 - Scope and Bloom themselves are untouched. The new styles sit beside them in Settings, so nothing you already had set up has moved.
 - A soft band of spectrum now runs around the very edge of the stage on the two new styles, under the Ambience slider that already dims the corner lighting.
+- Devices that would feed the sound back into itself can no longer be picked. Choosing BlackHole as both the input and the output, or the built-in microphone alongside the built-in speakers, produces a howl that gets louder every pass; those rows are now greyed out in both menus with the reason on hover. If the output you are already on is the one being captured, the output menu says so rather than leaving you to work it out from the noise.
+- The two device menus in the top bar close when you click away from them. Opening one used to leave the other stacked open underneath it.
 
 ## 1.4.22 (silent)
 
