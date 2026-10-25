@@ -195,23 +195,23 @@ export interface DrawState {
    *  a shape change morphs instead of cutting. */
   crystalN: Float32Array;
   crystalNTo: Float32Array;
-  /** Expanse / Nova: the last few frames' finished geometry, newest first.
-   *  A stamp draws its own age out of this, so the tiles of a field are
-   *  different moments rather than copies. See TILE_STAGGER. */
-  tileFrames: TileFrame[];
-  /** Expanse / Nova: which full-stage layout the figure is stamped into.
-   *  See FIELD_*. Re-rolled by the same machinery that re-rolls symmetry. */
-  fieldMode: number;
-  /** Expanse / Nova: how many copies that layout uses, 2..4. Means columns
-   *  for the tiling, shell spacing for the radiating one, satellites for the
-   *  orbit. */
-  fieldCount: number;
-  /** Nova: outward-travelling shells, oldest first. Each is a scale factor
-   *  that grows past the corners and then retires. */
-  novaShells: Shell[];
-  /** Nova: tick of the last shell spawn, so sustained material with no bass
-   *  transients still emits. */
-  novaLastShell: number;
+  /** Expanse / Nova: rings of elements travelling outward, oldest first.
+   *  Each ring carries a DIFFERENT form — that is the whole difference from
+   *  the expanding-copy wake this replaces. */
+  waves: Wave[];
+  /** Tick of the last launch, so material with no bass transients still
+   *  puts something on the stage. */
+  waveLast: number;
+  /** Which form the next wave takes. Advanced, never randomised: a ring that
+   *  happened to repeat its predecessor would look like the bug this is
+   *  fixing. */
+  waveKind: number;
+  /** Per-chain band envelope and the running peak it is normalized against. */
+  chainEnv: Float32Array;
+  chainPeak: Float32Array;
+  /** Expanse / Nova: which ornament each corner draws, one per corner in
+   *  SCOPE_AMB_AT order. Kept distinct — see rollCorners. */
+  cornerKinds: Int8Array;
   /** Perimeter spectrum band: one lit-ness per segment plus the slow running
    *  peak each is normalized against. See drawRimSpectrum. */
   rimEnv: Float32Array;
@@ -264,11 +264,14 @@ export function createDrawState(): DrawState {
     crystalM2: 6,
     crystalN: new Float32Array([0.6, 1.4, 1.4]),
     crystalNTo: new Float32Array([0.6, 1.4, 1.4]),
-    tileFrames: [],
-    fieldMode: FIELD_TILE,
-    fieldCount: 3,
-    novaShells: [],
-    novaLastShell: 0,
+    waves: [],
+    waveLast: 0,
+    waveKind: 0,
+    chainEnv: new Float32Array(CHAIN_COUNT),
+    chainPeak: new Float32Array(CHAIN_COUNT),
+    cornerKinds: new Int8Array([
+      CORNER_RAYS, CORNER_ARCS, CORNER_TICKS, CORNER_WEDGE,
+    ]),
     rimEnv: new Float32Array(RIM_BANDS),
     rimPeak: new Float32Array(RIM_BANDS),
     onsetEnv: 0,
@@ -693,8 +696,17 @@ export function drawFrame(
       }
       const large = isLargeStage(stageScaleOf(height));
       if (large) {
+        // Order is load-bearing: the wash fills scopeAmbEnv, which the corner
+        // ornaments then read, so a corner's geometry and its light breathe on
+        // one envelope instead of on two detectors that disagree.
         drawScopeAmbience(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, dt60);
         drawRimSpectrum(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, dt60);
+        drawCorners(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, true, s.glow);
+        drawChains(ctx, width, height, freq, sampleRate, palette, state, state.tick, dt60, s.scopeAmbience, s.glow, true);
+        advanceWaves(state.waves, Math.hypot(width, height) * 0.5, dt60);
+        drawWaves(ctx, width, height, palette, state, Math.hypot(width, height) * 0.5, s.scopeAmbience, s.glow, true);
+      } else if (state.waves.length > 0) {
+        state.waves.length = 0;
       }
       const ink = scopeInk;
       {
@@ -707,6 +719,11 @@ export function drawFrame(
           state.scopeSpinKick = Math.min(2.5, state.scopeSpinKick + bDelta * 5);
         }
         state.scopeSpinKick *= Math.pow(0.93, dt60);
+
+        if (large) {
+          maybeLaunchWave(state, bDelta, onsetThresh,
+            Math.min(width, height) * COMPOSE_CORE_R * 0.5);
+        }
 
         const dwell = state.tick - state.scopeLastRoll;
         if (dwell > SCOPE_MIN_DWELL && novelty > SCOPE_NOV_ARM) {
@@ -721,7 +738,9 @@ export function drawFrame(
           // Rarest of the facets on purpose. The others move one thing about
           // the figure; this moves everything on the stage at once, and at
           // every roll it would read as the visualizer being unable to settle.
-          if (Math.random() < 0.4) rollField(state, EXPANSE_MODES);
+          // The corners are the stage's furniture. Rearranging them on every
+          // roll reads as the visualizer being unable to settle.
+          if (Math.random() < 0.4) rollCorners(state.cornerKinds);
         }
       }
       state.scopeSpinCur +=
@@ -735,8 +754,7 @@ export function drawFrame(
         ctx, width, height, time, timeL, timeR, palette, gain,
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
         state.scopePeak, state.tick, state.scopeSymmetry, state.scopeRatio,
-        s.scopeDensity, state.scopeLattice, state.scopeGridKind,
-        state.scopeEchoes, state.tileFrames, state.fieldMode, state.fieldCount, large,
+        s.scopeDensity, state.scopeLattice, state.scopeGridKind, large,
       );
       break;
     }
@@ -752,8 +770,17 @@ export function drawFrame(
       }
       const large = isLargeStage(stageScaleOf(height));
       if (large) {
+        // Order is load-bearing: the wash fills scopeAmbEnv, which the corner
+        // ornaments then read, so a corner's geometry and its light breathe on
+        // one envelope instead of on two detectors that disagree.
         drawScopeAmbience(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, dt60);
         drawRimSpectrum(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, dt60);
+        drawCorners(ctx, width, height, freq, sampleRate, palette, state, s.scopeAmbience, false, s.glow);
+        drawChains(ctx, width, height, freq, sampleRate, palette, state, state.tick, dt60, s.scopeAmbience, s.glow, false);
+        advanceWaves(state.waves, Math.hypot(width, height) * 0.5, dt60);
+        drawWaves(ctx, width, height, palette, state, Math.hypot(width, height) * 0.5, s.scopeAmbience, s.glow, false);
+      } else if (state.waves.length > 0) {
+        state.waves.length = 0;
       }
       {
         const bDelta = bassDeltaOf(freq, sampleRate, state);
@@ -766,27 +793,9 @@ export function drawFrame(
         }
         state.scopeSpinKick *= Math.pow(0.93, dt60);
 
-        if (large && state.fieldMode === FIELD_SHELLS) {
-          const r0 = Math.min(width, height) * 0.46;
-          advanceShells(state.novaShells, r0, Math.hypot(width, height) * 0.5, dt60);
-          // The idle timer is not a fallback for a mistuned threshold — it is
-          // the only thing that emits on material with no bass transients at
-          // all, and an empty stage is the failure this style exists to fix.
-          const idle = state.tick - state.novaLastShell;
-          if (
-            (bDelta > onsetThresh || idle > SHELL_IDLE_TICKS) &&
-            state.novaShells.length < SHELL_MAX
-          ) {
-            state.novaShells.push({
-              k: SHELL_BIRTH,
-              born: state.tick,
-              strength: Math.min(1, Math.max(0.3, bDelta * 6)),
-            });
-            state.novaLastShell = state.tick;
-          }
-        } else if (state.novaShells.length > 0) {
-          // Leaving the mode retires them rather than freezing them in place.
-          state.novaShells.length = 0;
+        if (large) {
+          maybeLaunchWave(state, bDelta, onsetThresh,
+            Math.min(width, height) * COMPOSE_CORE_R * 0.5);
         }
 
         const dwell = state.tick - state.scopeLastRoll;
@@ -811,7 +820,7 @@ export function drawFrame(
           } else if (roll < 0.82) {
             state.crystalLayers = 1 + Math.floor(Math.random() * 3); // 1..3
           } else {
-            rollField(state, NOVA_MODES);
+            rollCorners(state.cornerKinds);
           }
         }
       }
@@ -831,9 +840,7 @@ export function drawFrame(
         ctx, width, height, time, timeL, timeR, palette, gain,
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
         state.scopePeak, state.tick, state.crystalLayers,
-        state.crystalM1, state.crystalM2, state.crystalN, s.scopeDensity,
-        state.scopeEchoes, state.tileFrames, state.fieldMode, state.fieldCount,
-        state.novaShells, large,
+        state.crystalM1, state.crystalM2, state.crystalN, s.scopeDensity, large,
       );
       break;
     }
@@ -2089,417 +2096,684 @@ function drawScopeAmbience(
 }
 
 /* ============================================================
-   Full-stage fields — shared by Expanse and Nova
+   Full-stage composition — shared by Expanse and Nova
    ============================================================
 
-   Scope and Bloom both centre a figure of radius min(w,h)*0.46 and leave
-   whatever falls outside that inscribed circle to the ambience wash. In the
-   banner strip that is the whole stage. Fullscreen it is not: on a 1512x850
-   stage the figure's rim sits 391 px from centre while the corners sit 867 px
-   out, so over half the picture carries no geometry at all and the style
-   reads as a small object in a large dark room.
+   Scope and Bloom centre a figure of radius min(w,h)*0.46 and leave whatever
+   falls outside that inscribed circle to the corner ambience. In the banner
+   strip that is the whole stage. Fullscreen it is not: on a 1512x850 stage
+   the figure's rim sits 391 px from centre while the corners sit 867 px out,
+   so over half the picture carries no geometry and the style reads as a small
+   object in a large dark room.
 
-   Expanse and Nova are copies of those two that keep the figure and add a
-   LAYOUT around it — the same trace stamped across the whole rectangle,
-   tiled, radiating, mirrored or orbiting. The layout is treated as one more
-   facet of the figure and re-rolled by the same novelty-arms-it,
-   onset-lands-it machinery that re-rolls symmetry and ratio, so the way the
-   stage is filled changes when the music changes rather than on a timer.
+   The first attempt at filling that space stamped the SAME figure across it —
+   tiled, quadrant-mirrored, orbiting. It fills the stage and it is the wrong
+   answer. Six copies of one shape is one shape: the eye reads the repetition
+   and stops reading the figure, and every copy is drawn at a fraction of the
+   detail, so the thing being repeated is also the worst version of itself.
+   Nova's rings had the same fault wearing a disguise — every ring redrew the
+   CURRENT outline at a bigger scale, so a dozen rings were a dozen pictures
+   of one instant, concentric and identical.
 
-   Nothing here touches Scope or Bloom. They are deliberately unchanged. */
+   What is here instead is a composition of parts that are not each other:
 
-/** Wallpaper tiling: the figure repeated on a grid, mirrored cell to cell so
- *  the pattern is continuous across every seam. */
-const FIELD_TILE = 0;
-/** Concentric copies on a geometric scale ladder, the outer ones running off
- *  the edges. The screen is filled by what is passing through it. */
-const FIELD_RADIATE = 1;
-/** One copy per quadrant, stretched anisotropically so each reaches its own
- *  corner. The most literal reading of "fill the stage". */
-const FIELD_MIRROR = 2;
-/** A centre copy plus satellites on an ellipse sized to the stage, which is
- *  what puts geometry in the wide empty columns a 16:9 stage has either side
- *  of a circular figure. */
-const FIELD_ORBIT = 3;
-/** Nova only: outward-travelling shells spawned on bass onsets. Not a static
- *  layout — the stamps come from state.novaShells and expire. */
-const FIELD_SHELLS = 4;
+     core     ONE figure, larger than the parent's and at full detail.
+     waves    rings of elements launched from the centre on the beat and
+              travelling out past the edges. Each ring takes the NEXT form in
+              the vocabulary, so consecutive rings are different things.
+     chains   links threaded outward, one chain per frequency band, every
+              other link turned through a right angle. The connective tissue
+              between the centre and the rim.
+     corners  four constructions in four different vocabularies, one per
+              corner, each driven by the band that lights that corner.
+     rim      the perimeter spectrum.
 
-/** Which layouts each style draws from. Mirror belongs to Expanse because it
- *  stretches the figure, and a lattice trace survives that where a
- *  superformula outline reads as a squashed flower. Shells belong to Nova
- *  because a closed curve is what makes an expanding ring legible. */
-const EXPANSE_MODES: readonly number[] = [FIELD_TILE, FIELD_RADIATE, FIELD_MIRROR, FIELD_ORBIT];
-const NOVA_MODES: readonly number[] = [FIELD_SHELLS, FIELD_RADIATE, FIELD_ORBIT, FIELD_TILE];
+   Measured over 100 frames each at 1512x850 CSS on a 2x backing store, all
+   five in the same run:
 
-/** One stamped copy: where it goes, and what the transform did to the stroke
- *  weight so it can be undone. */
-interface Stamp {
-  /** Placement, relative to stage centre. */
-  m: DOMMatrix;
-  /** sqrt(|det|) — the transform's isotropic scale. Line widths are divided
-   *  by it so a copy at a tenth the size still draws a hairline rather than
-   *  a tenth of one, which is otherwise invisible. */
-  k: number;
-  /** Position along the hue arc, 0..1. */
-  hue: number;
-  alpha: number;
+     Scope    1.10 ms     Expanse   2.14 ms
+     Bloom    3.40 ms     Nova      2.03 ms
+     bars    68.82 ms     — shipped reference, canvas shadow on
+
+   About twice the parent, and a thirtieth of a style that already ships.
+   Every layer batches: a wave is one Path2D for the whole ring, a chain one
+   for all its links, a corner one for the whole ornament — so the field is
+   about a dozen strokes however many elements are on it.
+
+   (Harness figures from an offscreen window that may not be GPU-accelerated,
+   and they move a lot between runs — Scope measured 0.56 ms on an earlier
+   one and 1.10 here. Read them against each other WITHIN a run, never as
+   absolute times. `bars` is the tell: it is the only style here that leaves
+   the canvas shadow on, and a gaussian over a 3024x1700 backing store is
+   what a software rasteriser is worst at.)
+
+   Nothing here touches Scope or Bloom. They are deliberately unchanged.
+   ─────────────────────────────────────────────────────────────────────── */
+
+/** Extra decimation on the core trace, on top of the density slider. See the
+ *  note where it is used: under a lattice, more points mean more repeats,
+ *  not more detail. */
+const GEO_STRIDE = 2;
+
+/** Core radius as a fraction of the shorter edge, immersive only. Larger than
+ *  the parents' 0.46 because the wake now occupies the space outside it — the
+ *  figure no longer has to leave room for an emptiness it was never filling
+ *  anyway. */
+const COMPOSE_CORE_R = 0.56;
+
+/* ── Forms ────────────────────────────────────────────────────────────────
+ *
+ * A vocabulary of small elements that are not each other and are not the
+ * core figure.
+ *
+ * This is the part every previous attempt got wrong. Filling a stage by
+ * repeating ONE figure — tiled, mirrored, orbited, or shed as an expanding
+ * copy — reads as that figure stamped out N times, and no amount of varying
+ * the transform fixes it. Staggering the copies in time did not fix it
+ * either: the lattice snaps the trace onto a coarse grid, so a copy half a
+ * second later snaps to very nearly the same shape. The axis that had to
+ * vary was never position or time. It was WHAT IS DRAWN.
+ *
+ * So the field is built from these instead, and the core figure appears
+ * exactly once, in the middle, where it belongs.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+const FORM_RING = 0;
+const FORM_STAR = 1;
+const FORM_ARCS = 2;
+const FORM_LINK = 3;
+const FORM_BURST = 4;
+const FORM_COUNT = 5;
+
+/** Append one element of radius `r` at (cx, cy), turned by `rot`.
+ *  `angular` picks the straight-edged reading of a form for Expanse and the
+ *  curved one for Nova, the same split their figures already follow. */
+function addForm(
+  path: Path2D,
+  kind: number,
+  cx: number,
+  cy: number,
+  r: number,
+  rot: number,
+  angular: boolean,
+): void {
+  const TAU = Math.PI * 2;
+  switch (kind) {
+    case FORM_RING: {
+      // Polygon for Expanse, near-circle for Nova.
+      const n = angular ? 6 : 28;
+      for (let i = 0; i <= n; i++) {
+        const a = rot + (i / n) * TAU;
+        const x = cx + Math.cos(a) * r;
+        const y = cy + Math.sin(a) * r;
+        if (i === 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      }
+      break;
+    }
+    case FORM_STAR: {
+      const pts = angular ? 5 : 8;
+      const inner = angular ? 0.42 : 0.62;
+      for (let i = 0; i <= pts * 2; i++) {
+        const a = rot + (i / (pts * 2)) * TAU;
+        const rr = i % 2 === 0 ? r : r * inner;
+        const x = cx + Math.cos(a) * rr;
+        const y = cy + Math.sin(a) * rr;
+        if (i === 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      }
+      break;
+    }
+    case FORM_ARCS: {
+      // Two opposed brackets. Open forms, so a ring of them reads as texture
+      // rather than as a row of blobs. Curved for Nova; for Expanse a pair of
+      // hard chevrons — a three-chord approximation of an arc still reads as
+      // an arc, and this style is supposed to be made of straight lines.
+      const span = Math.PI * 0.7;
+      for (let k = 0; k < 2; k++) {
+        const base = rot + k * Math.PI;
+        const rr = r * (k === 0 ? 1 : 0.64);
+        if (angular) {
+          // Three points: out, in at the vertex, out again. A sharp V.
+          const pts: [number, number][] = [
+            [base - span / 2, rr],
+            [base, rr * 0.58],
+            [base + span / 2, rr],
+          ];
+          for (let i = 0; i < pts.length; i++) {
+            const [a, d] = pts[i];
+            const x = cx + Math.cos(a) * d;
+            const y = cy + Math.sin(a) * d;
+            if (i === 0) path.moveTo(x, y);
+            else path.lineTo(x, y);
+          }
+        } else {
+          const n = 12;
+          for (let i = 0; i <= n; i++) {
+            const a = base - span / 2 + (i / n) * span;
+            const x = cx + Math.cos(a) * rr;
+            const y = cy + Math.sin(a) * rr;
+            if (i === 0) path.moveTo(x, y);
+            else path.lineTo(x, y);
+          }
+        }
+      }
+      break;
+    }
+    case FORM_LINK: {
+      // A chain link: a capsule outline, long axis along `rot`.
+      const hl = r;
+      const hw = r * 0.46;
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      let first = true;
+      const put = (lx: number, ly: number): void => {
+        const x = cx + lx * cos - ly * sin;
+        const y = cy + lx * sin + ly * cos;
+        if (first) {
+          path.moveTo(x, y);
+          first = false;
+        } else path.lineTo(x, y);
+      };
+      if (angular) {
+        // An elongated hexagon: a rectangle with its ends chamfered to a
+        // point. Six straight edges and six corners, where the capsule below
+        // has two semicircles — which at this size is just a pill, and a ring
+        // of pills is exactly the "circles and stuff" this is not supposed
+        // to be.
+        const ch = hw;
+        put(-hl, 0);
+        put(-hl + ch, -hw);
+        put(hl - ch, -hw);
+        put(hl, 0);
+        put(hl - ch, hw);
+        put(-hl + ch, hw);
+      } else {
+        const n = 8;
+        for (let i = 0; i <= n; i++) {
+          const a = -Math.PI / 2 + (i / n) * Math.PI;
+          put(hl - hw + Math.cos(a) * hw, Math.sin(a) * hw);
+        }
+        for (let i = 0; i <= n; i++) {
+          const a = Math.PI / 2 + (i / n) * Math.PI;
+          put(-hl + hw + Math.cos(a) * hw, Math.sin(a) * hw);
+        }
+      }
+      path.closePath();
+      break;
+    }
+    case FORM_BURST:
+    default: {
+      // Radial ticks. The only open, non-closed form in the set — it is what
+      // keeps a wave of these from reading as a necklace.
+      const n = angular ? 6 : 7;
+      for (let i = 0; i < n; i++) {
+        const a = rot + (i / n) * TAU;
+        path.moveTo(cx + Math.cos(a) * r * 0.34, cy + Math.sin(a) * r * 0.34);
+        path.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      }
+      if (angular) {
+        // The spokes alone read as a smudge at small sizes. Closing an inner
+        // polygon through their feet gives the eye an edge to catch.
+        for (let i = 0; i <= n; i++) {
+          const a = rot + (i / n) * TAU;
+          const x = cx + Math.cos(a) * r * 0.34;
+          const y = cy + Math.sin(a) * r * 0.34;
+          if (i === 0) path.moveTo(x, y);
+          else path.lineTo(x, y);
+        }
+      }
+      break;
+    }
+  }
 }
 
-/** Nova's travelling shells. */
-interface Shell {
-  /** Scale factor, multiplied up every frame until it leaves the stage. */
-  k: number;
+/* ── Waves ────────────────────────────────────────────────────────────────
+ *
+ * Rings of elements launched from the centre on the beat, travelling
+ * outward until they leave the stage. Every wave uses the NEXT form in the
+ * vocabulary, so consecutive rings are different things — which is the
+ * whole point, and the reason this is not the expanding-copy wake it
+ * replaces.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+interface Wave {
+  /** Distance from centre, in px. Grows every frame. */
+  r: number;
+  kind: number;
+  /** Elements around the ring. */
+  count: number;
+  /** Rotation of the ring, and of each element on it. */
+  spin: number;
   born: number;
   strength: number;
 }
 
-/** Per-frame growth of a shell's scale, at 60 Hz. 1.021^60 is about 3.5x a
- *  second — fast enough that a shell crosses the stage within a bar at any
- *  tempo, slow enough to read as expansion rather than a flash. */
-const SHELL_GROWTH = 1.021;
-/** Scale a shell is born at, and the multiple of the corner distance past
- *  which it retires. Past 1 because a shell should leave through the edges,
- *  not vanish at them. */
-const SHELL_BIRTH = 0.26;
-const SHELL_RETIRE = 1.3;
-/** Hard cap. A noisy onset detector on a busy mix can otherwise grow this
- *  without bound, and every shell is a full-width stroke. */
-const SHELL_MAX = 13;
-/** Longest a stretch of material may go without emitting. Sustained and
- *  ambient music contains no bass transients at all, and an empty stage is
- *  the failure this style exists to fix. */
-const SHELL_IDLE_TICKS = 42;
-
-/* ── What a field costs ───────────────────────────────────────────────────
+/* ── A note on every brightness and count below ───────────────────────────
  *
- * Ink on screen is (points per figure) x (figures), so a twelve-tile
- * wallpaper drawn at Scope's own per-figure detail is twelve times Scope.
+ * They are all deliberately low, and they were all higher first. A stage
+ * carrying a core figure, rings of travelling elements, chains and four lit
+ * corners has four things competing for the same eye at once, and tuned
+ * individually — each one looking right on its own — the result is
+ * exhausting to watch for longer than a few seconds.
  *
- * It does not need to be. Each tile is a twelfth the size, so a 680-point
- * trace in it resolves to nothing the eye can use. Trading detail for
- * coverage as the stamp count rises is what makes a full-stage field
- * affordable at all.
- *
- * Measured, 100 frames each at 1512x850 CSS on a 2x backing store:
- *
- *   Scope           0.56 ms     Expanse tile x4    1.05 ms
- *   Bloom           1.03 ms     Expanse tile x3    1.02 ms
- *   bars (shipped) 35.08 ms     Expanse radiate    1.36 ms
- *                               Expanse mirror     2.42 ms
- *                               Expanse orbit      1.14 ms
- *                               Nova tile x4       0.88 ms
- *                               Nova shells        0.71 ms
- *
- * A full-stage field is about twice the single centred figure, and a
- * thirtieth of a style that already ships. It got CHEAPER when the stagger
- * went in, despite every tile gaining detail, because the stagger made the
- * echo buffer redundant and that buffer was the dominant cost — twenty
- * strokes a frame, each carrying every stamp and every symmetry copy.
- *
- * Mirror is the dear one now, because it is the layout that does not
- * stagger: it keeps the echoes, and its four copies each cover the whole
- * stage rather than a cell of it.
- *
- * (Harness figures from an offscreen window that may not be GPU-accelerated,
- * and they move between runs — `bars` measured 57 ms on an earlier run and 35
- * here. Read them against each other within a run, not as absolute times.)
+ * So the core leads and everything else supports: secondary layers run at
+ * roughly half the alpha they looked best at alone, half as many elements,
+ * and well under half the angular speed. The brief is a visualiser somebody
+ * leaves running, not a thing that demands attention.
  * ─────────────────────────────────────────────────────────────────────── */
-interface FieldDetail {
-  /** Extra decimation on top of the density slider's own stride. */
-  strideMul: number;
-  /** Ceiling on rotational copies per stamp. */
-  symCap: number;
-  /** Beam-dwell intensity levels, which is one stroke each. */
-  levels: number;
-  /** Points kept per captured echo. */
-  echoPoints: number;
+
+/** Px per 60 Hz frame, scaled by the stage's corner distance so the time a
+ *  wave takes to cross is the same on any window. */
+const WAVE_SPEED = 0.008;
+/** Multiple of the corner distance at which a wave retires. */
+const WAVE_RETIRE = 1.15;
+const WAVE_MAX = 3;
+/** Longest a stretch of material may go without launching one. Sustained
+ *  music has no bass transients, and a stage with nothing travelling on it
+ *  is the failure this whole layer exists to fix. */
+const WAVE_IDLE_TICKS = 55;
+/** Element radius as a fraction of the wave's own radius, so an element
+ *  grows as its ring does and the field keeps a constant density. */
+const WAVE_ELEM_R = 0.2;
+
+/** Launch a ring if the music asked for one, or if nothing has in a while.
+ *  The form ADVANCES rather than being drawn at random: two consecutive
+ *  rings showing the same thing is exactly the bug this layer exists to
+ *  avoid, and random choice produces that one time in five. */
+function maybeLaunchWave(
+  state: DrawState,
+  bDelta: number,
+  onsetThresh: number,
+  birthR: number,
+): void {
+  if (state.waves.length >= WAVE_MAX) return;
+  const idle = state.tick - state.waveLast;
+  if (bDelta <= onsetThresh && idle <= WAVE_IDLE_TICKS) return;
+  state.waveKind = (state.waveKind + 1) % FORM_COUNT;
+  state.waveLast = state.tick;
+  state.waves.push({
+    r: birthR,
+    kind: state.waveKind,
+    count: 3 + Math.floor(Math.random() * 2),
+    spin: Math.random() * Math.PI * 2,
+    born: state.tick,
+    strength: Math.min(1, Math.max(0.3, bDelta * 6)),
+  });
 }
 
-function fieldDetail(stamps: number): FieldDetail {
-  if (stamps <= 1) return { strideMul: 1, symCap: 8, levels: 5, echoPoints: 160 };
-  if (stamps <= 4) return { strideMul: 1.2, symCap: 7, levels: 5, echoPoints: 110 };
-  if (stamps <= 8) return { strideMul: 1.7, symCap: 6, levels: 4, echoPoints: 72 };
-  return { strideMul: 2.4, symCap: 5, levels: 3, echoPoints: 48 };
+function advanceWaves(waves: Wave[], coverR: number, dt60: number): void {
+  const retire = coverR * WAVE_RETIRE;
+  let write = 0;
+  for (let i = 0; i < waves.length; i++) {
+    const wv = waves[i];
+    wv.r += coverR * WAVE_SPEED * dt60 * (0.7 + wv.strength * 0.6);
+    wv.spin += 0.0018 * dt60 * (i % 2 === 0 ? 1 : -1);
+    if (wv.r < retire) waves[write++] = wv;
+  }
+  waves.length = write;
 }
 
-/** Echo history for the field styles is shorter and sparser than Scope's,
- *  because the layout already supplies the mass that the phosphor trail
- *  supplies there. Six traces over 0.6 s, each carrying every stamp. */
-const FIELD_ECHO_LIFE = 36;
-const FIELD_ECHO_EVERY = 6;
-const FIELD_ECHO_ALPHA = 0.13;
-
-/**
- * Where the copies go.
- *
- * Returned in stage-centre coordinates: the caller translates to the middle
- * of the canvas and applies each matrix on top of that. `r0` is the radius
- * the figure's points were scaled to, so a stamp of scale 1 draws it at its
- * natural size.
- */
-function fieldStamps(
-  mode: number,
-  count: number,
+function drawWaves(
+  ctx: AnyCanvasCtx,
   w: number,
   h: number,
-  r0: number,
-  angle: number,
-): Stamp[] {
-  const out: Stamp[] = [];
-  // Distance from centre to a corner. Every layout that wants to reach past
-  // the edges measures against this, not against min(w,h) — that is the
-  // whole difference between filling a circle and filling the stage.
-  const coverR = Math.hypot(w, h) * 0.5;
-
-  if (mode === FIELD_MIRROR) {
-    // Each copy sits on the stage centre and is stretched to touch its own
-    // corner, so four reflections superimpose into one figure that covers
-    // the rectangle exactly. The aspect cap stops a 21:9 stage smearing the
-    // trace into horizontal streaks; past it the copy simply overflows
-    // vertically instead, which is the better failure.
-    // 1.34, not 1.0. Scaling r0 onto the edge midpoint puts the figure's own
-    // rim — which auto-ranges to 0.92*r0 — at the middle of each edge, and
-    // the corners sit a further sqrt(2) out, so they stay black. Overscaling
-    // means the copy is clipped halfway along each edge instead, which reads
-    // as the pattern continuing past the screen rather than stopping short
-    // of it. The aspect cap keeps a 21:9 stage from smearing the trace into
-    // horizontal streaks; past it the copy overflows vertically instead,
-    // which is the better failure.
-    const ky = (h * 0.5 * 1.34) / r0;
-    const kx = Math.min((w * 0.5 * 1.34) / r0, ky * 2.4);
-    const k = Math.sqrt(kx * ky);
-    const signs: readonly (readonly [number, number])[] = [[1, 1], [-1, 1], [1, -1], [-1, -1]];
-    for (let i = 0; i < 4; i++) {
-      const [sx, sy] = signs[i];
-      out.push({
-        m: new DOMMatrix([kx * sx, 0, 0, ky * sy, 0, 0]),
-        k,
-        hue: i / 4,
-        // Four overlapping full-stage copies saturate to white at full
-        // alpha; this is the level at which they read as four.
-        alpha: 0.5,
-      });
+  palette: Palette,
+  state: DrawState,
+  coverR: number,
+  /** The Ambience slider. It already scales the corner wash, the rim band and
+   *  the corner ornaments; carrying it here too makes it one honest dial over
+   *  the whole peripheral field — at 0 the stage is the core figure alone, at
+   *  1 the tuned level, and above that brighter than tuned. It scales alpha
+   *  and nothing else, so the label stays literally true. */
+  amount: number,
+  glow: number,
+  angular: boolean,
+): void {
+  if (amount <= 0) return;
+  const waves = state.waves;
+  if (waves.length === 0) return;
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const short = Math.min(w, h);
+  // 1.3 so a ring clears the edges near the diagonals rather than stopping
+  // at the inscribed ellipse, which would leave the corners empty.
+  const ax = ((w * 0.5) / coverR) * 1.3;
+  const ay = ((h * 0.5) / coverR) * 1.3;
+  ctx.save();
+  // Mitred, not round. A round join at this stroke width eats the corner of
+  // a small polygon — a hexagon comes out a blob and a five-point star comes
+  // out a flower, whatever the path says.
+  ctx.lineCap = angular ? 'butt' : 'round';
+  ctx.lineJoin = angular ? 'miter' : 'round';
+  ctx.miterLimit = 8;
+  for (let i = 0; i < waves.length; i++) {
+    const wv = waves[i];
+    const t = wv.r / (coverR * WAVE_RETIRE);
+    // Fades only over the last third, so the stage stays populated right out
+    // to the corners instead of thinning halfway.
+    const fade = t > 0.45 ? Math.max(0, 1 - (t - 0.45) / 0.55) : 1;
+    if (fade <= 0.02) continue;
+    const er = Math.max(3, wv.r * WAVE_ELEM_R);
+    const path = new Path2D();
+    for (let k = 0; k < wv.count; k++) {
+      const a = wv.spin + (k / wv.count) * Math.PI * 2;
+      // Elements sit on an ELLIPSE, not a circle: on a 16:9 stage a circular
+      // ring leaves the left and right thirds empty long before it reaches
+      // them, which is the gap every centred layout here has had.
+      //
+      // The semi-axes are measured against the CORNER distance, so r is in
+      // the same units the retire test uses. Scaling by w/short instead —
+      // which is what this did first — makes the x axis 1.78 on 16:9 against
+      // a retire radius that assumes 1, and the ring leaves through the
+      // sides when it is barely half way out.
+      addForm(path, wv.kind,
+        cx + Math.cos(a) * wv.r * ax,
+        cy + Math.sin(a) * wv.r * ay,
+        er, a + wv.spin * 2, angular);
     }
-    return out;
+    const [r, g, b] = sampleRgbAt(palette, ((wv.kind / FORM_COUNT + wv.born * 0.0005) % 1 + 1) % 1);
+    ctx.strokeStyle = `rgb(${r},${g},${b})`;
+    ctx.globalAlpha = Math.min(1, fade * (0.025 + glow * 0.04) * (0.4 + wv.strength * 0.6) * amount);
+    ctx.lineWidth = Math.max(3, short * 0.02 * (0.4 + glow));
+    ctx.stroke(path);
+    ctx.globalAlpha = Math.min(1, fade * (0.16 + wv.strength * 0.22) * amount);
+    ctx.lineWidth = Math.max(1, short * 0.0028);
+    ctx.stroke(path);
   }
-
-  if (mode === FIELD_RADIATE) {
-    // A geometric ladder outward until a copy has cleared the corners. The
-    // ratio comes from `count` so a re-roll changes how densely the shells
-    // are packed, not just how many there are.
-    const step = count <= 2 ? 2.25 : count === 3 ? 1.85 : 1.6;
-    let k = 0.34;
-    // Pushed before the bound is tested, not after. Testing first stops one
-    // rung short — the ladder's last copy is then the largest one that still
-    // FITS, which is exactly the one that does not reach the corners, and
-    // the layout quietly degenerates into the centred figure it replaces.
-    for (let i = 0; i < 8; i++) {
-      // Alternate copies counter-rotate against the figure's own spin. With
-      // every shell turning the same way the whole thing reads as one rigid
-      // object rotating; opposed, it reads as depth.
-      const a = i % 2 === 0 ? angle * 0.35 : -angle * 0.55;
-      const cos = Math.cos(a) * k;
-      const sin = Math.sin(a) * k;
-      out.push({
-        m: new DOMMatrix([cos, sin, -sin, cos, 0, 0]),
-        k,
-        hue: i / 6,
-        // Outer shells are larger and would otherwise dominate purely by
-        // covering more pixels.
-        alpha: 1 / (1 + i * 0.5),
-      });
-      if (k * r0 >= coverR * 1.15) break;
-      k *= step;
-    }
-    return out;
-  }
-
-  if (mode === FIELD_ORBIT) {
-    const n = 3 + count; // 5..7
-    // The ellipse is sized off w and h separately, which is the point: on a
-    // 16:9 stage that pushes satellites out into the columns either side of
-    // the centre figure, where a circular orbit would leave them bunched.
-    const rx = w * 0.4;
-    const ry = h * 0.4;
-    const kc = 0.62;
-    out.push({ m: new DOMMatrix([kc, 0, 0, kc, 0, 0]), k: kc, hue: 0, alpha: 1 });
-    // Sized off the gap between neighbours on the ellipse rather than off the
-    // ellipse itself: satellites scaled to a fraction of the orbit radius
-    // leave black between them on a wide stage, where the ring is long and
-    // the copies are few. `arc` is that gap (the ellipse's perimeter is close
-    // enough to pi*(rx+ry) for this), and 0.62 of it as a RADIUS means
-    // neighbours overlap by about a seventh — the ring closes into a chain
-    // instead of reading as separate objects. The second term is the backstop
-    // for a stage so flat that the gap exceeds the orbit itself.
-    const arc = (Math.PI * (rx + ry)) / n;
-    const ks = Math.min(arc * 0.62, Math.min(rx, ry) * 0.9) / r0;
-    for (let i = 0; i < n; i++) {
-      // Half the figure's own rate, so the ring and the figure in it are
-      // visibly turning at different speeds rather than locked together.
-      const a = angle * 0.5 + (i / n) * Math.PI * 2;
-      const cos = Math.cos(a) * ks;
-      const sin = Math.sin(a) * ks;
-      out.push({
-        m: new DOMMatrix([cos, sin, -sin, cos, Math.cos(a) * rx, Math.sin(a) * ry]),
-        k: ks,
-        hue: (i + 1) / (n + 1),
-        alpha: 0.78,
-      });
-    }
-    return out;
-  }
-
-  // FIELD_TILE. Rows follow from columns and the aspect ratio so cells stay
-  // roughly square whatever shape the stage is.
-  const cols = Math.max(1, count);
-  const rows = Math.max(1, Math.round((cols * h) / w));
-  const cw = w / cols;
-  const ch = h / rows;
-  // 1.12 so adjacent cells overlap slightly. Exact packing leaves a visible
-  // dark grid between tiles, which reads as a seam rather than a pattern.
-  const k = (Math.min(cw, ch) * 0.5 * 1.12) / r0;
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols; i++) {
-      // Mirror every other cell in x. Reflected neighbours meet along their
-      // shared edge instead of repeating, which is what turns a grid of
-      // separate figures into one continuous wallpaper.
-      const sx = (i + j) % 2 === 0 ? 1 : -1;
-      out.push({
-        m: new DOMMatrix([
-          k * sx, 0, 0, k,
-          (i + 0.5) * cw - w * 0.5,
-          (j + 0.5) * ch - h * 0.5,
-        ]),
-        k,
-        hue: (i + j) / Math.max(1, cols + rows - 2),
-        alpha: 1,
-      });
-    }
-  }
-  return out;
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
-/** Stamps for Nova's travelling shells, plus the live figure at the centre. */
-function shellStamps(shells: Shell[], r0: number, coverR: number, angle: number): Stamp[] {
-  const out: Stamp[] = [{ m: new DOMMatrix([0.5, 0, 0, 0.5, 0, 0]), k: 0.5, hue: 0, alpha: 1 }];
-  const retire = (coverR * SHELL_RETIRE) / r0;
-  for (let i = 0; i < shells.length; i++) {
-    const sh = shells[i];
-    const k = sh.k;
-    // Fades out over the last third of its travel so a shell dissolves on
-    // its way off the stage rather than being clipped away at the edge.
-    const t = k / retire;
-    const fade = t > 0.8 ? Math.max(0, 1 - (t - 0.8) / 0.2) : 1;
-    const a = angle * (0.3 + (i % 3) * 0.2);
-    const cos = Math.cos(a) * k;
-    const sin = Math.sin(a) * k;
-    out.push({
-      m: new DOMMatrix([cos, sin, -sin, cos, 0, 0]),
-      k,
-      hue: (i % 5) / 5,
-      alpha: fade * (0.3 + sh.strength * 0.6),
-    });
-  }
-  return out;
-}
-
-/** Re-roll the layout. Called from the same place the figure's other facets
- *  are re-rolled, and only some of the time: a layout change moves everything
- *  on the stage at once, so it should be the rarest of the facets rather than
- *  one more thing turning over. Never picks the mode it is already on —
- *  a re-roll the viewer cannot see is worse than none. */
-function rollField(state: DrawState, modes: readonly number[]): void {
-  if (Math.random() < 0.45) {
-    state.fieldCount = 2 + Math.floor(Math.random() * 3); // 2..4
-    return;
-  }
-  let pick = modes[Math.floor(Math.random() * modes.length)];
-  if (pick === state.fieldMode) {
-    pick = modes[(modes.indexOf(pick) + 1 + Math.floor(Math.random() * (modes.length - 1))) % modes.length];
-  }
-  state.fieldMode = pick;
-  state.fieldCount = 2 + Math.floor(Math.random() * 3);
-}
-
-/** Collapse the rotational copies into one path, so a stamped field costs one
- *  stroke per stamp instead of one per copy per stamp.
+/* ── Chains ───────────────────────────────────────────────────────────────
  *
- *  Scope strokes its copies separately because each carries its own hue, and
- *  that fan is most of what makes the figure legible. A field fans hue across
- *  its STAMPS instead — which is the stronger reading when there are twelve
- *  of them — and can therefore afford to bake the copies flat. */
-function bakeCopies(src: Path2D, copies: number, angle: number): Path2D {
-  const out = new Path2D();
-  for (let c = 0; c < copies; c++) {
-    const a = angle + (c * Math.PI * 2) / copies;
-    const cos = Math.cos(a);
-    const sin = Math.sin(a);
-    out.addPath(src, new DOMMatrix([cos, sin, -sin, cos, 0, 0]));
-  }
-  return out;
-}
-
-
-/* ── Time-staggered stamps ────────────────────────────────────────────────
+ * Links threaded outward from the centre to past the rim, one chain per
+ * frequency band. They are the connective tissue: the waves cross them, the
+ * corners sit at their ends, and because each chain answers to its own band
+ * they move independently rather than pumping together.
  *
- * A wallpaper of N identical figures is, to the eye, one figure. The
- * repetition is what gets read and the thing being repeated stops being
- * looked at — which is the complaint this layout earned the first time it
- * shipped, and it is a fair one.
- *
- * The answer is not fewer tiles. It is that a tile should not be a COPY of
- * the figure but a MOMENT of it. Every frame's finished paths go into a ring
- * buffer, and stamp i draws the frame from i * TILE_STAGGER ticks ago. Every
- * cell then shows a different instant of the same music, the pattern
- * propagates across the grid like a wave, and on a re-roll the old shape
- * visibly walks out of the field while the new one walks in — which is the
- * clearest that shape change has ever read.
- *
- * It costs nothing to draw. The paths were already being built once a frame
- * and stroked once a stamp; the only new cost is holding on to the last few
- * dozen of them.
- *
- * Mirror is deliberately excluded. Its four copies are reflections of ONE
- * instant, and the reflection is the entire content of that layout —
- * staggering them in time leaves four unrelated figures in four corners.
+ * Alternating link orientation is what makes a chain read as a chain and not
+ * as a dotted line — a real one turns every other link through ninety
+ * degrees, and that is cheap to do here because a link is already an
+ * oriented form.
  * ─────────────────────────────────────────────────────────────────────── */
 
-/** One frame's finished geometry: the dwell-shaded levels and the single
- *  whole-trace pass, rotational copies and that frame's rotation already
- *  baked in. Frozen by construction, because nothing redraws it. */
-interface TileFrame {
-  whole: Path2D;
-  levels: Path2D[];
+const CHAIN_COUNT = 3;
+const CHAIN_LO_HZ = 45;
+const CHAIN_HI_HZ = 11000;
+/** Links per chain, before the band shortens it. */
+const CHAIN_LINKS = 8;
+const CHAIN_RELEASE = 0.86;
+const CHAIN_PEAK_DECAY = 0.9995;
+
+function drawChains(
+  ctx: AnyCanvasCtx,
+  w: number,
+  h: number,
+  freq: Uint8Array,
+  sampleRate: number,
+  palette: Palette,
+  state: DrawState,
+  tick: number,
+  dt60: number,
+  /** The Ambience slider — see drawWaves. */
+  amount: number,
+  glow: number,
+  angular: boolean,
+): void {
+  if (amount <= 0) return;
+  const nyq = sampleRate / 2;
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const short = Math.min(w, h);
+  const coverR = Math.hypot(w, h) * 0.5;
+  const ax = ((w * 0.5) / coverR) * 1.25;
+  const ay = ((h * 0.5) / coverR) * 1.25;
+  const rel = Math.pow(CHAIN_RELEASE, dt60);
+  const decay = Math.pow(CHAIN_PEAK_DECAY, dt60);
+  const env = state.chainEnv;
+  const peak = state.chainPeak;
+  const ratio = CHAIN_HI_HZ / CHAIN_LO_HZ;
+
+  ctx.save();
+  ctx.lineCap = angular ? 'butt' : 'round';
+  ctx.lineJoin = angular ? 'miter' : 'round';
+  ctx.miterLimit = 8;
+
+  for (let c = 0; c < CHAIN_COUNT; c++) {
+    const f0 = CHAIN_LO_HZ * Math.pow(ratio, c / CHAIN_COUNT);
+    const f1 = CHAIN_LO_HZ * Math.pow(ratio, (c + 1) / CHAIN_COUNT);
+    const i0 = Math.max(1, Math.floor((f0 / nyq) * freq.length));
+    const i1 = Math.min(freq.length, Math.max(i0 + 1, Math.ceil((f1 / nyq) * freq.length)));
+    let sum = 0;
+    for (let i = i0; i < i1; i++) sum += freq[i];
+    const raw = sum / (i1 - i0) / 255;
+    // Per-band headroom, as everywhere else here: the air bands never reach
+    // the level the bass sits at, and a shared scale leaves half the chains
+    // permanently limp.
+    peak[c] = Math.max(raw, peak[c] * decay);
+    const lit = Math.min(1, raw / Math.max(0.02, peak[c]));
+    env[c] = lit > env[c] ? lit : env[c] * rel + lit * (1 - rel);
+    const e = env[c];
+
+    const base = (c / CHAIN_COUNT) * Math.PI * 2 + tick * 0.0005 * (c % 2 === 0 ? 1 : -0.7);
+    // Floor is high enough that every chain is on the stage even on a silent
+    // band — seven chains of which three are visible reads as a glitch.
+    const reach = coverR * (0.62 + e * 0.6);
+    const links = Math.max(4, Math.round(CHAIN_LINKS * (0.55 + e * 0.45)));
+    const step = reach / links;
+    const lr = step * 0.46;
+
+    const path = new Path2D();
+    for (let i = 1; i <= links; i++) {
+      const d = i * step;
+      // The chain bends as it goes out, so it hangs rather than ruling a
+      // straight line from the middle of the screen to the corner.
+      const bend = Math.sin(d / short * 3.1 + tick * 0.005 + c) * 0.12 * (0.4 + e);
+      const a = base + bend;
+      const x = cx + Math.cos(a) * d * ax;
+      const y = cy + Math.sin(a) * d * ay;
+      // Every other link turned through a right angle — what makes it read
+      // as a chain rather than as beads on a thread.
+      const rot = a + (i % 2 === 0 ? Math.PI / 2 : 0);
+      addForm(path, FORM_LINK, x, y, lr * (0.65 + e * 0.5), rot, angular);
+    }
+
+    const [r, g, b] = sampleRgbAt(palette, ((c / CHAIN_COUNT + tick * 0.0003) % 1 + 1) % 1);
+    ctx.strokeStyle = `rgb(${r},${g},${b})`;
+    ctx.globalAlpha = Math.min(1, (0.02 + glow * 0.03) * (0.3 + e * 0.7) * amount);
+    ctx.lineWidth = Math.max(3, short * 0.016 * (0.4 + glow));
+    ctx.stroke(path);
+    ctx.globalAlpha = Math.min(1, (0.11 + e * 0.24) * amount);
+    ctx.lineWidth = Math.max(1, short * 0.0026);
+    ctx.stroke(path);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
-/** Ticks between one stamp and the next. At 6 the eighth cell of a 4x2 grid
- *  is 0.7 s behind the first — far enough apart that the cells are visibly
- *  different material, close enough that the grid still reads as one piece
- *  of music rather than eight. */
-const TILE_STAGGER = 6;
-/** Ceiling on the ring buffer. Twelve stamps at a stagger of 6 needs 67; the
- *  cap is what stops a future layout with more stamps quietly holding on to
- *  several hundred paths. */
-const TILE_FRAMES_MAX = 80;
+/* ── Corners ──────────────────────────────────────────────────────────────
+ *
+ * Four constructions, one per corner, each in a different vocabulary and each
+ * driven by the band that lights that corner — they read `scopeAmbEnv`, which
+ * drawScopeAmbience has already filled this frame, so a corner's geometry and
+ * its wash breathe on exactly the same envelope instead of on two detectors
+ * that disagree.
+ *
+ * The vocabularies matter more than the count. Four copies of one corner
+ * ornament is the same mistake as six copies of one figure, so a roll keeps
+ * them distinct (see rollCorners) and the four are never all the same.
+ * ─────────────────────────────────────────────────────────────────────── */
 
-/** Push this frame's geometry and drop whatever has fallen off the end.
- *  `need` is sized to the live stamp count, so a four-tile layout does not
- *  carry the buffer a twelve-tile one would. */
-function shedTileFrame(frames: TileFrame[], frame: TileFrame, need: number): void {
-  frames.unshift(frame);
-  const keep = Math.min(TILE_FRAMES_MAX, Math.max(1, need));
-  if (frames.length > keep) frames.length = keep;
+const CORNER_RAYS = 0;
+const CORNER_ARCS = 1;
+const CORNER_TICKS = 2;
+const CORNER_WEDGE = 3;
+const CORNER_KIND_COUNT = 4;
+
+/** The quarter-turn that sweeps out of each corner into the stage, in
+ *  SCOPE_AMB_AT order (bottom-left, bottom-right, top-right, top-left).
+ *  Canvas y runs down, so these are not the angles you would write for a
+ *  maths-convention plane. */
+const CORNER_FROM: readonly number[] = [-Math.PI / 2, -Math.PI, Math.PI / 2, 0];
+/** Sub-divisions of a corner's band, so a corner carries spectral detail
+ *  rather than one scalar repeated. */
+const CORNER_SUBS = 9;
+
+/** Re-roll the corner vocabularies, keeping all four distinct. Distinct is
+ *  the whole point of them: four corners in one vocabulary is decoration,
+ *  four in four is a composition. */
+function rollCorners(kinds: Int8Array): void {
+  // A rotation plus a swap. Every corner changes, no two collide, and it
+  // costs no retry loop.
+  const shift = 1 + Math.floor(Math.random() * (CORNER_KIND_COUNT - 1));
+  for (let i = 0; i < 4; i++) kinds[i] = (kinds[i] + shift) % CORNER_KIND_COUNT;
+  const a = Math.floor(Math.random() * 4);
+  const b = (a + 1 + Math.floor(Math.random() * 3)) % 4;
+  const t = kinds[a];
+  kinds[a] = kinds[b];
+  kinds[b] = t;
 }
 
-/** The frame stamp `i` should draw: its own age back through the buffer,
- *  clamped to whatever history exists so the grid is populated from the very
- *  first frame rather than filling in over the first second. The caller has
- *  always shed this frame already, so index 0 is this instant. */
-function tileFrameFor(frames: TileFrame[], i: number, staggered: boolean): TileFrame {
-  const back = staggered ? i * TILE_STAGGER : 0;
-  return frames[Math.min(back, frames.length - 1)];
+function drawCorners(
+  ctx: AnyCanvasCtx,
+  w: number,
+  h: number,
+  freq: Uint8Array,
+  sampleRate: number,
+  palette: Palette,
+  state: DrawState,
+  amount: number,
+  /** Expanse builds its corners from straight segments and Nova from arcs,
+   *  the same split as their figures: a lattice trace next to curved corner
+   *  ornaments reads as two unrelated pictures sharing a stage. */
+  angular: boolean,
+  glow: number,
+): void {
+  if (amount <= 0) return;
+  const nyq = sampleRate / 2;
+  const short = Math.min(w, h);
+  const sub = new Float32Array(CORNER_SUBS);
+
+  for (let c = 0; c < 4; c++) {
+    const lit = state.scopeAmbEnv[c];
+    const [loHz, hiHz] = SCOPE_AMB_BANDS[c];
+    // Sub-bands inside the corner's own range, normalized against the
+    // corner's running peak so a quiet band still articulates instead of
+    // flattening to nothing.
+    const peak = Math.max(0.02, state.scopeAmbPeak[c]);
+    for (let s = 0; s < CORNER_SUBS; s++) {
+      const f0 = loHz * Math.pow(hiHz / loHz, s / CORNER_SUBS);
+      const f1 = loHz * Math.pow(hiHz / loHz, (s + 1) / CORNER_SUBS);
+      const i0 = Math.max(1, Math.floor((f0 / nyq) * freq.length));
+      const i1 = Math.min(freq.length, Math.max(i0 + 1, Math.ceil((f1 / nyq) * freq.length)));
+      let acc = 0;
+      for (let i = i0; i < i1; i++) acc += freq[i];
+      sub[s] = Math.min(1, acc / (i1 - i0) / 255 / peak);
+    }
+
+    const ox = SCOPE_AMB_AT[c][0] * w;
+    const oy = SCOPE_AMB_AT[c][1] * h;
+    const from = CORNER_FROM[c];
+    const sweep = Math.PI / 2;
+    const reach = short * (0.15 + lit * 0.16);
+    const path = new Path2D();
+
+    switch (state.cornerKinds[c]) {
+      case CORNER_RAYS: {
+        // A fan out of the corner, one ray per sub-band. The simplest of the
+        // four and the one that reads at the smallest size.
+        for (let s = 0; s < CORNER_SUBS; s++) {
+          const a = from + ((s + 0.5) / CORNER_SUBS) * sweep;
+          const len = reach * (0.28 + sub[s] * 0.86);
+          path.moveTo(ox, oy);
+          path.lineTo(ox + Math.cos(a) * len, oy + Math.sin(a) * len);
+        }
+        break;
+      }
+      case CORNER_ARCS: {
+        // Nested quarter rings stepping away from the corner. Drawn as
+        // chords when angular, which turns the same construction into a
+        // faceted fan without a second code path.
+        const RINGS = 5;
+        const seg = angular ? 4 : 18;
+        for (let r = 0; r < RINGS; r++) {
+          const rad = reach * ((r + 1) / RINGS) * (0.55 + sub[r % CORNER_SUBS] * 0.6);
+          for (let i = 0; i <= seg; i++) {
+            const a = from + (i / seg) * sweep;
+            const x = ox + Math.cos(a) * rad;
+            const y = oy + Math.sin(a) * rad;
+            if (i === 0) path.moveTo(x, y);
+            else path.lineTo(x, y);
+          }
+        }
+        break;
+      }
+      case CORNER_TICKS: {
+        // A scale laid along a quarter circle: the band read as a row of
+        // marks rather than as a shape. Two radii so it has depth.
+        for (let ring = 0; ring < 2; ring++) {
+          const base = reach * (ring === 0 ? 0.62 : 0.94);
+          for (let s = 0; s < CORNER_SUBS; s++) {
+            const a = from + ((s + 0.5) / CORNER_SUBS) * sweep;
+            const len = short * 0.016 * (0.4 + sub[s] * 1.6);
+            const cos = Math.cos(a);
+            const sin = Math.sin(a);
+            path.moveTo(ox + cos * (base - len), oy + sin * (base - len));
+            path.lineTo(ox + cos * (base + len), oy + sin * (base + len));
+          }
+        }
+        break;
+      }
+      default: {
+        // Chevrons pointing back into the corner, nested. The one that reads
+        // as direction rather than as level.
+        const ROWS = 4;
+        for (let r = 0; r < ROWS; r++) {
+          const rad = reach * (0.42 + (r / ROWS) * 0.72) * (0.7 + lit * 0.5);
+          const dip = 0.62 + sub[(r * 2) % CORNER_SUBS] * 0.3;
+          const pts = angular ? 2 : 10;
+          for (let i = 0; i <= pts; i++) {
+            const u = i / pts;
+            const a = from + u * sweep;
+            // A V in polar: full radius at the ends, pulled in at the middle.
+            const k = rad * (1 - (1 - dip) * (1 - Math.abs(u * 2 - 1)));
+            const x = ox + Math.cos(a) * k;
+            const y = oy + Math.sin(a) * k;
+            if (i === 0) path.moveTo(x, y);
+            else path.lineTo(x, y);
+          }
+        }
+        break;
+      }
+    }
+
+    // Colour follows the wash at this corner — same palette position, same
+    // hue step — so the construction looks lit BY the corner rather than
+    // dropped on top of it.
+    const [sr, sg, sb] = sampleRgbAt(palette, ((c / 4 + state.tick * 0.0004) % 1 + 1) % 1);
+    const [h0, s0, l0] = rgbToHsl(sr, sg, sb);
+    const [r, g, bl] = hslToRgb(
+      (((h0 + (c * SCOPE_AMB_HUE_STEP) / 360) % 1) + 1) % 1,
+      Math.max(s0, SCOPE_AMB_SAT),
+      Math.min(0.72, l0 + 0.1),
+    );
+    ctx.save();
+    ctx.lineCap = angular ? 'butt' : 'round';
+    ctx.lineJoin = angular ? 'miter' : 'round';
+    ctx.miterLimit = 8;
+    ctx.strokeStyle = `rgb(${r},${g},${bl})`;
+    ctx.globalAlpha = Math.min(1, (0.05 + lit * 0.15) * amount);
+    ctx.lineWidth = Math.max(2.5, short * 0.012 * (0.4 + glow));
+    ctx.stroke(path);
+    ctx.globalAlpha = Math.min(1, (0.16 + lit * 0.28) * amount);
+    ctx.lineWidth = Math.max(0.8, short * 0.0022);
+    ctx.stroke(path);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
 }
+
 
 /* ── Perimeter spectrum ───────────────────────────────────────────────────
  *
@@ -2626,7 +2900,7 @@ function drawRimSpectrum(
   // Additive for the same reason the corner wash is: a peripheral layer may
   // brighten the stage, never darken what is drawn over it.
   ctx.globalCompositeOperation = 'lighter';
-  ctx.globalAlpha = Math.min(1, 0.5 * amount);
+  ctx.globalAlpha = Math.min(1, 0.34 * amount);
   // Palette position walks around the frame with the spectrum — the bottom
   // carries the first stop, the top the last — and creeps forward so the
   // whole band drifts rather than sitting still. Same idea as the corner
@@ -2913,28 +3187,21 @@ function drawLissajous(
   return nextPeak;
 }
 
-/* ── Expanse (Scope, stamped across the stage) ────────────────────────── */
+/* ── Expanse (Scope, composed across the stage) ───────────────────────── */
 
 /**
- * Scope's trace, laid out across the whole rectangle.
+ * Scope's trace as the core of a full-stage composition.
  *
- * A copy of drawLissajous — same goniometer, same spatial smoothing, same
- * lattice snapping, same beam-dwell shading — with one thing added: the
- * finished figure is stamped into a LAYOUT instead of being drawn once in the
- * middle. See the field machinery above for why, and for what each layout is.
+ * The goniometer, the spatial smoothing, the lattice snapping and the beam
+ * dwell are all drawCrystal's — sorry, drawLissajous's — unchanged. What is
+ * different is everything around it: the figure is larger, it sheds frozen
+ * copies of itself that expand outward and leave through the edges, and the
+ * four corners carry constructions of their own.
  *
- * Two deliberate departures from the original, both forced by having many
- * copies instead of one:
- *
- * The hue arc fans across STAMPS, not across symmetry copies. Scope strokes
- * its copies one at a time so each can carry its own gradient; at twelve
- * stamps that is twelve times the stroke count, which the stage cannot
- * afford. Baking the copies into one path and colouring per stamp costs the
- * same and reads better anyway — on a wallpaper, neighbouring tiles differing
- * is the pattern.
- *
- * And detail falls as coverage rises (fieldDetail). A twelfth-size tile
- * cannot resolve a 680-point trace, so spending one there is pure cost.
+ * The figure keeps its per-copy hue fan, unlike the stamped version this
+ * replaces. There is one of it now, so the strokes are affordable again, and
+ * fanning the symmetry copies by hue is most of what makes a dense trace
+ * readable at all.
  *
  * Returns the updated peak tracker.
  */
@@ -2959,18 +3226,13 @@ function drawExpanse(
   density: number,
   lattice: number,
   gridKind: number,
-  echoes: { path: Path2D; born: number }[],
-  frames: TileFrame[],
-  mode: number,
-  fieldCount: number,
-  /** Layouts are immersive-only. Twelve tiles across a 110px strip is a
-   *  texture, not a visualizer, and the strip has no empty space to fill in
-   *  the first place — that is the entire problem this style exists for. */
+  /** The wake and the corners are immersive-only: a 110px strip has no space
+   *  outside the figure to fill, which is the entire problem they exist for. */
   large: boolean,
 ): number {
   const cx = w * 0.5;
   const cy = h * 0.5;
-  const baseR = Math.min(w, h) * 0.46;
+  const baseR = Math.min(w, h) * (large ? COMPOSE_CORE_R : 0.46);
   const L = timeL ?? time;
   const R = timeR ?? time;
   const n = Math.min(L.length, R.length, px.length);
@@ -2979,20 +3241,13 @@ function drawExpanse(
   const breathe = 1 + Math.sin(tick * 0.008) * 0.07;
   const radius = baseR * breathe;
 
-  const stamps = large
-    ? fieldStamps(mode, fieldCount, w, h, radius, angle)
-    : [{ m: new DOMMatrix([1, 0, 0, 1, 0, 0]), k: 1, hue: 0, alpha: 1 }];
-  const detail = fieldDetail(stamps.length);
-
-  // Spatial smoothing along the trace, not temporal across frames — see the
-  // long note in drawLissajous; averaging index i against the previous
-  // frame's index i collapses the figure, because the analyser buffer is not
-  // phase-locked.
   const win = 1 + Math.round(Math.min(0.95, smoothing) * 7);
-  const stride = Math.max(
-    1,
-    Math.round(detail.strideMul / Math.max(0.05, Math.min(1, density))),
-  );
+  // Coarser than Scope's. The lattice snaps points onto a grid, so extra
+  // points do not add detail — they add REPEATS, more chords between the
+  // same handful of nodes, and the figure thickens into a scribble instead
+  // of reading as the polygon it is. Halving the point count is what makes
+  // the geometry legible again, and it is cheaper.
+  const stride = Math.max(1, Math.round(GEO_STRIDE / Math.max(0.05, Math.min(1, density))));
   const count = Math.max(24, Math.floor(n / stride));
 
   let peak = 1e-4;
@@ -3020,10 +3275,13 @@ function drawExpanse(
     py[i] *= scale;
   }
 
-  // Lattice snapping, in the figure's own space so every stamp snaps to the
-  // same grid and the tiles line up node for node across their seams.
-  if (lattice > 0) {
-    const steps = 3 + lattice * 3;
+  // Always snapped. rollScopeShape puts lattice 0 — the ungridded free curve
+  // — in the set about one roll in ten, which for Scope is useful contrast.
+  // Here it is the one setting that stops the figure being geometric, and
+  // this style's whole job is the geometry, so the floor is 1.
+  const lat = Math.max(1, lattice);
+  {
+    const steps = 3 + lat * 3;
     const cell = (radius * SCOPE_FILL) / steps;
     if (gridKind === SCOPE_GRID_SQUARE) {
       for (let i = 0; i < count; i++) {
@@ -3047,7 +3305,7 @@ function drawExpanse(
         py[i] = b * cell * hh;
       }
     } else {
-      const sectors = 6 + lattice * 6;
+      const sectors = 6 + lat * 6;
       const dA = (Math.PI * 2) / sectors;
       for (let i = 0; i < count; i++) {
         const a = Math.round(Math.atan2(py[i], px[i]) / dA) * dA;
@@ -3058,17 +3316,14 @@ function drawExpanse(
     }
   }
 
-  // Beam dwell: a CRT burns brighter where the beam lingers.
-  const LEVELS = detail.levels;
+  const LEVELS = 5;
   let total = 0;
   for (let i = 1; i < count; i++) {
     total += Math.abs(px[i] - px[i - 1]) + Math.abs(py[i] - py[i - 1]);
   }
   const meanLen = Math.max(1e-3, total / Math.max(1, count - 1));
 
-  const sym = Math.max(1, Math.min(detail.symCap, symmetry));
-
-  const levelPaths: Path2D[] = [];
+  const paths: Path2D[] = [];
   for (let lvl = 0; lvl < LEVELS; lvl++) {
     const loT = lvl / LEVELS;
     const hiT = (lvl + 1) / LEVELS;
@@ -3087,107 +3342,47 @@ function drawExpanse(
       }
       path.lineTo(px[i], py[i]);
     }
-    levelPaths.push(bakeCopies(path, sym, angle));
+    paths.push(path);
   }
 
-  const single = new Path2D();
-  single.moveTo(px[0], py[0]);
-  for (let i = 1; i < count; i++) single.lineTo(px[i], py[i]);
-  const whole = bakeCopies(single, sym, angle);
-
-  // Mirror's copies are reflections of one instant; everything else stamps
-  // the figure at a place, and a place can just as well be a time.
-  const staggered = large && mode !== FIELD_MIRROR && stamps.length > 1;
-  shedTileFrame(frames, { whole, levels: levelPaths },
-    staggered ? (stamps.length - 1) * TILE_STAGGER + 1 : 1);
+  const whole = new Path2D();
+  whole.moveTo(px[0], py[0]);
+  for (let i = 1; i < count; i++) whole.lineTo(px[i], py[i]);
 
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
   const baseW = Math.max(0.7, Math.min(2.4, baseR * 0.006));
-  // Carries the whole glow, because the canvas shadow is off for this style.
   const bloomW = Math.max(2, baseR * 0.05 * (0.4 + glow));
 
+  const sym = Math.max(1, Math.min(8, symmetry));
   const grads: CanvasGradient[] = [];
-  for (let i = 0; i < stamps.length; i++) {
-    grads.push(scopeGradient(ctx, radius, palette, stamps[i].hue * SCOPE_HUE_ARC, i > 0));
+  for (let c = 0; c < sym; c++) {
+    grads.push(scopeGradient(ctx, radius, palette, (c / sym) * SCOPE_HUE_ARC, c > 0));
   }
 
-  // ── Capture this frame's field, retire the expired ones ──
-  // Stamps and symmetry copies are both baked in, so redrawing a whole
-  // remembered field costs one stroke.
-  // The stagger IS the history when it is on, and a second one drawn from
-  // the CURRENT trace across every stamp would smear the tiles back toward
-  // each other — undoing the only thing that stops them being copies. So the
-  // echo buffer runs for Mirror and for a single-stamp stage, and nowhere
-  // else.
-  if (staggered) echoes.length = 0;
-  if (!staggered && (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= FIELD_ECHO_EVERY)) {
-    const step = Math.max(1, Math.floor(count / detail.echoPoints));
-    const thin = new Path2D();
-    thin.moveTo(px[0], py[0]);
-    for (let i = step; i < count; i += step) thin.lineTo(px[i], py[i]);
-    const baked = new Path2D();
-    for (let si = 0; si < stamps.length; si++) {
-      for (let c = 0; c < sym; c++) {
-        const a = angle + (c * Math.PI * 2) / sym;
-        const cos = Math.cos(a);
-        const sin = Math.sin(a);
-        baked.addPath(thin, stamps[si].m.multiply(new DOMMatrix([cos, sin, -sin, cos, 0, 0])));
-      }
-    }
-    echoes.push({ path: baked, born: tick });
-  }
-  while (echoes.length > 0 && tick - echoes[0].born > FIELD_ECHO_LIFE) echoes.shift();
 
   ctx.save();
   ctx.translate(cx, cy);
 
-  // History first, so the live field lands on top. One stroke per remembered
-  // frame, at a width set from the geometric mean of the stamp scales —
-  // layouts that mix a small centre with large outer shells will draw the
-  // outer ones heavier, which is the right way round for depth.
-  let logK = 0;
-  for (const st of stamps) logK += Math.log(Math.max(1e-3, st.k));
-  const meanK = Math.exp(logK / stamps.length);
-  ctx.strokeStyle = grads[0];
-  ctx.lineWidth = (baseW * 0.85) / meanK;
-  for (let e = 0; e < echoes.length; e++) {
-    const age = (tick - echoes[e].born) / FIELD_ECHO_LIFE;
-    if (age >= 1) continue;
-    const k = 1 - age;
-    ctx.globalAlpha = k * k * FIELD_ECHO_ALPHA;
-    ctx.stroke(echoes[e].path);
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  for (let si = 0; si < stamps.length; si++) {
-    const st = stamps[si];
+  for (let c = 0; c < sym; c++) {
     ctx.save();
-    ctx.translate(cx, cy);
-    ctx.transform(st.m.a, st.m.b, st.m.c, st.m.d, st.m.e, st.m.f);
-    ctx.strokeStyle = grads[si];
-    // Widths are divided by the stamp's scale because the transform has
-    // already multiplied them by it. Without this a tile at a tenth the size
-    // draws a tenth of a hairline, which is nothing at all.
-    const kw = Math.max(1e-3, st.k);
+    ctx.rotate(angle + (c * Math.PI * 2) / sym);
+    const copyAlpha = c === 0 ? 1 : 0.32;
+    ctx.strokeStyle = grads[c];
 
-    const fr = tileFrameFor(frames, si, staggered);
+    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 2;
+    ctx.lineWidth = bloomW;
+    ctx.stroke(whole);
 
-    ctx.globalAlpha = (0.05 + glow * 0.07) * st.alpha * 2;
-    ctx.lineWidth = bloomW / kw;
-    ctx.stroke(fr.whole);
-
-    for (let lvl = 0; lvl < fr.levels.length; lvl++) {
-      const n = fr.levels.length;
-      const t = n > 1 ? lvl / (n - 1) : 1;
-      ctx.globalAlpha = (0.1 + t * 0.75) * st.alpha * 0.46;
-      ctx.lineWidth = (baseW * (0.75 + t * 0.6)) / kw;
-      ctx.stroke(fr.levels[lvl]);
+    for (let lvl = 0; lvl < LEVELS; lvl++) {
+      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 0.44;
+      ctx.lineWidth = baseW * (0.75 + (lvl / (LEVELS - 1)) * 0.6);
+      ctx.stroke(paths[lvl]);
     }
     ctx.restore();
   }
+  ctx.restore();
   ctx.globalAlpha = 1;
 
   return nextPeak;
@@ -3547,21 +3742,25 @@ function drawCrystal(
   return nextPeak;
 }
 
-/* ── Nova (Bloom, stamped across the stage) ───────────────────────────── */
+/* ── Nova (Bloom, composed across the stage) ──────────────────────────── */
 
 /**
- * Bloom's superformula outline, laid out across the whole rectangle.
+ * Bloom's superformula outline as the core of a full-stage composition.
  *
- * A copy of drawCrystal — same Gielis outline from the same curated table,
- * same mid/side displacement, same morph between presets — stamped into a
- * layout rather than drawn once in the middle.
+ * Same arrangement as Expanse — one larger figure, a wake of frozen copies
+ * expanding outward, four corner constructions — with the curved half of the
+ * vocabulary throughout: the outline is the Gielis curve from the same
+ * curated table, and the corner ornaments are arcs where Expanse's are
+ * chords.
  *
- * Its own layout is the shells: a closed curve is the one figure where an
- * expanding copy reads as a ring leaving the stage, so Nova gets that where
- * Expanse gets the quadrant mirror. A shell is born on a bass onset at a
- * quarter size and multiplies outward until it has cleared the corners,
- * which means the geometry sweeps continuously through every part of the
- * stage instead of sitting in the middle of it.
+ * The wake matters more here than it does for Expanse, and for a reason worth
+ * recording. Expanse plots the signal, so two snapshots a few frames apart
+ * differ on their own. Nova's outline is deterministic — the same preset
+ * gives the same curve — so a wake built the way the old rings were, by
+ * redrawing the current outline at N scales, came out as N identical
+ * concentric copies. Freezing each ring at birth fixes part of it; the rest
+ * is that every ring carries a rotation of its own, so two rings of the same
+ * shape are a few degrees apart instead of stacked into one thick line.
  *
  * Returns the updated peak tracker.
  */
@@ -3586,16 +3785,11 @@ function drawNova(
   m2: number,
   nParams: Float32Array,
   density: number,
-  echoes: { path: Path2D; born: number }[],
-  frames: TileFrame[],
-  mode: number,
-  fieldCount: number,
-  shells: Shell[],
   large: boolean,
 ): number {
   const cx = w * 0.5;
   const cy = h * 0.5;
-  const baseR = Math.min(w, h) * 0.46;
+  const baseR = Math.min(w, h) * (large ? COMPOSE_CORE_R : 0.46);
   const L = timeL ?? time;
   const R = timeR ?? time;
   const n = Math.min(L.length, R.length);
@@ -3603,28 +3797,9 @@ function drawNova(
 
   const breathe = 1 + Math.sin(tick * 0.008) * 0.07;
   const radius = baseR * breathe;
-  const coverR = Math.hypot(w, h) * 0.5;
 
-  const stamps = !large
-    ? [{ m: new DOMMatrix([1, 0, 0, 1, 0, 0]), k: 1, hue: 0, alpha: 1 }]
-    : mode === FIELD_SHELLS
-      // baseR, not `radius` — advanceShells retires against the same
-      // un-breathed radius, and the two have to agree or a shell fades at a
-      // different point than it expires.
-      ? shellStamps(shells, baseR, coverR, angle)
-      : fieldStamps(mode, fieldCount, w, h, radius, angle);
-  const detail = fieldDetail(stamps.length);
-
-  // Resolution, not line count — the figure is one closed curve either way.
-  // Divided by the field's detail budget for the same reason Expanse strides
-  // its trace: a shell crossing the far corner at four times size does not
-  // need the point count a single centred figure does.
   const dens = Math.min(1, Math.max(0.05, density));
-  const count = Math.min(
-    px.length,
-    Math.max(48, Math.round((120 + dens * 600) / detail.strideMul)),
-  );
-
+  const count = Math.min(px.length, Math.max(48, Math.round(120 + dens * 600)));
   const win = 1 + Math.round(Math.min(0.95, smoothing) * 10);
 
   let sq = 0;
@@ -3643,7 +3818,7 @@ function drawNova(
   let peak = 1e-4;
   for (let j = 0; j < count; j++) {
     const th = (j / count) * Math.PI * 2;
-    // Mirrored rather than wrapped, so r(2π) === r(0) and the curve closes
+    // Mirrored rather than wrapped, so r(2pi) === r(0) and the curve closes
     // without a radial seam — see drawCrystal.
     const u = j < half ? j / half : (count - j) / half;
     const i0 = Math.min(n - 1, Math.floor(u * (n - 1)));
@@ -3676,7 +3851,7 @@ function drawNova(
     py[i] *= scale;
   }
 
-  const LEVELS = detail.levels;
+  const LEVELS = 5;
   let total = 0;
   for (let i = 1; i <= count; i++) {
     const a = i % count;
@@ -3684,28 +3859,7 @@ function drawNova(
   }
   const meanLen = Math.max(1e-3, total / count);
 
-  // Layers nest inside one stamp; stamps place that nest around the stage.
-  // Capped hard once the field is busy — a three-deep nest in each of twelve
-  // tiles is thirty-six outlines, and none of them are legible.
-  const foldBasis = Math.max(1, Math.min(m1, m2));
-  const lay = Math.max(1, Math.min(stamps.length > 4 ? 1 : stamps.length > 1 ? 2 : 3, layers));
-
-  /** Bake the nested layers flat. Offsets are a fraction of the shape's OWN
-   *  fold angle, not an arbitrary 2π/n: beating the outline's fold
-   *  periodicity against an unrelated one is exactly what reads as clutter. */
-  const nest = (src: Path2D): Path2D => {
-    const out = new Path2D();
-    for (let c = 0; c < lay; c++) {
-      const a = angle + (c * Math.PI * 2) / (foldBasis * lay);
-      const shrink = 1 - c * 0.24;
-      const cos = Math.cos(a) * shrink;
-      const sin = Math.sin(a) * shrink;
-      out.addPath(src, new DOMMatrix([cos, sin, -sin, cos, 0, 0]));
-    }
-    return out;
-  };
-
-  const levelPaths: Path2D[] = [];
+  const paths: Path2D[] = [];
   for (let lvl = 0; lvl < LEVELS; lvl++) {
     const loT = lvl / LEVELS;
     const hiT = (lvl + 1) / LEVELS;
@@ -3725,44 +3879,21 @@ function drawNova(
       }
       path.lineTo(px[a], py[a]);
     }
-    levelPaths.push(nest(path));
+    paths.push(path);
   }
 
-  const single = new Path2D();
-  single.moveTo(px[0], py[0]);
-  for (let i = 1; i < count; i++) single.lineTo(px[i], py[i]);
-  single.closePath();
-  const whole = nest(single);
+  const whole = new Path2D();
+  whole.moveTo(px[0], py[0]);
+  for (let i = 1; i < count; i++) whole.lineTo(px[i], py[i]);
+  whole.closePath();
 
-  const staggered = large && mode !== FIELD_MIRROR && stamps.length > 1;
-  shedTileFrame(frames, { whole, levels: levelPaths },
-    staggered ? (stamps.length - 1) * TILE_STAGGER + 1 : 1);
-
+  const lay = Math.max(1, Math.min(3, layers));
   const grads: CanvasGradient[] = [];
-  for (let i = 0; i < stamps.length; i++) {
-    grads.push(scopeGradient(ctx, radius, palette, stamps[i].hue * SCOPE_HUE_ARC, i > 0));
+  for (let c = 0; c < lay; c++) {
+    grads.push(scopeGradient(ctx, radius, palette, (c / lay) * SCOPE_HUE_ARC, c > 0));
   }
+  const foldBasis = Math.max(1, Math.min(m1, m2));
 
-  // The stagger IS the history when it is on, and a second one drawn from
-  // the CURRENT trace across every stamp would smear the tiles back toward
-  // each other — undoing the only thing that stops them being copies. So the
-  // echo buffer runs for Mirror and for a single-stamp stage, and nowhere
-  // else.
-  if (staggered) echoes.length = 0;
-  if (!staggered && (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= FIELD_ECHO_EVERY)) {
-    const step = Math.max(1, Math.floor(count / detail.echoPoints));
-    const thin = new Path2D();
-    thin.moveTo(px[0], py[0]);
-    for (let i = step; i < count; i += step) thin.lineTo(px[i], py[i]);
-    thin.closePath();
-    const nested = nest(thin);
-    const baked = new Path2D();
-    for (let si = 0; si < stamps.length; si++) {
-      baked.addPath(nested, stamps[si].m);
-    }
-    echoes.push({ path: baked, born: tick });
-  }
-  while (echoes.length > 0 && tick - echoes[0].born > FIELD_ECHO_LIFE) echoes.shift();
 
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -3772,67 +3903,32 @@ function drawNova(
 
   ctx.save();
   ctx.translate(cx, cy);
-  let logK = 0;
-  for (const st of stamps) logK += Math.log(Math.max(1e-3, st.k));
-  const meanK = Math.exp(logK / stamps.length);
-  ctx.strokeStyle = grads[0];
-  ctx.lineWidth = (baseW * 0.85) / meanK;
-  for (let e = 0; e < echoes.length; e++) {
-    const age = (tick - echoes[e].born) / FIELD_ECHO_LIFE;
-    if (age >= 1) continue;
-    const k = 1 - age;
-    ctx.globalAlpha = k * k * FIELD_ECHO_ALPHA;
-    ctx.stroke(echoes[e].path);
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
 
-  for (let si = 0; si < stamps.length; si++) {
-    const st = stamps[si];
+  for (let c = 0; c < lay; c++) {
     ctx.save();
-    ctx.translate(cx, cy);
-    ctx.transform(st.m.a, st.m.b, st.m.c, st.m.d, st.m.e, st.m.f);
-    ctx.strokeStyle = grads[si];
-    const kw = Math.max(1e-3, st.k);
+    // Layers offset by a fraction of the shape's OWN fold angle — see the
+    // long note in drawCrystal.
+    ctx.rotate(angle + (c * Math.PI * 2) / (foldBasis * lay));
+    const shrink = 1 - c * 0.24;
+    ctx.scale(shrink, shrink);
+    const copyAlpha = c === 0 ? 1 : 0.5;
+    ctx.strokeStyle = grads[c];
 
-    const fr = tileFrameFor(frames, si, staggered);
+    ctx.globalAlpha = (0.05 + glow * 0.07) * copyAlpha * 1.3;
+    ctx.lineWidth = bloomW;
+    ctx.stroke(whole);
 
-    ctx.globalAlpha = (0.05 + glow * 0.07) * st.alpha * 1.3;
-    ctx.lineWidth = bloomW / kw;
-    ctx.stroke(fr.whole);
-
-    for (let lvl = 0; lvl < fr.levels.length; lvl++) {
-      const n = fr.levels.length;
-      const t = n > 1 ? lvl / (n - 1) : 1;
-      ctx.globalAlpha = (0.1 + t * 0.75) * st.alpha * 1.05;
-      ctx.lineWidth = (baseW * (0.75 + t * 0.6)) / kw;
-      ctx.stroke(fr.levels[lvl]);
+    for (let lvl = 0; lvl < LEVELS; lvl++) {
+      ctx.globalAlpha = (0.1 + (lvl / (LEVELS - 1)) * 0.75) * copyAlpha * 1.05;
+      ctx.lineWidth = baseW * (0.75 + (lvl / (LEVELS - 1)) * 0.6);
+      ctx.stroke(paths[lvl]);
     }
     ctx.restore();
   }
+  ctx.restore();
   ctx.globalAlpha = 1;
 
   return nextPeak;
-}
-
-/** Advance Nova's shells and retire the ones that have left the stage.
- *  Separate from the draw so the dispatcher can spawn on the same bass delta
- *  it already measured for the re-roll logic. */
-function advanceShells(
-  shells: Shell[],
-  r0: number,
-  coverR: number,
-  dt60: number,
-): void {
-  const retire = (coverR * SHELL_RETIRE) / r0;
-  const grow = Math.pow(SHELL_GROWTH, dt60);
-  let write = 0;
-  for (let i = 0; i < shells.length; i++) {
-    const sh = shells[i];
-    sh.k *= grow;
-    if (sh.k < retire) shells[write++] = sh;
-  }
-  shells.length = write;
 }
 
 /* ── Ripples ───────────────────────────────────────────────────────────── */

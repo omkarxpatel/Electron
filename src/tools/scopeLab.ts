@@ -38,8 +38,7 @@ interface Cell {
     ratio?: number;
     lattice?: number;
     gridKind?: number;
-    fieldMode?: number;
-    fieldCount?: number;
+    cornerKinds?: number[];
   };
   style: WaveformStyle;
 }
@@ -161,8 +160,8 @@ interface Section {
 }
 
 const GRID_NAMES = ['polar', 'square', 'diamond', 'triangle'];
-/** Mirrors FIELD_* in draw.ts, which does not export them. */
-const FIELD_NAMES = ['tile', 'radiate', 'mirror', 'orbit', 'shells'];
+/** Mirrors CORNER_* in draw.ts, which does not export them. */
+const CORNER_NAMES = ['rays', 'arcs', 'ticks', 'wedge'];
 
 // Ratios are the set the engine actually draws from.
 const RATIOS = [0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 5 / 3, 2, 2.5, 3, 4];
@@ -274,43 +273,45 @@ const SECTIONS: Section[] = [
     specs: [{ title: 'Bloom', note: 'Curved counterpart to Scope.', style: 'crystal' }],
   },
   {
-    heading: '7 · Expanse — Scope stamped across the stage',
+    heading: '7 · Expanse — Scope as the core of a composition',
     blurb:
-      'The same trace, laid out to fill a 16:9 stage instead of the circle ' +
-      'inscribed in it. Each cell pins one layout; the app re-rolls between ' +
-      'them on the same novelty-arms-it, onset-lands-it rule that re-rolls ' +
-      'symmetry, at about four in ten of those rolls. Detail per copy falls ' +
-      'as the copy count rises, which is what keeps a twelve-tile field ' +
-      'inside the single figure\u2019s frame budget.',
+      'One figure in the middle, and everything around it is something else. ' +
+      'Rings of elements launch from the centre on the beat and travel out ' +
+      'past the edges, each ring using the NEXT form in the vocabulary so ' +
+      'consecutive rings are different things. Chains of links thread ' +
+      'outward, one per frequency band, every other link turned through a ' +
+      'right angle. The four corners each carry their own ornament. Nothing ' +
+      'on the stage is a copy of the core \u2014 which is the whole point, and ' +
+      'what three earlier attempts at filling this stage all got wrong.',
     stage: true,
     specs: [
       {
-        title: 'tile \u00b7 4 columns',
-        note: 'Wallpaper. Alternate cells mirror in x so neighbours meet along the seam.',
+        title: 'corners \u00b7 rays',
+        note: 'A fan out of each corner, one ray per sub-band. Reads at the smallest size of the four.',
         style: 'expanse',
-        pin: { fieldMode: 0, fieldCount: 4, lattice: 1, symmetry: 4, ratio: 1.5, gridKind: 1 },
+        pin: { cornerKinds: [0, 0, 0, 0], lattice: 1, symmetry: 5, ratio: 1.5, gridKind: 0 },
       },
       {
-        title: 'radiate \u00b7 step 3',
-        note: 'Concentric ladder outward until a copy has cleared the corners. Alternate shells counter-rotate.',
+        title: 'corners \u00b7 arcs',
+        note: 'Nested quarter rings. Chords rather than curves on Expanse, so they stay in the figure\u2019s vocabulary.',
         style: 'expanse',
-        pin: { fieldMode: 1, fieldCount: 3, lattice: 1, symmetry: 5, ratio: 1.5, gridKind: 0 },
+        pin: { cornerKinds: [1, 1, 1, 1], lattice: 1, symmetry: 5, ratio: 1.5, gridKind: 1 },
       },
       {
-        title: 'mirror',
-        note: 'One copy per quadrant, stretched to touch its own corner. Covers the rectangle exactly.',
+        title: 'corners \u00b7 ticks',
+        note: 'The band as a row of marks on two radii, rather than as a shape.',
         style: 'expanse',
-        pin: { fieldMode: 2, fieldCount: 3, lattice: 1, symmetry: 3, ratio: 1.5, gridKind: 2 },
+        pin: { cornerKinds: [2, 2, 2, 2], lattice: 1, symmetry: 4, ratio: 1.5, gridKind: 2 },
       },
       {
-        title: 'orbit \u00b7 6 satellites',
-        note: 'Centre copy plus an ellipse sized off w and h separately, which puts geometry in the columns either side.',
+        title: 'corners \u00b7 wedge',
+        note: 'Chevrons pointing back into the corner. The one that reads as direction, not level.',
         style: 'expanse',
-        pin: { fieldMode: 3, fieldCount: 3, lattice: 1, symmetry: 5, ratio: 1.5, gridKind: 3 },
+        pin: { cornerKinds: [3, 3, 3, 3], lattice: 1, symmetry: 4, ratio: 1.5, gridKind: 3 },
       },
       {
         title: 'Expanse \u2014 unpinned',
-        note: 'Live. Layout, symmetry, ratio, lattice and grid all re-rolling.',
+        note: 'Live. Waves, chains, four different corners, and the figure re-rolling as it always did.',
         style: 'expanse',
       },
       {
@@ -321,42 +322,40 @@ const SECTIONS: Section[] = [
     ],
   },
   {
-    heading: '8 · Nova — Bloom stamped across the stage',
+    heading: '8 · Nova — Bloom as the core of a composition',
     blurb:
-      'The superformula outline in the same layouts, plus the one that is ' +
-      'its own: shells born on bass onsets that multiply outward until they ' +
-      'have left the stage. A closed curve is the only figure here where an ' +
-      'expanding copy reads as a ring rather than as a smear, which is why ' +
-      'Nova gets the shells and Expanse gets the quadrant mirror.',
+      'The same arrangement with the curved half of the vocabulary \u2014 round ' +
+      'rings instead of polygons, eight-point stars instead of five, arcs ' +
+      'where Expanse draws chords \u2014 around a superformula core.',
     stage: true,
     specs: [
       {
-        title: 'shells',
-        note: 'Born at a quarter size on each onset, 3.5x a second outward, fading over the last third of the trip.',
+        title: 'corners \u00b7 rays',
+        note: '',
         style: 'nova',
-        pin: { fieldMode: 4 },
+        pin: { cornerKinds: [0, 0, 0, 0] },
       },
       {
-        title: 'radiate \u00b7 step 2',
-        note: 'Static ladder rather than travelling shells \u2014 the same coverage, holding still.',
+        title: 'corners \u00b7 arcs',
+        note: 'True arcs here, where Expanse draws the same construction as chords.',
         style: 'nova',
-        pin: { fieldMode: 1, fieldCount: 2 },
+        pin: { cornerKinds: [1, 1, 1, 1] },
       },
       {
-        title: 'orbit \u00b7 5 satellites',
-        note: 'Layers are capped to 2 once there is more than one stamp; a three-deep nest in each is unreadable.',
+        title: 'corners \u00b7 ticks',
+        note: '',
         style: 'nova',
-        pin: { fieldMode: 3, fieldCount: 2 },
+        pin: { cornerKinds: [2, 2, 2, 2] },
       },
       {
-        title: 'tile \u00b7 3 columns',
-        note: 'Hue fans across stamps rather than across layers.',
+        title: 'corners \u00b7 wedge',
+        note: 'Curved chevrons \u2014 ten segments instead of Expanse\u2019s two.',
         style: 'nova',
-        pin: { fieldMode: 0, fieldCount: 3 },
+        pin: { cornerKinds: [3, 3, 3, 3] },
       },
       {
         title: 'Nova \u2014 unpinned',
-        note: 'Live. Shape, spin, layers and layout all re-rolling.',
+        note: 'Live. Waves, chains, shape, spin, layers and corners all re-rolling.',
         style: 'nova',
       },
       {
@@ -532,8 +531,7 @@ function tick() {
       if (cell.pin.ratio !== undefined) cell.state.scopeRatio = cell.pin.ratio;
       if (cell.pin.lattice !== undefined) cell.state.scopeLattice = cell.pin.lattice;
       if (cell.pin.gridKind !== undefined) cell.state.scopeGridKind = cell.pin.gridKind;
-      if (cell.pin.fieldMode !== undefined) cell.state.fieldMode = cell.pin.fieldMode;
-      if (cell.pin.fieldCount !== undefined) cell.state.fieldCount = cell.pin.fieldCount;
+      if (cell.pin.cornerKinds !== undefined) cell.state.cornerKinds.set(cell.pin.cornerKinds);
     }
 
     drawFrame(
@@ -555,7 +553,8 @@ function tick() {
       if (r) {
         const field =
           cell.style === 'expanse' || cell.style === 'nova'
-            ? `${FIELD_NAMES[cell.state.fieldMode]} ${cell.state.fieldCount} · `
+            ? `${[...cell.state.cornerKinds].map((k) => CORNER_NAMES[k]).join('/')}` +
+              ` · waves ${cell.state.waves.length} · `
             : '';
         r.textContent =
           cell.style === 'crystal' || cell.style === 'nova'

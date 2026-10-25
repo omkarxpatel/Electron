@@ -8,6 +8,13 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.25 (prompt)
+
+- Expanse and Nova are rebuilt. Instead of the same figure drawn in six places, there is one figure in the middle and everything around it is something else: rings of shapes that launch on the beat and travel out past the edges, chains of links threaded outward, and a different ornament in each corner. Nothing on screen is a copy of anything else.
+- Expanse's shapes are geometric now — hexagons, stars and angular links with sharp corners, rather than rounded blobs. Nova keeps its curves, which suit the figure at its centre.
+- All of it is calmer than it was: fewer shapes, moving more slowly, and dimmer, so the figure in the middle leads and the rest sits behind it.
+- The Ambience slider now sets the whole of that outer field rather than just the corner lighting. At zero you get the figure alone on a black screen; at the top, everything brighter than its tuned level.
+
 ## 1.4.24 (prompt)
 
 - Expanse and Nova no longer repeat themselves. Both fill the screen by drawing the figure in several places at once, and until now every one of those places showed the same thing at the same instant — so what you saw was one shape stamped out a few times rather than something to watch. Each copy now shows a different moment, a fraction of a second apart, so the pattern travels across the screen and a change of shape moves visibly through it.
