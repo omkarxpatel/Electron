@@ -13,7 +13,7 @@
  * without reading the user's own settings.
  *
  *   npm run capture              all scenes
- *   npm run capture -- --only hero,eq
+ *   npm run capture -- --only lyrics,album
  *   npm run capture -- --no-build        reuse the existing dist/
  *   npm run capture -- --out docs/media
  */
@@ -87,17 +87,14 @@ const SCENES = [
     ],
     settleMs: 1800,
   },
-  {
-    name: 'hero',
-    width: 1440, height: 900, scale: 1,
-    capture: {
-      // Bars in the banner: it is a thin strip, and a line-based style there
-      // reads as a flat streak rather than a visualiser.
-      settings: { waveformStyle: 'bars', palette: 'aurora', glow: 0.6, sensitivity: 1.6, barWidth: 5, barGap: 2 },
-      playlistId: 'pl1',
-    },
-    settleMs: 3200,
-  },
+  // No `hero` scene, deliberately. docs/media/hero.png is a real screenshot
+  // of a real session — a real playlist, real artwork, real lyrics, AI
+  // Enhance holding a recalled curve, and the notch HUD up in the menu bar —
+  // and none of that can come out of here: the fixtures are invented tracks
+  // with generated sleeves, and the synthesised loop has no key for the
+  // enhancer to recall. A `hero` scene would regenerate hero.png on the next
+  // `npm run capture` and quietly replace it with the weaker image. If you
+  // want a generated one, give it a different name.
   {
     name: 'visuals-only',
     width: 1440, height: 900,
@@ -267,6 +264,17 @@ if (!scenes.length) {
 
 mkdirSync(outDir, { recursive: true });
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+
+// ── Live, for every app scene ─────────────────────────────────────────────
+// `playthrough` is what gates the analysers. With it off — which is the
+// stored default, and so what every capture before this one used — the
+// response curve's halo never fills, the output meters read nothing and the
+// visualiser draws a flat line. The app photographed as though it were
+// switched off. The notch scenes have no `capture` block and no EQ.
+for (const s of scenes) {
+  if (!s.capture) continue;
+  s.capture.storage = { 'av.eq.playthrough': 'true', ...(s.capture.storage || {}) };
+}
 
 console.log(`• capturing ${scenes.length} scene(s) → ${outDir}`);
 const res = spawnSync(

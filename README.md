@@ -12,7 +12,7 @@ Runs entirely on your Mac — no servers, no telemetry. You bring your own Spoti
 
 > macOS 11 Big Sur or later. Tested on Apple Silicon and Intel.
 
-<img alt="Electron running: the 31-band EQ with its live response curve and output meters, a playlist with synced lyrics alongside, and the bar visualizer across the banner" src="docs/media/hero.png" />
+<img alt="Electron running on a real desktop: the 31-band EQ with AI Enhance holding a recalled curve, its live response over the measured spectrum, the tone knobs and output meter, a playlist with synced lyrics alongside, the particle visualizer across the banner, and the notch HUD up in the menu bar" src="docs/media/hero.png" />
 
 > There is a **[product site](https://omkarxpatel.github.io/Electron/)** too, if you would rather read this with pictures.
 

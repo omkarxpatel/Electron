@@ -98,9 +98,15 @@ BlackHole, no network and no account — and never reads the real profile.
 
 ```bash
 npm run capture                      # every scene into docs/media/
-npm run capture -- --only hero       # one scene
+npm run capture -- --only lyrics     # one scene
 npm run capture -- --no-build        # reuse the existing dist/
 ```
+
+`docs/media/hero.png` is NOT generated. It is a real screenshot of a real
+session — a real playlist, real artwork, real lyrics, AI Enhance holding a
+recalled curve, the notch HUD in the menu bar — none of which the fixtures
+can produce. There is deliberately no `hero` scene, so that a capture run
+cannot quietly replace it with the weaker synthetic version.
 
 **Calibrating a detector needs real audio, and there is a corpus on every
 Mac.** `/Library/Audio/Apple Loops` holds around 1700 professionally produced
