@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.24 (prompt)
+
+- Expanse and Nova no longer repeat themselves. Both fill the screen by drawing the figure in several places at once, and until now every one of those places showed the same thing at the same instant — so what you saw was one shape stamped out a few times rather than something to watch. Each copy now shows a different moment, a fraction of a second apart, so the pattern travels across the screen and a change of shape moves visibly through it.
+- Each copy is drawn in more detail than before, and both styles cost less to draw than they did.
+
 ## 1.4.23 (prompt)
 
 - Two new visualizer styles built to fill a fullscreen stage: Expanse and Nova. Scope and Bloom draw one figure in the middle of the screen and leave the corners dark; these take the same two figures and spread them across the whole picture — tiled like wallpaper, radiating outward past the edges, mirrored into all four corners, or orbiting the centre. Nova also throws rings that expand off the screen on the beat. Which arrangement you get changes with the music, on the same rule that already decides when the figure changes shape.

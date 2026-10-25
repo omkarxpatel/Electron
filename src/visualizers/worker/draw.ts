@@ -195,6 +195,10 @@ export interface DrawState {
    *  a shape change morphs instead of cutting. */
   crystalN: Float32Array;
   crystalNTo: Float32Array;
+  /** Expanse / Nova: the last few frames' finished geometry, newest first.
+   *  A stamp draws its own age out of this, so the tiles of a field are
+   *  different moments rather than copies. See TILE_STAGGER. */
+  tileFrames: TileFrame[];
   /** Expanse / Nova: which full-stage layout the figure is stamped into.
    *  See FIELD_*. Re-rolled by the same machinery that re-rolls symmetry. */
   fieldMode: number;
@@ -260,6 +264,7 @@ export function createDrawState(): DrawState {
     crystalM2: 6,
     crystalN: new Float32Array([0.6, 1.4, 1.4]),
     crystalNTo: new Float32Array([0.6, 1.4, 1.4]),
+    tileFrames: [],
     fieldMode: FIELD_TILE,
     fieldCount: 3,
     novaShells: [],
@@ -731,7 +736,7 @@ export function drawFrame(
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
         state.scopePeak, state.tick, state.scopeSymmetry, state.scopeRatio,
         s.scopeDensity, state.scopeLattice, state.scopeGridKind,
-        state.scopeEchoes, state.fieldMode, state.fieldCount, large,
+        state.scopeEchoes, state.tileFrames, state.fieldMode, state.fieldCount, large,
       );
       break;
     }
@@ -827,7 +832,7 @@ export function drawFrame(
         state.scopeX, state.scopeY!, s.glow, s.smoothing, state.scopeAngle,
         state.scopePeak, state.tick, state.crystalLayers,
         state.crystalM1, state.crystalM2, state.crystalN, s.scopeDensity,
-        state.scopeEchoes, state.fieldMode, state.fieldCount,
+        state.scopeEchoes, state.tileFrames, state.fieldMode, state.fieldCount,
         state.novaShells, large,
       );
       break;
@@ -2176,26 +2181,29 @@ const SHELL_IDLE_TICKS = 42;
  * coverage as the stamp count rises is what makes a full-stage field
  * affordable at all.
  *
- * Measured, 100 frames each at 1512x850 CSS on a 2x backing store, same
- * machine and same material:
+ * Measured, 100 frames each at 1512x850 CSS on a 2x backing store:
  *
- *   Scope            0.51 ms      Bloom             1.51 ms
- *   Expanse tile     3.03 ms      Nova shells       1.51 ms
- *   Expanse orbit    3.72 ms      Nova tile         1.67 ms
- *   Expanse mirror   4.49 ms      Nova radiate      1.65 ms
- *   Expanse radiate  5.18 ms      bars (shipped)   57.36 ms
+ *   Scope           0.56 ms     Expanse tile x4    1.05 ms
+ *   Bloom           1.03 ms     Expanse tile x3    1.02 ms
+ *   bars (shipped) 35.08 ms     Expanse radiate    1.36 ms
+ *                               Expanse mirror     2.42 ms
+ *                               Expanse orbit      1.14 ms
+ *                               Nova tile x4       0.88 ms
+ *                               Nova shells        0.71 ms
  *
- * So it does NOT come out level with the single centred figure — Expanse's
- * busiest layout is ten times Scope. What it does do is land inside a 120 Hz
- * frame with room to spare, at a ninth of what an already-shipped style
- * costs on the same stage. Nova is free by comparison because its figure is
- * one closed curve however many copies of it there are.
+ * A full-stage field is about twice the single centred figure, and a
+ * thirtieth of a style that already ships. It got CHEAPER when the stagger
+ * went in, despite every tile gaining detail, because the stagger made the
+ * echo buffer redundant and that buffer was the dominant cost — twenty
+ * strokes a frame, each carrying every stamp and every symmetry copy.
  *
- * (Those are harness figures from an offscreen window that may not be
- * GPU-accelerated, so read them against each other, not as absolute times.
- * `bars` being 57 ms is the tell: it is the only style here that leaves the
- * canvas shadow on, and a gaussian over a 3024x1700 backing store is exactly
- * what a software rasteriser is worst at.)
+ * Mirror is the dear one now, because it is the layout that does not
+ * stagger: it keeps the echoes, and its four copies each cover the whole
+ * stage rather than a cell of it.
+ *
+ * (Harness figures from an offscreen window that may not be GPU-accelerated,
+ * and they move between runs — `bars` measured 57 ms on an earlier run and 35
+ * here. Read them against each other within a run, not as absolute times.)
  * ─────────────────────────────────────────────────────────────────────── */
 interface FieldDetail {
   /** Extra decimation on top of the density slider's own stride. */
@@ -2210,9 +2218,9 @@ interface FieldDetail {
 
 function fieldDetail(stamps: number): FieldDetail {
   if (stamps <= 1) return { strideMul: 1, symCap: 8, levels: 5, echoPoints: 160 };
-  if (stamps <= 4) return { strideMul: 1.6, symCap: 6, levels: 4, echoPoints: 96 };
-  if (stamps <= 8) return { strideMul: 2.4, symCap: 5, levels: 3, echoPoints: 56 };
-  return { strideMul: 3.4, symCap: 4, levels: 3, echoPoints: 36 };
+  if (stamps <= 4) return { strideMul: 1.2, symCap: 7, levels: 5, echoPoints: 110 };
+  if (stamps <= 8) return { strideMul: 1.7, symCap: 6, levels: 4, echoPoints: 72 };
+  return { strideMul: 2.4, symCap: 5, levels: 3, echoPoints: 48 };
 }
 
 /** Echo history for the field styles is shorter and sparser than Scope's,
@@ -2430,6 +2438,67 @@ function bakeCopies(src: Path2D, copies: number, angle: number): Path2D {
     out.addPath(src, new DOMMatrix([cos, sin, -sin, cos, 0, 0]));
   }
   return out;
+}
+
+
+/* ── Time-staggered stamps ────────────────────────────────────────────────
+ *
+ * A wallpaper of N identical figures is, to the eye, one figure. The
+ * repetition is what gets read and the thing being repeated stops being
+ * looked at — which is the complaint this layout earned the first time it
+ * shipped, and it is a fair one.
+ *
+ * The answer is not fewer tiles. It is that a tile should not be a COPY of
+ * the figure but a MOMENT of it. Every frame's finished paths go into a ring
+ * buffer, and stamp i draws the frame from i * TILE_STAGGER ticks ago. Every
+ * cell then shows a different instant of the same music, the pattern
+ * propagates across the grid like a wave, and on a re-roll the old shape
+ * visibly walks out of the field while the new one walks in — which is the
+ * clearest that shape change has ever read.
+ *
+ * It costs nothing to draw. The paths were already being built once a frame
+ * and stroked once a stamp; the only new cost is holding on to the last few
+ * dozen of them.
+ *
+ * Mirror is deliberately excluded. Its four copies are reflections of ONE
+ * instant, and the reflection is the entire content of that layout —
+ * staggering them in time leaves four unrelated figures in four corners.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/** One frame's finished geometry: the dwell-shaded levels and the single
+ *  whole-trace pass, rotational copies and that frame's rotation already
+ *  baked in. Frozen by construction, because nothing redraws it. */
+interface TileFrame {
+  whole: Path2D;
+  levels: Path2D[];
+}
+
+/** Ticks between one stamp and the next. At 6 the eighth cell of a 4x2 grid
+ *  is 0.7 s behind the first — far enough apart that the cells are visibly
+ *  different material, close enough that the grid still reads as one piece
+ *  of music rather than eight. */
+const TILE_STAGGER = 6;
+/** Ceiling on the ring buffer. Twelve stamps at a stagger of 6 needs 67; the
+ *  cap is what stops a future layout with more stamps quietly holding on to
+ *  several hundred paths. */
+const TILE_FRAMES_MAX = 80;
+
+/** Push this frame's geometry and drop whatever has fallen off the end.
+ *  `need` is sized to the live stamp count, so a four-tile layout does not
+ *  carry the buffer a twelve-tile one would. */
+function shedTileFrame(frames: TileFrame[], frame: TileFrame, need: number): void {
+  frames.unshift(frame);
+  const keep = Math.min(TILE_FRAMES_MAX, Math.max(1, need));
+  if (frames.length > keep) frames.length = keep;
+}
+
+/** The frame stamp `i` should draw: its own age back through the buffer,
+ *  clamped to whatever history exists so the grid is populated from the very
+ *  first frame rather than filling in over the first second. The caller has
+ *  always shed this frame already, so index 0 is this instant. */
+function tileFrameFor(frames: TileFrame[], i: number, staggered: boolean): TileFrame {
+  const back = staggered ? i * TILE_STAGGER : 0;
+  return frames[Math.min(back, frames.length - 1)];
 }
 
 /* ── Perimeter spectrum ───────────────────────────────────────────────────
@@ -2891,6 +2960,7 @@ function drawExpanse(
   lattice: number,
   gridKind: number,
   echoes: { path: Path2D; born: number }[],
+  frames: TileFrame[],
   mode: number,
   fieldCount: number,
   /** Layouts are immersive-only. Twelve tiles across a 110px strip is a
@@ -3025,6 +3095,12 @@ function drawExpanse(
   for (let i = 1; i < count; i++) single.lineTo(px[i], py[i]);
   const whole = bakeCopies(single, sym, angle);
 
+  // Mirror's copies are reflections of one instant; everything else stamps
+  // the figure at a place, and a place can just as well be a time.
+  const staggered = large && mode !== FIELD_MIRROR && stamps.length > 1;
+  shedTileFrame(frames, { whole, levels: levelPaths },
+    staggered ? (stamps.length - 1) * TILE_STAGGER + 1 : 1);
+
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -3040,7 +3116,13 @@ function drawExpanse(
   // ── Capture this frame's field, retire the expired ones ──
   // Stamps and symmetry copies are both baked in, so redrawing a whole
   // remembered field costs one stroke.
-  if (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= FIELD_ECHO_EVERY) {
+  // The stagger IS the history when it is on, and a second one drawn from
+  // the CURRENT trace across every stamp would smear the tiles back toward
+  // each other — undoing the only thing that stops them being copies. So the
+  // echo buffer runs for Mirror and for a single-stamp stage, and nowhere
+  // else.
+  if (staggered) echoes.length = 0;
+  if (!staggered && (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= FIELD_ECHO_EVERY)) {
     const step = Math.max(1, Math.floor(count / detail.echoPoints));
     const thin = new Path2D();
     thin.moveTo(px[0], py[0]);
@@ -3091,15 +3173,18 @@ function drawExpanse(
     // draws a tenth of a hairline, which is nothing at all.
     const kw = Math.max(1e-3, st.k);
 
+    const fr = tileFrameFor(frames, si, staggered);
+
     ctx.globalAlpha = (0.05 + glow * 0.07) * st.alpha * 2;
     ctx.lineWidth = bloomW / kw;
-    ctx.stroke(whole);
+    ctx.stroke(fr.whole);
 
-    for (let lvl = 0; lvl < LEVELS; lvl++) {
-      const t = LEVELS > 1 ? lvl / (LEVELS - 1) : 1;
+    for (let lvl = 0; lvl < fr.levels.length; lvl++) {
+      const n = fr.levels.length;
+      const t = n > 1 ? lvl / (n - 1) : 1;
       ctx.globalAlpha = (0.1 + t * 0.75) * st.alpha * 0.46;
       ctx.lineWidth = (baseW * (0.75 + t * 0.6)) / kw;
-      ctx.stroke(levelPaths[lvl]);
+      ctx.stroke(fr.levels[lvl]);
     }
     ctx.restore();
   }
@@ -3502,6 +3587,7 @@ function drawNova(
   nParams: Float32Array,
   density: number,
   echoes: { path: Path2D; born: number }[],
+  frames: TileFrame[],
   mode: number,
   fieldCount: number,
   shells: Shell[],
@@ -3648,12 +3734,22 @@ function drawNova(
   single.closePath();
   const whole = nest(single);
 
+  const staggered = large && mode !== FIELD_MIRROR && stamps.length > 1;
+  shedTileFrame(frames, { whole, levels: levelPaths },
+    staggered ? (stamps.length - 1) * TILE_STAGGER + 1 : 1);
+
   const grads: CanvasGradient[] = [];
   for (let i = 0; i < stamps.length; i++) {
     grads.push(scopeGradient(ctx, radius, palette, stamps[i].hue * SCOPE_HUE_ARC, i > 0));
   }
 
-  if (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= FIELD_ECHO_EVERY) {
+  // The stagger IS the history when it is on, and a second one drawn from
+  // the CURRENT trace across every stamp would smear the tiles back toward
+  // each other — undoing the only thing that stops them being copies. So the
+  // echo buffer runs for Mirror and for a single-stamp stage, and nowhere
+  // else.
+  if (staggered) echoes.length = 0;
+  if (!staggered && (echoes.length === 0 || tick - echoes[echoes.length - 1].born >= FIELD_ECHO_EVERY)) {
     const step = Math.max(1, Math.floor(count / detail.echoPoints));
     const thin = new Path2D();
     thin.moveTo(px[0], py[0]);
@@ -3699,15 +3795,18 @@ function drawNova(
     ctx.strokeStyle = grads[si];
     const kw = Math.max(1e-3, st.k);
 
+    const fr = tileFrameFor(frames, si, staggered);
+
     ctx.globalAlpha = (0.05 + glow * 0.07) * st.alpha * 1.3;
     ctx.lineWidth = bloomW / kw;
-    ctx.stroke(whole);
+    ctx.stroke(fr.whole);
 
-    for (let lvl = 0; lvl < LEVELS; lvl++) {
-      const t = LEVELS > 1 ? lvl / (LEVELS - 1) : 1;
+    for (let lvl = 0; lvl < fr.levels.length; lvl++) {
+      const n = fr.levels.length;
+      const t = n > 1 ? lvl / (n - 1) : 1;
       ctx.globalAlpha = (0.1 + t * 0.75) * st.alpha * 1.05;
       ctx.lineWidth = (baseW * (0.75 + t * 0.6)) / kw;
-      ctx.stroke(levelPaths[lvl]);
+      ctx.stroke(fr.levels[lvl]);
     }
     ctx.restore();
   }
