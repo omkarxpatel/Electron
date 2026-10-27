@@ -128,6 +128,9 @@ export function useAudioEngine(
   const trebleShelfRef = useRef<BiquadFilterNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
+  /** Gain-0 tap to ctx.destination. Exists only to keep the graph in the
+   *  pulled set when Live is off — see where it is built. */
+  const silentSinkRef = useRef<GainNode | null>(null);
   /** Attenuates the music under the DJ's commentary. Separate from
    *  masterGain on purpose — see the wiring comment. */
   const duckGainRef = useRef<GainNode | null>(null);
@@ -260,6 +263,36 @@ export function useAudioEngine(
 
         const masterGain = ctx.createGain();
         masterGain.gain.value = 1;
+
+        /* Keeps the graph being processed when Live is off.
+         *
+         * Web Audio only processes a node that has a path to the destination.
+         * Blink makes one exception — an AnalyserNode with NO output
+         * connections is added to its automatic-pull list — and that
+         * exception is what used to carry this graph: `analyserL`/`analyserR`
+         * are leaves, so they kept the splitter, the limiter and everything
+         * upstream alive, including the loudness and onset worklets.
+         *
+         * The main `analyser` is NOT a leaf. It feeds duckGain, which
+         * disqualifies it, so its only route was masterGain -> destination —
+         * connected only when `playthrough` is on. With Live off, which is
+         * the stored default for a fresh install, it was never processed:
+         * every byte read back as the 128 midpoint, so the visualizer drew a
+         * flat line, the EQ halo never filled and the output meters sat at
+         * nothing. scripts/capture.mjs has been forcing `av.eq.playthrough`
+         * to 'true' since it was written precisely because of this.
+         *
+         * So: a gain of 0, wired to the destination once and never touched.
+         * It makes the pull path unconditional while contributing silence.
+         *
+         * Deliberately a separate node rather than leaving masterGain
+         * connected and gating audibility with `masterGain.gain`. That would
+         * put an AUDIBLE path behind a float, and with system output routed
+         * to BlackHole, a bug that leaves it non-zero is a feedback loop. A
+         * node whose gain is never modulated cannot do that.
+         */
+        const silentSink = ctx.createGain();
+        silentSink.gain.value = 0;
 
         /* Commentary ducking, and the voice it ducks for.
          *
@@ -466,6 +499,10 @@ export function useAudioEngine(
         analyserNode.connect(duckGain);
         duckGain.connect(masterGain);
         voiceGain.connect(masterGain);
+        // Unconditional, and the only connection to the destination that is.
+        // See `silentSink` above for why it is a node and not a gain value.
+        masterGain.connect(silentSink);
+        silentSink.connect(ctx.destination);
         splitter.connect(analyserLNode, 0, 0);
         splitter.connect(analyserRNode, 1, 0);
 
@@ -484,6 +521,7 @@ export function useAudioEngine(
         abProcessedRef.current = abProcessed;
         abRawRef.current = abRaw;
         masterGainRef.current = masterGain;
+        silentSinkRef.current = silentSink;
         duckGainRef.current = duckGain;
         voiceGainRef.current = voiceGain;
         limiterRef.current = limiter;
@@ -541,6 +579,7 @@ export function useAudioEngine(
       analyserRRef.current?.disconnect();
       splitterRef.current?.disconnect();
       masterGainRef.current?.disconnect();
+      silentSinkRef.current?.disconnect();
       duckGainRef.current?.disconnect();
       voiceGainRef.current?.disconnect();
       pannerRef.current?.disconnect();
@@ -571,6 +610,7 @@ export function useAudioEngine(
       abProcessedRef.current = null;
       abRawRef.current = null;
       masterGainRef.current = null;
+      silentSinkRef.current = null;
       duckGainRef.current = null;
       voiceGainRef.current = null;
       analyserRef.current = null;

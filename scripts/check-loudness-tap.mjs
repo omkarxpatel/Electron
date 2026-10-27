@@ -103,8 +103,12 @@ async function settle(meter) {
 /**
  * @param connectOutput mirrors the app's mitigation: whether the tap's
  *   output is connected onward to keep it in the pulled graph.
+ * @param playthrough whether anything reaches ctx.destination at all. The
+ *   app only connects its output when Live is on, and this check used to
+ *   connect unconditionally — so every case it ran was the Live-on topology
+ *   and it could not see a graph that stops being pulled when Live is off.
  */
-async function measureThroughWorklet(seconds, dbfs, rate, connectOutput) {
+async function measureThroughWorklet(seconds, dbfs, rate, connectOutput, playthrough = true) {
   const ctx = new OfflineAudioContext({
     numberOfChannels: 2,
     length: Math.round(seconds * rate),
@@ -128,12 +132,124 @@ async function measureThroughWorklet(seconds, dbfs, rate, connectOutput) {
   inputGain.connect(tap.node);
   if (connectOutput) tap.node.connect(limiter);
   inputGain.connect(limiter);
-  limiter.connect(ctx.destination);
+  if (playthrough) limiter.connect(ctx.destination);
 
   src.start();
   await ctx.startRendering();
   const lufs = await settle(tap.meter);
   return { lufs, reason: '' };
+}
+
+/**
+ * The app's ACTUAL topology, not just the tap's corner of it.
+ *
+ * measureThroughWorklet above proves the tap agrees with the reference,
+ * but it builds a two-node graph that always reaches the destination. The
+ * app's graph is longer and its destination connection is conditional:
+ *
+ *     limiter ─┬─→ analyser → duckGain → masterGain ─→ destination
+ *              │                                        (Live only)
+ *              └─→ splitter ─→ analyserL        (leaves, no outputs)
+ *                          └─→ analyserR
+ *
+ * Two things fall out of that shape, and this function measures both:
+ *
+ *   - analyserL/analyserR have NO output connections, so Blink adds them
+ *     to its automatic-pull list. They keep the splitter, the limiter and
+ *     everything upstream — including the tap — being processed even with
+ *     nothing connected to the destination.
+ *   - the main analyser IS connected onward (to duckGain), which
+ *     disqualifies it from that same list. Its only route to being processed
+ *     is masterGain → destination, which exists only when Live is on.
+ *
+ * So with Live off the taps keep working and the visualiser's analyser goes
+ * flat. Returns the analyser's peak deviation from the 128 midpoint, which is
+ * 0 for a graph that was never pulled.
+ */
+async function measureAppGraph(seconds, dbfs, rate, playthrough) {
+  const ctx = new OfflineAudioContext({
+    numberOfChannels: 2,
+    length: Math.round(seconds * rate),
+    sampleRate: rate,
+  });
+  const tap = await createLoudnessTap(ctx);
+
+  const ch = sine(seconds, dbfs, rate);
+  const buf = ctx.createBuffer(2, ch.length, rate);
+  buf.copyToChannel(ch, 0);
+  buf.copyToChannel(ch, 1);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+
+  const inputGain = ctx.createGain();
+  const preamp = ctx.createGain();
+  const limiter = ctx.createDynamicsCompressor();
+  const analyser = ctx.createAnalyser();
+  const splitter = ctx.createChannelSplitter(2);
+  const analyserL = ctx.createAnalyser();
+  const analyserR = ctx.createAnalyser();
+  const duckGain = ctx.createGain();
+  const masterGain = ctx.createGain();
+
+  src.connect(inputGain);
+  inputGain.connect(preamp);
+  preamp.connect(limiter);
+  if (tap) {
+    inputGain.connect(tap.node);
+    tap.node.connect(limiter);
+  }
+  limiter.connect(analyser);
+  limiter.connect(splitter);
+  splitter.connect(analyserL, 0, 0);
+  splitter.connect(analyserR, 1, 0);
+  analyser.connect(duckGain);
+  duckGain.connect(masterGain);
+  // Mirrors useAudioEngine: a gain-0 node wired to the destination
+  // unconditionally, so the graph is pulled whether or not Live is on. If
+  // that node is ever removed from the app, remove it here too and this
+  // check goes red again — which is the point of modelling it rather than
+  // asserting the invariant against a graph the app does not build.
+  const silentSink = ctx.createGain();
+  silentSink.gain.value = 0;
+  masterGain.connect(silentSink);
+  silentSink.connect(ctx.destination);
+  if (playthrough) masterGain.connect(ctx.destination);
+
+  src.start();
+  const rendered = await ctx.startRendering();
+
+  // What actually reached the speakers. The silent sink exists to make the
+  // graph be PROCESSED, not to make it audible, so with Live off this must
+  // be digital silence. Getting that wrong is not a cosmetic bug: system
+  // output is routed through BlackHole so the app can capture it, and audio
+  // leaking out of a visualize-only session is a feedback loop.
+  let outputPeak = 0;
+  for (let c = 0; c < rendered.numberOfChannels; c++) {
+    const data = rendered.getChannelData(c);
+    for (let i = 0; i < data.length; i++) {
+      const v = Math.abs(data[i]);
+      if (v > outputPeak) outputPeak = v;
+    }
+  }
+
+  const bytes = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(bytes);
+  let analyserPeak = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const d = Math.abs(bytes[i] - 128);
+    if (d > analyserPeak) analyserPeak = d;
+  }
+
+  const leafBytes = new Uint8Array(analyserL.fftSize);
+  analyserL.getByteTimeDomainData(leafBytes);
+  let leafPeak = 0;
+  for (let i = 0; i < leafBytes.length; i++) {
+    const d = Math.abs(leafBytes[i] - 128);
+    if (d > leafPeak) leafPeak = d;
+  }
+
+  const lufs = tap ? await settle(tap.meter) : null;
+  return { analyserPeak, leafPeak, lufs, outputPeak };
 }
 
 window.__run = async () => {
@@ -176,6 +292,87 @@ window.__run = async () => {
       Number.isFinite(bare.lufs)
         ? 'also works unconnected (' + bare.lufs.toFixed(2) + ') — the connection is belt-and-braces'
         : 'REQUIRED: unconnected, no quarters arrive at all',
+    );
+
+    // ── Live off ───────────────────────────────────────────────────────
+    // Everything above renders into a graph that reaches the destination.
+    // The app only connects its output when Live (playthrough) is on, and
+    // that is the stored default for a fresh install — so the cases below
+    // are the ones a new user actually runs.
+
+    // Diagnostic, not pass/fail. This is the tap ALONE with no destination
+    // and no analysers — not a shape the app ever builds. It is here to
+    // record what the tap's survival actually rests on: with Live off and
+    // nothing auto-pulled, it measures nothing at all. In the app it keeps
+    // working, and the next check shows what saves it.
+    const offTap = await measureThroughWorklet(seconds, dbfs, rate, true, false);
+    check(
+      'with no destination AND no analysers, the tap is not pulled',
+      true,
+      Number.isFinite(offTap.lufs)
+        ? 'still measured ' + offTap.lufs.toFixed(2)
+        : 'nothing arrives — so the tap depends on something else keeping the graph pulled',
+    );
+
+    const liveOn = await measureAppGraph(seconds, dbfs, rate, true);
+    const liveOff = await measureAppGraph(seconds, dbfs, rate, false);
+
+    check(
+      'in the app graph with Live ON, the visualiser analyser sees audio',
+      liveOn.analyserPeak > 0,
+      'peak deviation from midpoint: ' + liveOn.analyserPeak,
+    );
+
+    // The one this file exists for now. analyser.connect(duckGain) takes
+    // the analyser off Blink's automatic-pull list, and with Live off there
+    // is no other route to the destination — so it is never processed and
+    // every byte reads back as the 128 midpoint. The visualiser draws a
+    // flat line, the EQ halo never fills and the meters read nothing.
+    check(
+      'in the app graph with Live OFF, the visualiser analyser still sees audio',
+      liveOff.analyserPeak > 0,
+      liveOff.analyserPeak > 0
+        ? 'peak deviation from midpoint: ' + liveOff.analyserPeak
+        : 'FLAT — analyser read back as a constant 128, the graph was never pulled',
+    );
+
+    // Contrast, and the reason the bug survived: the stereo analysers have
+    // no output connections, so they ARE auto-pulled and keep working. That
+    // is also what keeps the loudness and onset taps alive with Live off,
+    // which is why no measurement noticed anything was wrong.
+    check(
+      'the leaf analysers are auto-pulled and work either way',
+      liveOff.leafPeak > 0,
+      'Live-off leaf peak: ' + liveOff.leafPeak + ' (vs main analyser ' + liveOff.analyserPeak + ')',
+    );
+
+    // In the app's real shape the tap DOES survive Live off — the leaf
+    // analysers above keep the limiter and everything upstream of it being
+    // processed. That is load-bearing and accidental: give either leaf an
+    // output connection and it leaves the auto-pull list, the graph stops
+    // being pulled with Live off, and loudness silently becomes -Infinity
+    // forever. This assertion is what would catch that.
+    // The other half of the silent-sink fix, and the one with teeth. Making
+    // the graph always-pulled must not make it always-audible.
+    check(
+      'with Live OFF, nothing reaches the destination',
+      liveOff.outputPeak === 0,
+      liveOff.outputPeak === 0
+        ? 'digital silence (peak 0)'
+        : 'LEAKING AUDIO — destination peak ' + liveOff.outputPeak.toFixed(6),
+    );
+    check(
+      'with Live ON, audio does reach the destination',
+      liveOn.outputPeak > 0,
+      'destination peak ' + liveOn.outputPeak.toFixed(4),
+    );
+
+    check(
+      'in the app graph with Live OFF, the loudness tap still measures',
+      Number.isFinite(liveOff.lufs),
+      Number.isFinite(liveOff.lufs)
+        ? liveOff.lufs.toFixed(2) + ' LUFS (kept alive by the leaf analysers)'
+        : 'no quarters arrive — the leaf analysers are no longer pulling the graph',
     );
   } catch (e) {
     check('probe ran without throwing', false, String((e && e.stack) || e));

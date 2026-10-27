@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.27 (prompt)
+
+- The visualizer, the output meters and the EQ curve now work with Live turned off. Visualize-only mode used to draw a flat line, so the app looked switched off even with music playing.
+- Live off is still silent: nothing plays out of the app until you turn Live on.
+
 ## 1.4.26 (silent)
 
 - If a visualizer style ever runs into an error, it now stops cleanly instead of freezing the picture and keeping a processor core busy until you restart the app.
