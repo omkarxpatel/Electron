@@ -31,8 +31,17 @@
  */
 
 import { app } from 'electron';
-import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { isPackagedBuild } from './updater';
@@ -50,7 +59,15 @@ const TARGET_SCALAR = 1;
  *  volume to 1/16 steps, as several do. */
 const SCALAR_EPSILON = 0.02;
 
+/** Budget for the read-only probes (`get`, `default`), which stay async. */
 const HELPER_TIMEOUT_MS = 4000;
+
+/** Budget for a device WRITE. Writes run synchronously — see runHelperSync()
+ *  for why — so this is how long the main thread can stall on a wedged
+ *  helper, which is why it is far shorter than the probe budget. Measured on
+ *  a real machine, a `set` returns in 100-180 ms; one that has not returned
+ *  in 1.5 s is not going to. */
+const WRITE_TIMEOUT_MS = 1500;
 
 export type SinkVolumeState =
   | { kind: 'idle' }
@@ -81,9 +98,24 @@ let listener: ((state: SinkVolumeState) => void) | null = null;
  * process, so they must not interleave. The renderer switching sinks fires a
  * restore and a pin back to back, and if the restore's write landed after the
  * pin's read, the saved "original" would be our own 1.0 — the user's real
- * volume lost permanently. Everything that touches a device goes through here.
+ * volume lost permanently.
+ *
+ * restoreSinkOnQuit() is the one caller that does NOT go through here, because
+ * `before-quit` cannot await a promise. It is ordered against this queue by a
+ * different mechanism: every device write in this file is synchronous, so the
+ * event loop cannot deliver `before-quit` in the middle of one.
  */
 let queue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Bumped by restoreSinkOnQuit(). A pin that was suspended on one of its read
+ * probes when the quit landed must not go on to raise a device afterwards:
+ * the quit-time restore has already run and is not coming round again, so
+ * that raise would be the last thing ever done to the device — and it would
+ * write a fresh pin record over the one the quit just cleared, leaving the
+ * app believing it holds a pin it has already handed back.
+ */
+let quitRestoreGeneration = 0;
 
 function serialize<T>(operation: () => Promise<T>): Promise<T> {
   const next = queue.then(operation, operation);
@@ -144,14 +176,71 @@ async function runHelper(args: string[]): Promise<HelperResult> {
   }
 }
 
+/**
+ * The synchronous twin of runHelper(), used for every device WRITE.
+ *
+ * Blocking the main thread for a helper spawn buys an invariant that is
+ * otherwise unobtainable here: `before-quit` arrives as a JS callback on the
+ * event loop, so while a write holds that loop the quit cannot be delivered
+ * in the middle of it. Without that, a quit landing mid-pin puts two writes
+ * to the same device in flight with nothing ordering them, and if the pin's
+ * `set … 1` happens to land last the device is stranded at 100%.
+ *
+ * The probes stay async: they decide things, they don't change them, so a
+ * quit landing during one is harmless as long as the pin notices (it does —
+ * see the generation check in pinSinkToUnityImpl).
+ */
+function runHelperSync(args: string[]): HelperResult {
+  try {
+    const stdout = execFileSync(helperPath(), args, {
+      encoding: 'utf8',
+      timeout: WRITE_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return JSON.parse(stdout) as HelperResult;
+  } catch (err) {
+    // Same split as runHelper(): the helper reports its own failures as JSON
+    // on stdout with exit 1, so a non-zero exit still carries a message.
+    const stdout = (err as { stdout?: string }).stdout;
+    if (stdout) {
+      try {
+        return JSON.parse(stdout) as HelperResult;
+      } catch {
+        /* fall through */
+      }
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: message };
+  }
+}
+
 // ── Pin record persistence ─────────────────────────────────────────────────
 
 function pinFilePath(): string {
   return path.join(app.getPath('userData'), PIN_FILE_NAME);
 }
 
+/**
+ * Temp file, fsync, rename — because this record is the only way back from a
+ * raised device. A plain writeFileSync can leave a zero-byte file if the
+ * machine goes down mid-write, and readPinRecord() cannot tell that from
+ * "nothing was pinned": JSON.parse('') throws, restoreStalePin() finds no
+ * record, and the device stays at 100% with nobody left who knows it should
+ * not be. After this the pin file is either the old content or the new one.
+ *
+ * Throws on failure, deliberately — see the caller.
+ */
 function writePinRecord(record: PinRecord): void {
-  writeFileSync(pinFilePath(), JSON.stringify(record, null, 2), 'utf8');
+  const target = pinFilePath();
+  const temp = `${target}.tmp`;
+  const fd = openSync(temp, 'w');
+  try {
+    writeFileSync(fd, JSON.stringify(record, null, 2), 'utf8');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temp, target);
 }
 
 function readPinRecord(): PinRecord | null {
@@ -194,6 +283,8 @@ function clearPinRecord(): void {
 async function pinSinkToUnityImpl(deviceLabel: string): Promise<SinkVolumeState> {
   if (process.platform !== 'darwin') return state;
   if (!deviceLabel) return state;
+
+  const generation = quitRestoreGeneration;
 
   // Re-pinning the device we already hold would overwrite the saved original
   // with our own 1.0, losing the user's value for good.
@@ -255,17 +346,39 @@ async function pinSinkToUnityImpl(deviceLabel: string): Promise<SinkVolumeState>
    * slider's device is one we never touch.
    */
 
+  // A quit landed while the probes above were in flight. restoreSinkOnQuit()
+  // has already put any held device back and cannot wait for us, so raising
+  // one now would strand it at unity as the app goes away — and overwrite the
+  // record the quit just cleared.
+  if (quitRestoreGeneration !== generation) return state;
+
   // Disk before device: if we crash between these two lines the worst case is
   // a restore of a value that was never changed, which is harmless. The other
   // order can strand the device at 100%.
-  writePinRecord({
-    deviceName: name,
-    originalVolume: sink.volume,
-    pinnedTo: TARGET_SCALAR,
-    pinnedAt: new Date().toISOString(),
-  });
+  try {
+    writePinRecord({
+      deviceName: name,
+      originalVolume: sink.volume,
+      pinnedTo: TARGET_SCALAR,
+      pinnedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    // No record means no way back from the raise, so don't make the raise. A
+    // sink left at its own volume is only a ceiling; a sink at unity with
+    // nothing on disk is someone's speakers at 100% forever.
+    const reason = err instanceof Error ? err.message : String(err);
+    setState({
+      kind: 'error',
+      deviceName: name,
+      message: `could not save the restore record: ${reason}`,
+    });
+    return state;
+  }
 
-  const applied = await runHelper(['set', name, String(TARGET_SCALAR)]);
+  // Synchronous, and that is the point: with the write holding the event
+  // loop, `before-quit` cannot be delivered between the record landing on
+  // disk and the device reaching unity.
+  const applied = runHelperSync(['set', name, String(TARGET_SCALAR)]);
   if (applied.error) {
     clearPinRecord();
     setState({ kind: 'error', deviceName: name, message: applied.error });
@@ -293,7 +406,21 @@ async function restoreSinkImpl(): Promise<void> {
     setState({ kind: 'idle' });
     return;
   }
-  await runHelper(['set', record.deviceName, String(record.originalVolume)]);
+  // Same staleness rule as restoreStalePinImpl: only put the device back if
+  // it is still sitting at the value we set. A user who has moved it since we
+  // pinned it has made a newer choice than ours, and writing over it is the
+  // second bug.
+  const current = await runHelper(['get', record.deviceName]);
+  if (current.error || typeof current.volume !== 'number') {
+    // Device is gone (unplugged headphones, most likely). Keep the record so
+    // a later launch can still undo it — leaving someone's headphones pinned
+    // at 100% is exactly the outcome this whole file exists to prevent.
+    setState({ kind: 'idle' });
+    return;
+  }
+  if (Math.abs(current.volume - record.pinnedTo) <= SCALAR_EPSILON) {
+    runHelperSync(['set', record.deviceName, String(record.originalVolume)]);
+  }
   clearPinRecord();
   setState({ kind: 'idle' });
 }
@@ -331,7 +458,7 @@ async function restoreStalePinImpl(): Promise<void> {
     clearPinRecord();
     return;
   }
-  await runHelper(['set', record.deviceName, String(record.originalVolume)]);
+  runHelperSync(['set', record.deviceName, String(record.originalVolume)]);
   clearPinRecord();
 }
 
@@ -339,20 +466,42 @@ export function restoreStalePin(): Promise<void> {
   return serialize(() => restoreStalePinImpl());
 }
 
-/** Synchronous best-effort restore for `before-quit`, where there is no time
- *  to await a promise. Spawns the helper detached and lets it outlive us. */
+/**
+ * Fully synchronous restore for `before-quit`, which gives us no chance to
+ * await. Two things make it safe, and both are load-bearing.
+ *
+ * ── It is ordered against an in-flight pin ──
+ * This is the one entry point that cannot go through serialize(). It does not
+ * need to: every device write in this file is synchronous, so the event loop
+ * cannot deliver `before-quit` in the middle of one and there is never a
+ * write to race. A pin suspended on one of its read probes is stopped by the
+ * generation bump below before it can reach its own write. That also settles
+ * who owns the pin record: at this point no pin is part-way through writing
+ * one, so the record on disk belongs to a finished operation and is ours to
+ * clear. The version that bypassed the queue cleared a record an in-flight
+ * pin had just written, leaving state 'pinned' with nothing on disk and the
+ * device at 100%.
+ *
+ * ── It only clears the record once the helper really worked ──
+ * The version before this used execFile() with an empty callback and deleted
+ * the record on the next line. execFile reports a failed spawn or a non-zero
+ * exit asynchronously, into that callback, long after this function returned
+ * — so the record was thrown away on exactly the runs where the device had
+ * NOT been put back, and restoreStalePin() found nothing next launch.
+ */
 export function restoreSinkOnQuit(): void {
   if (process.platform !== 'darwin') return;
+  quitRestoreGeneration++;
   const record = state.kind === 'pinned'
     ? { deviceName: state.deviceName, originalVolume: state.originalVolume }
     : readPinRecord();
   if (!record) return;
-  try {
-    execFile(helperPath(), ['set', record.deviceName, String(record.originalVolume)], () => {});
-    clearPinRecord();
-    state = { kind: 'idle' };
-  } catch {
-    /* Leaving the pin file behind is the right failure: restoreStalePin()
-     * picks it up on the next launch. */
+  const applied = runHelperSync(['set', record.deviceName, String(record.originalVolume)]);
+  if (applied.error) {
+    /* The device is still at unity and the record is the only thing that can
+     * undo that, so it stays: restoreStalePin() picks it up next launch. */
+    return;
   }
+  clearPinRecord();
+  state = { kind: 'idle' };
 }

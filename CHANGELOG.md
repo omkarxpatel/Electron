@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.29 (prompt)
+
+- Quitting with Live on could leave your speakers or headphones stuck at full volume, with nothing left to put them back. The app now keeps the volume it needs to restore until it has actually restored it, so if a restore ever fails it is put right the next time the app starts.
+- If you change your output device's volume yourself while Live is on, turning Live off no longer overwrites your change.
+
 ## 1.4.28 (prompt)
 
 - A saved setting the app doesn't recognise — after going back to an older version, for example — no longer stops the app from opening. It falls back to the default instead, and the error screen has a new "Reset appearance & reload" button for anything like it.

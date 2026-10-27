@@ -80,6 +80,11 @@ Verification here means:
    someone's output device to 100%, and a broken restore strands it there.
    The check drives the real helper against a real device and asserts every
    crash-recovery path, then hands the device back.
+
+   It is audible. It borrows the machine's DEFAULT output device and holds it
+   at 100% while it runs, so don't run it while anyone is listening on that
+   device — and if they react by turning it down, that fails the slider
+   assertions too.
 7. Run the app and look at it. See below, because launching it has traps.
 
 `npm run capture` renders the app into an offscreen window and photographs it
@@ -87,6 +92,12 @@ with `webContents.capturePage()`, which reads that window's own buffer — no
 Screen Recording permission, and nothing else on the display can appear in the
 output. Useful for checking a UI change without asking anyone for a
 screenshot, and it is where `docs/media/` comes from.
+
+It is not silent. The shim drives a real `AudioContext` at gain 0.9 and every
+app scene forces Live on, so a run plays its synthesised tone out of the
+default output. And without `--out` it writes into `docs/media/`, replacing
+the committed screenshots — to check a change rather than reshoot the README,
+point `--out` at a scratch directory.
 
 It does NOT run `electron/main.ts`: that would trip `killStaleInstances()` and
 kill whatever dev instance is running. `scripts/capture/harness.cjs` is a

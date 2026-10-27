@@ -17,6 +17,20 @@
  *   - a stale pin file must only be honoured if the device is still sitting at
  *     the value we set. If the user has since moved it themselves, their
  *     choice is newer and restoring over it is the second bug.
+ *   - the quit-time restore must not throw the record away before it knows the
+ *     helper worked. execFile reports a failed spawn or a non-zero exit
+ *     asynchronously, so deleting the record beside that call rather than
+ *     inside it loses the user's volume at the exact moment the device was NOT
+ *     put back — restoreStalePin() finds nothing next launch and the device
+ *     stays at 100% forever.
+ *   - a quit landing mid-pin must be ordered against it. Two helper
+ *     invocations racing the same device decide the user's volume by luck, and
+ *     if the pin's `set … 1` happens to land last the device is stranded at
+ *     unity with the record already gone.
+ *
+ * Those last two are driven against a STUB helper, not the real one. The
+ * failure being reproduced is "the helper did not do its job", and there is no
+ * reason to point that at someone's speakers.
  *
  * Needs a real Electron (app.getPath('userData')) and a real audio device, so
  * it drives the module inside one. It borrows MacBook Pro Speakers, which is
@@ -49,6 +63,57 @@ function helper(...args) {
   return JSON.parse(execFileSync(realHelper, args, { encoding: 'utf8' }));
 }
 
+// ── Stub helpers for the quit path ─────────────────────────────────────────
+// The quit-time cases are about what happens when the helper misbehaves or is
+// still running. Both are things a real device cannot be asked to do on cue,
+// and neither is worth aiming at real speakers, so they get a stand-in binary
+// swapped into the path deviceVolume.ts resolves. The device name is fake too:
+// even a stub that somehow reached CoreAudio would find nothing to move.
+const stubDir = join(work, 'stubs');
+mkdirSync(stubDir, { recursive: true });
+const STUB_DEVICE = 'Stub Output Device';
+const setLogPath = join(work, 'stub-set-log.txt');
+
+// Each stub drops a marker the moment it starts. execFile() returns long before
+// libuv actually execs the binary, so without waiting for one of these the
+// previous case's spawn can still be in the air when the next stub is swapped
+// in — it then runs the WRONG stub and writes a phantom call into the next
+// case's log. Observed, not theorised.
+const markerFailing = join(work, 'marker-failing');
+const markerWorking = join(work, 'marker-working');
+
+// A helper that cannot do its job — a missing binary, the wrong architecture,
+// a device that refuses the write. All of them look like this from Node.
+writeFileSync(join(stubDir, 'failing'), `#!/bin/sh
+: > ${JSON.stringify(markerFailing)}
+echo "avvolume: simulated failure" >&2
+exit 1
+`, { mode: 0o755 });
+
+// A helper that works, so "keep the record on failure" cannot be implemented
+// as "never clear the record" — that would re-restore a device nobody touched
+// on every launch, forever.
+writeFileSync(join(stubDir, 'working'), `#!/bin/sh
+: > ${JSON.stringify(markerWorking)}
+echo '{}'
+`, { mode: 0o755 });
+
+// A helper that answers a pin, and makes the pin's own `set … 1` slow. That is
+// the race made reproducible: a quit landing mid-pin spawns a second write to
+// the same device, and each call logs on completion, so the log's last line is
+// the value the device would really have been left at.
+writeFileSync(join(stubDir, 'ordered'), `#!/bin/sh
+case "$1" in
+  get) echo '{"name":"${STUB_DEVICE}","uid":"stub-sink","hasVolumeControl":true,"volume":0.4}' ;;
+  default) echo '{"name":"Stub Slider","uid":"stub-slider","hasVolumeControl":true,"volume":0.8}' ;;
+  set)
+    if [ "$3" = "1" ]; then sleep 0.6; fi
+    echo "$3" >> ${JSON.stringify(setLogPath)}
+    echo '{}'
+    ;;
+esac
+`, { mode: 0o755 });
+
 const originalVolume = helper('get', DEVICE).volume;
 if (typeof originalVolume !== 'number') {
   console.error(`cannot run: "${DEVICE}" has no readable volume`);
@@ -70,8 +135,22 @@ const { execFileSync } = require('child_process');
 const HELPER = ${JSON.stringify(realHelper)};
 const DEVICE = ${JSON.stringify(DEVICE)};
 const SLIDER = ${JSON.stringify(slider.name || '')};
+// The path deviceVolume.ts actually resolves (__dirname/../build/helpers), so
+// swapping this file is how the stub helpers get in front of the module.
+const MODULE_HELPER = ${JSON.stringify(join(work, 'build/helpers/avvolume'))};
+const STUB_DIR = ${JSON.stringify(join(work, 'stubs'))};
+const STUB_DEVICE = ${JSON.stringify(STUB_DEVICE)};
+const SET_LOG = ${JSON.stringify(setLogPath)};
+const MARKER_FAILING = ${JSON.stringify(markerFailing)};
+const MARKER_WORKING = ${JSON.stringify(markerWorking)};
 const results = [];
 const near = (a, b) => Math.abs(a - b) < 0.02;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitFor = async (pred, ms) => {
+  const until = Date.now() + ms;
+  while (Date.now() < until) { if (pred()) return true; await sleep(10); }
+  return pred();
+};
 const read = () => JSON.parse(execFileSync(HELPER, ['get', DEVICE], { encoding: 'utf8' })).volume;
 const write = (v) => execFileSync(HELPER, ['set', DEVICE, String(v)]);
 const readSlider = () => JSON.parse(execFileSync(HELPER, ['get', SLIDER], { encoding: 'utf8' })).volume;
@@ -164,6 +243,76 @@ app.whenReady().then(async () => {
     state = await dv.pinSinkToUnity('Definitely Not A Device');
     ok('an unknown device reports an error', state.kind === 'error', JSON.stringify(state));
     ok('and writes no pin file', readPin() === null);
+
+    // ── the quit path, from here down, against a stub helper ──
+    // Everything below drives restoreSinkOnQuit(), which main.ts calls from
+    // before-quit. Nothing here touches a real device: the helper the module
+    // resolves is replaced, and the device named in the records is invented.
+
+    // Unlink before copying: a helper spawned by the previous case may still be
+    // executing this path, and writing through it would truncate the script out
+    // from under a running shell.
+    const useStub = (name) => {
+      try { fs.unlinkSync(MODULE_HELPER); } catch {}
+      fs.copyFileSync(path.join(STUB_DIR, name), MODULE_HELPER);
+      fs.chmodSync(MODULE_HELPER, 0o755);
+    };
+    const exists = (p) => { try { fs.statSync(p); return true; } catch { return false; } };
+    const clear = (p) => { try { fs.unlinkSync(p); } catch {} };
+    const writeStubPin = () => fs.writeFileSync(pinFile(), JSON.stringify({
+      deviceName: STUB_DEVICE, originalVolume: 0.4, pinnedTo: 1, pinnedAt: new Date().toISOString(),
+    }));
+    const setLog = () => {
+      try { return fs.readFileSync(SET_LOG, 'utf8').split('\\n').filter(Boolean); } catch { return []; }
+    };
+
+    await dv.restoreSink();
+
+    // A quit-restore whose helper fails has NOT put the device back, so the
+    // record is the only thing standing between the user and speakers left at
+    // 100%. execFile hands that failure to a callback, asynchronously, long
+    // after the surrounding try/catch has returned — so clearing the record
+    // next to the call rather than inside it deletes it on exactly the runs
+    // where it was still needed, and restoreStalePin() has nothing to find.
+    useStub('failing');
+    clear(MARKER_FAILING);
+    writeStubPin();
+    dv.restoreSinkOnQuit();
+    await waitFor(() => exists(MARKER_FAILING), 2000); // the helper has really run, and really failed
+    ok('a quit-restore whose helper fails keeps the record for next launch',
+       readPin() !== null, 'pin file is ' + JSON.stringify(readPin()));
+
+    // And the cure must not be "never clear it". A record left behind after a
+    // restore that worked makes every launch undo a device nobody touched.
+    useStub('working');
+    clear(MARKER_WORKING);
+    writeStubPin();
+    dv.restoreSinkOnQuit();
+    const cleared = await waitFor(() => readPin() === null, 2000);
+    await waitFor(() => exists(MARKER_WORKING), 2000);
+    ok('a quit-restore whose helper works clears the record',
+       cleared, 'pin file is ' + JSON.stringify(readPin()));
+
+    // Every other entry point goes through serialize(); restoreSinkOnQuit does
+    // not. Quit while a pin is still setting the device and two writes to the
+    // same device are in flight with nothing ordering them — the user's volume
+    // is decided by which process happens to finish last. Here the pin is made
+    // the slow one, which is the direction that hurts: its set-to-unity lands
+    // after the restore and the device is stranded at 100%.
+    useStub('ordered');
+    clear(SET_LOG);
+    const pinning = dv.pinSinkToUnity(STUB_DEVICE);
+    await waitFor(() => readPin() !== null, 2000); // record on disk = the set is in flight
+    dv.restoreSinkOnQuit();
+    await pinning;
+    await waitFor(() => setLog().length >= 2, 3000);
+    ok('a quit landing mid-pin is ordered after it',
+       setLog()[setLog().length - 1] === '0.4',
+       'helper set calls, in order: ' + (setLog().join(' -> ') || '(none)'));
+
+    await dv.restoreSink();
+    clear(MODULE_HELPER);
+    fs.copyFileSync(${JSON.stringify(realHelper)}, MODULE_HELPER);
   } catch (err) {
     results.push({ name: 'harness threw', pass: false, detail: String(err && err.stack || err) });
   }

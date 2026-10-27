@@ -1043,8 +1043,9 @@ app.on('before-quit', () => {
     authServer = null;
   }
   teardownAutoUpdater();
-  // Synchronous-ish: before-quit gives us no chance to await, so this spawns
-  // the helper detached rather than leaving the device pinned at 100%.
+  // before-quit gives us no chance to await, so this one is fully synchronous:
+  // it blocks here for a single helper spawn (~100 ms, measured) rather than
+  // letting the quit race it and leave someone's output device at 100%.
   restoreSinkOnQuit();
 });
 
