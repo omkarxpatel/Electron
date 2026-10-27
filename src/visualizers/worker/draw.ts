@@ -438,6 +438,8 @@ export function drawFrame(
     case 'nova':
     case 'ripples':
       break;
+    default:
+      assertNever(s.waveformStyle);
   }
 
   switch (s.waveformStyle) {
@@ -861,9 +863,33 @@ export function drawFrame(
       drawRipples(ctx, width, height, palette, state.ripples, state.tick, dt60, gain, state.envelope);
       break;
     }
+    default:
+      assertNever(s.waveformStyle);
   }
 
   ctx.shadowBlur = 0;
+}
+
+/**
+ * Compile-time exhaustiveness guard for the two switches above.
+ *
+ * Both are statement-position switches, so TypeScript does not require them
+ * to be exhaustive on its own. Adding a style to `WaveformStyle` and wiring
+ * it into the settings UI used to typecheck cleanly, ship, be selectable —
+ * and draw nothing, because neither switch had a branch for it. On a project
+ * whose convention is that visualizers are additive, that is the one axis
+ * that needed the guard and did not have it.
+ *
+ * `SettingsPanel.formatStateSummary` is the same idea for `UpdateState`, and
+ * is named in CLAUDE.md as the safety net that must stay exhaustive. This is
+ * that net, for styles.
+ *
+ * Throwing at runtime is deliberate rather than silently returning: the
+ * worker reports a draw failure to the host now, so the style arrives in the
+ * console instead of as a black canvas.
+ */
+function assertNever(style: never): never {
+  throw new Error(`drawFrame: no branch for waveformStyle ${JSON.stringify(style)}`);
 }
 
 /* ============================================================

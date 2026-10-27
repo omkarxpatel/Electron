@@ -173,6 +173,22 @@ export async function createLoudnessTap(ctx: BaseAudioContext): Promise<Loudness
     meter.pushQuarter(e.data.z, e.data.n);
   };
 
+  // A throw inside `process()` kills the processor permanently and silently:
+  // no more quarters arrive, integrated loudness freezes at whatever it had,
+  // track memory records nothing and level matching quietly stops working —
+  // for the rest of the session, with nothing logged. The node stays in the
+  // graph looking connected, which is why no measurement catches it.
+  //
+  // This cannot repair it (a dead processor is dead), so it does the one
+  // thing that was missing: says so.
+  node.onprocessorerror = () => {
+    console.error(
+      'loudnessTap: the BS.1770 worklet processor stopped. Loudness will not update ' +
+        'again until the audio graph is rebuilt — level matching and track memory ' +
+        'are now inert.',
+    );
+  };
+
   return {
     node,
     meter,

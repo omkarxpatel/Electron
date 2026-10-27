@@ -158,6 +158,20 @@ let installWhenDownloaded = false;
  *  user answered that question themselves and the answer wasn't "whenever". */
 let silentInstallArmed = false;
 
+/**
+ * True from the moment a download starts until it has staged or failed.
+ *
+ * `triggerCheck` lets a user-initiated check through while one is already in
+ * flight, so clicking "Check for updates" mid-download used to reach
+ * `startDownload` a second time. Two downloads then raced: each unpacks into
+ * its own stage root, but there is a single `stagedUpdate`, so the loser's
+ * root was orphaned on disk. Worse, if either failed, `handleError` calls
+ * `clearStaged()`, which deletes whatever is in `stagedUpdate` — the OTHER
+ * download's good bundle — and clears `silentInstallArmed` and stops the idle
+ * poll on the way out. The update then never installs and nothing retries.
+ */
+let downloadInFlight = false;
+
 /*
  * "Install updates automatically" — the user's standing answer.
  *
@@ -425,6 +439,16 @@ async function triggerCheck(opts: TriggerOptions): Promise<void> {
     return;
   }
 
+  // A user check outranks a `checking` — that is how someone takes back a
+  // skip. It must NOT outrank a download. There is nothing for it to find
+  // that the download is not already fetching, and letting it through
+  // broadcasts `checking` over the progress the user is watching and can
+  // reach `startDownload` a second time for the same release.
+  if (downloadInFlight || currentState.kind === 'downloading') {
+    log('info', `Skipping ${opts.source} check; a download is already in flight`);
+    return;
+  }
+
   if (opts.source === 'user') {
     // An explicit "Check for updates" click is how a user takes back a skip.
     // Without this the persisted skip would be a one-way door until the next
@@ -552,6 +576,14 @@ function stopIdlePoll(): void {
 }
 
 async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<void> {
+  // One at a time. See `downloadInFlight` for what two concurrent downloads
+  // do to each other's stage roots.
+  if (downloadInFlight) {
+    log('info', `Download of v${update.version} ignored; one is already in flight`);
+    return;
+  }
+  downloadInFlight = true;
+
   const onProgress = (progress: DownloadProgress): void => {
     broadcast({
       kind: 'downloading',
@@ -605,6 +637,8 @@ async function startDownload(update: RemoteUpdate, bundlePath: string): Promise<
     }
   } catch (err) {
     handleError(err);
+  } finally {
+    downloadInFlight = false;
   }
 }
 

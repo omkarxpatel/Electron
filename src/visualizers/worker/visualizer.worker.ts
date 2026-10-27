@@ -56,6 +56,11 @@ type InboundMessage =
 
 interface ReadyMessage { type: 'READY'; seq: number }
 
+/** Sent once when `drawFrame` throws. The host stops the pump on receipt —
+ *  see the catch in the FRAME branch for why a silent retry loop was worse
+ *  than a stopped visualizer. */
+interface FailedMessage { type: 'FAILED'; message: string; stack: string | null }
+
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let sampleRate = 48000;
@@ -98,6 +103,19 @@ self.addEventListener('message', (event: MessageEvent<InboundMessage>) => {
       drawing = true;
       try {
         drawFrame(ctx, cssWidth, cssHeight, msg.time, msg.freq, sampleRate, settings, drawState, paletteOverride, msg.timeL, msg.timeR);
+      } catch (err) {
+        // A throw in here used to be invisible AND permanent. The ack below
+        // lives in `finally`, so backpressure stayed satisfied and the main
+        // thread kept sending frames that threw again, at the full frame cap,
+        // forever — a frozen canvas and a pinned core with nothing logged.
+        // React error boundaries cannot help: they do not see worker errors.
+        //
+        // So: stop drawing, and tell the host once. The host surfaces it and
+        // stops the pump. `running` is cleared before the post so a FRAME
+        // already in flight takes the paused branch above rather than
+        // throwing a second time.
+        running = false;
+        reportFailure(err);
       } finally {
         drawing = false;
         ack(msg.seq);
@@ -136,6 +154,17 @@ self.addEventListener('message', (event: MessageEvent<InboundMessage>) => {
       break;
   }
 });
+
+/** Report a draw failure to the host. Deliberately tolerant of a non-Error
+ *  throw, because the whole point is that this path runs when something
+ *  unexpected happened. */
+function reportFailure(err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error && err.stack ? err.stack : null;
+  console.error('visualizer worker: drawFrame threw, stopping', err);
+  const msg: FailedMessage = { type: 'FAILED', message, stack };
+  (self as unknown as { postMessage(m: unknown): void }).postMessage(msg);
+}
 
 function ack(seq: number): void {
   const msg: ReadyMessage = { type: 'READY', seq };

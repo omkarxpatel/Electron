@@ -182,6 +182,19 @@ export async function createOnsetTap(ctx: BaseAudioContext): Promise<OnsetTap | 
     if (filled < capacity) filled++;
   };
 
+  // Same silent-death problem as the loudness tap: a throw in `process()`
+  // kills the processor for good. Here the ring simply stops advancing, so
+  // `envelope()` keeps returning the last full buffer and tempo detection
+  // reports a confident BPM for audio that finished minutes ago — which is
+  // worse than reporting nothing. Log it, since nothing else would.
+  node.onprocessorerror = () => {
+    console.error(
+      'onsetTap: the onset-envelope worklet processor stopped. Tempo detection is ' +
+        'now reading a stale envelope and will not update until the audio graph is ' +
+        'rebuilt.',
+    );
+  };
+
   return {
     node,
     envelopeHz,

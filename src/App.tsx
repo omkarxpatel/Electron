@@ -394,6 +394,13 @@ function AppContent() {
           />
         ) : (
           <div className="workspace">
+            {/* The last major pane without a boundary. It hosts useAiEnhancer
+                and EqResponseCurve behind 24 props, and a throw in any of them
+                reached the root boundary — whose only recovery is a full
+                reload, taking the audio graph, the Spotify poll state and the
+                scroll position with it. That is exactly what SectionBoundary
+                exists to avoid. */}
+            <SectionBoundary label="EQ panel">
             <EqSection
               onMeasurement={setLiveMeasurement}
               trackMemory={trackMemory}
@@ -420,6 +427,7 @@ function AppContent() {
               paletteId={settings.palette}
               paletteOverride={albumPalette}
             />
+            </SectionBoundary>
 
             <SectionBoundary label="Spotify panel">
               <SpotifySection

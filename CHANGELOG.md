@@ -8,6 +8,12 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.26 (silent)
+
+- If a visualizer style ever runs into an error, it now stops cleanly instead of freezing the picture and keeping a processor core busy until you restart the app.
+- An error in the EQ panel no longer takes the whole window down with it, and an error in the notch panel no longer leaves an empty, invisible panel stuck at the top of the screen.
+- Checking for updates while one is already downloading no longer risks throwing the download away.
+
 ## 1.4.25 (prompt)
 
 - Expanse and Nova are rebuilt. Instead of the same figure drawn in six places, there is one figure in the middle and everything around it is something else: rings of shapes that launch on the beat and travel out past the edges, chains of links threaded outward, and a different ornament in each corner. Nothing on screen is a copy of anything else.

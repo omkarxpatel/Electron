@@ -33,6 +33,10 @@ interface WorkerBundle {
   /** Last sequence number the worker has acked via READY. The next FRAME
    *  is only sent when lastAckSeq === lastSentSeq (worker is idle). */
   lastAckSeq: number;
+  /** Set when the worker reported a draw failure (or errored outright).
+   *  The RAF stops sending once this is true — the worker still acks from
+   *  its `finally`, so backpressure alone would never stop the retry loop. */
+  failed: boolean;
 }
 
 // Cached per HTMLCanvasElement. WeakMap so entries are GC'd when the canvas
@@ -149,12 +153,37 @@ function WaveformVisualizerImpl({
       // sends the next FRAME when lastAckSeq has caught up to lastSentSeq.
       // If READY arrives without a matching bundle (very small race during
       // teardown), we ignore it.
-      worker.addEventListener('message', (ev: MessageEvent<{ type: string; seq?: number }>) => {
-        const m = ev.data;
-        if (m && m.type === 'READY' && typeof m.seq === 'number') {
-          const b = canvasBundles.get(canvas);
-          if (b) b.lastAckSeq = m.seq;
-        }
+      worker.addEventListener(
+        'message',
+        (ev: MessageEvent<{ type: string; seq?: number; message?: string; stack?: string | null }>) => {
+          const m = ev.data;
+          if (m && m.type === 'READY' && typeof m.seq === 'number') {
+            const b = canvasBundles.get(canvas);
+            if (b) b.lastAckSeq = m.seq;
+            return;
+          }
+          if (m && m.type === 'FAILED') {
+            // The worker stopped itself because drawFrame threw. Stop feeding
+            // it: the ack still fires from the worker's `finally`, so without
+            // this the RAF would keep sending frames that throw again at the
+            // full frame cap, forever.
+            const b = canvasBundles.get(canvas);
+            if (b) b.failed = true;
+            console.error(
+              `WaveformVisualizer: worker stopped drawing — ${m.message ?? 'unknown error'}`,
+              m.stack ?? '',
+            );
+          }
+        },
+      );
+
+      // A worker that fails to load or throws outside the message handler
+      // never reaches the FAILED path above. Same treatment: stop the pump
+      // rather than spin.
+      worker.addEventListener('error', (ev) => {
+        const b = canvasBundles.get(canvas);
+        if (b) b.failed = true;
+        console.error('WaveformVisualizer: worker error', ev.message || ev);
       });
 
       // transferControlToOffscreen is one-shot per canvas. Wrap defensively in
@@ -193,6 +222,7 @@ function WaveformVisualizerImpl({
         scratchFreq,
         lastSentSeq: 0,
         lastAckSeq: 0,
+        failed: false,
       };
       canvasBundles.set(canvas, bundle);
       workerRef.current = worker;
@@ -291,6 +321,10 @@ function WaveformVisualizerImpl({
       if (!scratchT || !scratchF || !worker || !canvas) return;
       const bundle = canvasBundles.get(canvas);
       if (!bundle) return;
+      // The worker threw and stopped drawing. Feeding it more frames would
+      // just reproduce the throw at the frame cap — it acks from a `finally`,
+      // so backpressure would never stop us on its own.
+      if (bundle.failed) return;
       // Drop frame if worker is still working on the previous one. The
       // initial frame is always sent (lastSentSeq === lastAckSeq === 0).
       if (bundle.lastSentSeq !== bundle.lastAckSeq) return;
