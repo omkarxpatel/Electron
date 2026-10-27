@@ -45,11 +45,18 @@ function AudioStatsImpl({ analyser, analyserL, analyserR, active = true }: Props
   const rmsHistoryRef = useRef<number[]>([]);
 
   const toggleCollapsed = () => {
-    setCollapsed((c) => {
-      const next = !c;
+    // Derived and persisted outside the updater. A `setState` updater has to
+    // be pure, and `setItem` throws synchronously once the origin's quota is
+    // exhausted — from in there that throw escapes through React's commit and
+    // aborts the state transition, so the panel would not even collapse. Out
+    // here the worst case is that it does not stay collapsed next launch.
+    const next = !collapsed;
+    try {
       localStorage.setItem(COLLAPSE_KEY, String(next));
-      return next;
-    });
+    } catch (err) {
+      console.error('AudioStats: collapse state persist failed', err);
+    }
+    setCollapsed(next);
   };
 
   useEffect(() => {

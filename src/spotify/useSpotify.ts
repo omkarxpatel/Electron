@@ -9,6 +9,7 @@ import {
   setLastPlaylistId,
   clearLastPlaylistId,
 } from './storage';
+import { clearIndex } from './playlistIndex';
 import { useVisibility } from '../hooks/useVisibility';
 import type {
   SpotifyDevice,
@@ -177,6 +178,25 @@ export function useSpotify() {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  /**
+   * Which load of the track list is the current one.
+   *
+   * `sourceKey` says WHICH list is on screen; it does not say which load of
+   * it. Navigate playlist A → B → A and the key is A again, so a page fetched
+   * for the first A walked straight through the stale guard and was appended
+   * to the second A's first page: rows 0-99 followed by rows 300-399, with
+   * `tracksNextOffset` moved to 400. Rows 100-299 were then gone for the rest
+   * of the session, nothing errored, and scrolling further never went back for
+   * them.
+   *
+   * Bumped by everything that resets or replaces the list, and captured next
+   * to the key by everything that later applies a fetch. Bump first, then
+   * capture, so the newest load always matches its own guard — that ordering
+   * is what stops a double-invoked effect under StrictMode from leaving
+   * `tracksLoading` stuck on with no load left to clear it.
+   */
+  const loadGenerationRef = useRef(0);
+
   // Shuffle/repeat poll lock-out. After the user toggles, Spotify takes
   // a poll cycle or two to propagate the new value. Without this guard, the
   // next poll fetches stale state and the UI flickers OFF→ON→OFF. While the
@@ -283,6 +303,11 @@ export function useSpotify() {
   const signOut = useCallback(() => {
     disconnect();
     clearLastPlaylistId();
+    // The list is being emptied, so retire any page still in flight for the
+    // account we just left rather than let it land in the next one's list.
+    loadGenerationRef.current += 1;
+    // Per-account, and nothing else drops it — see clearIndex.
+    clearIndex();
     setState((s) => ({
       ...s,
       authed: false,
@@ -299,6 +324,10 @@ export function useSpotify() {
     disconnect();
     clearClientId();
     clearLastPlaylistId();
+    // Same as signOut: this drops the session too, so the same two things that
+    // outlive a `setState` have to be dropped with it.
+    loadGenerationRef.current += 1;
+    clearIndex();
     setState((s) => ({
       ...s,
       clientId: null,
@@ -339,6 +368,8 @@ export function useSpotify() {
    *  call differs between them. */
   const openSource = useCallback(async (source: TrackSource) => {
     const key = sourceKey(source);
+    loadGenerationRef.current += 1;
+    const generation = loadGenerationRef.current;
     setState((s) => ({
       ...s,
       source,
@@ -357,7 +388,7 @@ export function useSpotify() {
     try {
       const page = await fetchSourcePage(source, 0);
       setState((s) => {
-        if (sourceKey(s.source) !== key) return s;
+        if (sourceKey(s.source) !== key || loadGenerationRef.current !== generation) return s;
         return {
           ...s,
           tracks: page.tracks,
@@ -368,7 +399,11 @@ export function useSpotify() {
       });
     } catch (err) {
       console.error('openSource failed:', err);
-      setState((s) => (sourceKey(s.source) === key ? { ...s, tracksLoading: false } : s));
+      setState((s) =>
+        sourceKey(s.source) === key && loadGenerationRef.current === generation
+          ? { ...s, tracksLoading: false }
+          : s,
+      );
     }
   }, []);
 
@@ -398,13 +433,20 @@ export function useSpotify() {
     const source = s.source;
     if (!source || s.tracksNextOffset === null || s.tracksLoading) return;
     const key = sourceKey(source);
+    const generation = loadGenerationRef.current;
     const offset = s.tracksNextOffset;
     setState((cur) => ({ ...cur, tracksLoading: true }));
     try {
       const page = await fetchSourcePage(source, offset);
       setState((cur) => {
-        // Skip if the user switched sources during the fetch.
-        if (sourceKey(cur.source) !== key) return { ...cur, tracksLoading: false };
+        // Skip if the user switched sources during the fetch — or came back to
+        // this one, which reloaded the list underneath us. The key matches
+        // again on that round trip, but `cur.tracks` is a fresh first page and
+        // this one is for an offset far past the end of it; appending would
+        // leave a hole where everything between them should be.
+        if (sourceKey(cur.source) !== key || loadGenerationRef.current !== generation) {
+          return { ...cur, tracksLoading: false };
+        }
         return {
           ...cur,
           tracks: [...cur.tracks, ...page.tracks],
@@ -437,6 +479,10 @@ export function useSpotify() {
     const source = s.source;
     if (!source || s.tracksLoading) return;
     const key = sourceKey(source);
+    // This replaces the whole array, so it is a new load of the list and
+    // anything already in flight against the old one is now stale.
+    loadGenerationRef.current += 1;
+    const generation = loadGenerationRef.current;
 
     // How far we'd paged. `tracksNextOffset === null` means everything was
     // loaded, so re-cover it entirely — including anything appended since,
@@ -444,7 +490,11 @@ export function useSpotify() {
     const hadEverything = s.tracksNextOffset === null;
     let target = hadEverything ? Number.POSITIVE_INFINITY : s.tracksNextOffset ?? 0;
 
-    setState((cur) => (sourceKey(cur.source) === key ? { ...cur, tracksLoading: true } : cur));
+    setState((cur) =>
+      sourceKey(cur.source) === key && loadGenerationRef.current === generation
+        ? { ...cur, tracksLoading: true }
+        : cur,
+    );
 
     const collected: SpotifyTrack[] = [];
     let offset = 0;
@@ -452,8 +502,9 @@ export function useSpotify() {
     try {
       do {
         const page = await fetchSourcePage(source, offset);
-        // Bail if the user switched sources mid-refresh.
+        // Bail if the user switched sources mid-refresh, or reloaded this one.
         if (sourceKey(stateRef.current.source) !== key) return;
+        if (loadGenerationRef.current !== generation) return;
         total = page.total;
         if (hadEverything) target = page.total;
         collected.push(...page.tracks);
@@ -463,7 +514,7 @@ export function useSpotify() {
       } while (offset < target && offset < total);
 
       setState((cur) => {
-        if (sourceKey(cur.source) !== key) return cur;
+        if (sourceKey(cur.source) !== key || loadGenerationRef.current !== generation) return cur;
         return {
           ...cur,
           tracks: collected,
@@ -474,7 +525,11 @@ export function useSpotify() {
       });
     } catch (err) {
       console.error('refreshSelectedTracks failed:', err);
-      setState((cur) => (sourceKey(cur.source) === key ? { ...cur, tracksLoading: false } : cur));
+      setState((cur) =>
+        sourceKey(cur.source) === key && loadGenerationRef.current === generation
+          ? { ...cur, tracksLoading: false }
+          : cur,
+      );
     }
   }, []);
 
@@ -633,6 +688,10 @@ export function useSpotify() {
       const source = stateRef.current.source;
       if (!source) return;
       const key = sourceKey(source);
+      // Captured, not bumped: this edits the load that is on screen rather
+      // than starting a new one. What it has to know is whether that load is
+      // still the one it measured `removed` and `before` against.
+      const generation = loadGenerationRef.current;
       const uri = track.uri;
 
       const removed = stateRef.current.tracks.filter((t) => t.uri === uri).length;
@@ -655,7 +714,7 @@ export function useSpotify() {
           : null;
 
       setState((cur) => {
-        if (sourceKey(cur.source) !== key) return cur;
+        if (sourceKey(cur.source) !== key || loadGenerationRef.current !== generation) return cur;
         return {
           ...cur,
           tracks: cur.tracks.filter((t) => t.uri !== uri),
@@ -681,7 +740,11 @@ export function useSpotify() {
           // Recording the new snapshot stops the background poll re-paging the
           // playlist purely because we just edited it. Skipped when the counts
           // above were approximate, so the poll still reconciles that case.
-          if (countIsExact && sourceKey(stateRef.current.source) === key) {
+          if (
+            countIsExact &&
+            sourceKey(stateRef.current.source) === key &&
+            loadGenerationRef.current === generation
+          ) {
             loadedSnapshotRef.current = { playlistId: source.playlist.id, snapshotId: next };
           }
         }
@@ -691,7 +754,14 @@ export function useSpotify() {
         // what we captured beats re-fetching: the snapshot never moved, so
         // the background poll would see "unchanged" and never correct it, and
         // refreshSelectedTracks no-ops outright if a page load is in flight.
-        setState((cur) => (sourceKey(cur.source) === key ? { ...cur, ...before } : cur));
+        // The generation is what stops that restore putting a different load's
+        // rows back: on an A → B → A round trip the key is A again, and these
+        // are the rows A held before the user ever left it.
+        setState((cur) =>
+          sourceKey(cur.source) === key && loadGenerationRef.current === generation
+            ? { ...cur, ...before }
+            : cur,
+        );
         throw err;
       }
     },

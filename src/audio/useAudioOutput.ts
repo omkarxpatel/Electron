@@ -17,6 +17,25 @@ import { isVirtualSink } from './deviceLabel';
 const STORAGE_OUTPUT_KEY = 'av.audioOutput.deviceId';
 const MIGRATION_KEY = 'av.audioOutput.migration.v1';
 
+/**
+ * Write (or, for `null`, clear) a key, best effort. `setItem` throws
+ * synchronously when the origin's quota is exhausted — also in private mode,
+ * and on some disk errors — and none of these values are worth taking the
+ * audio UI down for: output still routes where the user asked this session,
+ * the choice just isn't there next launch. Returns false if it didn't land,
+ * which the migration below needs to know.
+ */
+function persist(key: string, value: string | null): boolean {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+    return true;
+  } catch (err) {
+    console.error('audioOutput: persist failed', key, err);
+    return false;
+  }
+}
+
 export function useAudioOutput() {
   const [outputDeviceId, setState] = useState<string | null>(() => {
     return localStorage.getItem(STORAGE_OUTPUT_KEY);
@@ -24,8 +43,7 @@ export function useAudioOutput() {
 
   const setOutputDevice = useCallback((id: string | null) => {
     setState(id);
-    if (id === null) localStorage.removeItem(STORAGE_OUTPUT_KEY);
-    else localStorage.setItem(STORAGE_OUTPUT_KEY, id);
+    persist(STORAGE_OUTPUT_KEY, id);
   }, []);
 
   /**
@@ -49,7 +67,7 @@ export function useAudioOutput() {
     if (!persistedId) {
       // Nothing to migrate. Mark done so we don't keep enumerating devices
       // on every cold launch for users who never picked anything.
-      localStorage.setItem(MIGRATION_KEY, 'done');
+      persist(MIGRATION_KEY, 'done');
       return;
     }
     let cancelled = false;
@@ -65,12 +83,16 @@ export function useAudioOutput() {
         const match = devices.find(
           (d) => d.kind === 'audiooutput' && d.deviceId === persistedId,
         );
+        let stillStored = false;
         if (match && isVirtualSink(match.label)) {
-          localStorage.removeItem(STORAGE_OUTPUT_KEY);
+          stillStored = !persist(STORAGE_OUTPUT_KEY, null);
           setState(null);
         }
         // Whether or not we cleared, we've successfully checked — mark done.
-        localStorage.setItem(MIGRATION_KEY, 'done');
+        // Unless the clear itself was refused: flagging done with the virtual
+        // sink still on disk means no later launch ever rechecks it, and the
+        // user is back on a silent output device every time.
+        if (!stillStored) persist(MIGRATION_KEY, 'done');
       })
       .catch(() => {
         // enumerateDevices can throw if the API is unavailable; leave the

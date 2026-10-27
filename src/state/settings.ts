@@ -1,24 +1,56 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 
-export type PaletteId =
-  | 'spotify'
-  | 'aurora'
-  | 'sunset'
-  | 'neon'
-  | 'fire'
-  | 'ocean'
-  | 'mono'
-  | 'rainbow'
-  | 'cyberpunk'
-  | 'pastel'
-  | 'magenta'
-  | 'ice'
-  | 'ember'
-  | 'forest'
-  | 'candy'
-  | 'mono2'
-  | 'custom';
-export type WaveformStyle = 'ribbon' | 'radial' | 'dots' | 'mirror' | 'bars' | 'line' | 'filled' | 'spectrum' | 'particles' | 'silk' | 'lissajous' | 'crystal' | 'ripples' | 'expanse' | 'nova';
+/**
+ * The ids, as a runtime list rather than only a type.
+ *
+ * Both of these arrive from localStorage, which survives downgrades and hand
+ * editing, and both used to be spread straight through `load()` with no
+ * check. An id this build does not know then reached `PALETTES[id]` as
+ * `undefined` and threw on first render — caught only by the ROOT error
+ * boundary, whose one recovery is `location.reload()`, which re-reads the
+ * same stored value and throws again. An unrecoverable loop with no way out
+ * of the app, and you did not have to hand-edit anything to get there:
+ * downgrading past a release that added a palette does it.
+ *
+ * Deriving the union from the array keeps the validator and the type from
+ * drifting — add an id in one place and both move. `PALETTES` in
+ * visualizers/palettes.ts is typed `Record<PaletteId, Palette>`, so a list
+ * that disagrees with it fails the build rather than at runtime.
+ */
+export const PALETTE_IDS = [
+  'spotify',
+  'aurora',
+  'sunset',
+  'neon',
+  'fire',
+  'ocean',
+  'mono',
+  'rainbow',
+  'cyberpunk',
+  'pastel',
+  'magenta',
+  'ice',
+  'ember',
+  'forest',
+  'candy',
+  'mono2',
+  'custom',
+] as const;
+export type PaletteId = (typeof PALETTE_IDS)[number];
+
+export const WAVEFORM_STYLES = [
+  'ribbon', 'radial', 'dots', 'mirror', 'bars', 'line', 'filled', 'spectrum',
+  'particles', 'silk', 'lissajous', 'crystal', 'ripples', 'expanse', 'nova',
+] as const;
+export type WaveformStyle = (typeof WAVEFORM_STYLES)[number];
+
+function isPaletteId(v: unknown): v is PaletteId {
+  return typeof v === 'string' && (PALETTE_IDS as readonly string[]).includes(v);
+}
+
+function isWaveformStyle(v: unknown): v is WaveformStyle {
+  return typeof v === 'string' && (WAVEFORM_STYLES as readonly string[]).includes(v);
+}
 
 /**
  * Per-stage visual tuning.
@@ -188,6 +220,11 @@ function coerceProfile(raw: unknown, base: VisualProfile): VisualProfile {
     const v = src[k];
     if (v !== undefined) (out as Record<string, unknown>)[k] = v;
   }
+  // `waveformStyle` reaches a switch in the worker's draw loop that now ends
+  // in an exhaustiveness assert, so an id this build doesn't know would throw
+  // there once per frame instead of drawing. Same provenance as the palette —
+  // storage outlives the build that wrote it.
+  if (!isWaveformStyle(out.waveformStyle)) out.waveformStyle = base.waveformStyle;
   return out;
 }
 
@@ -199,7 +236,9 @@ function migrateLegacy(flat: Record<string, unknown>): Settings {
   const visual = coerceProfile(flat, BANNER_PROFILE);
   return {
     ...DEFAULT_SETTINGS,
-    palette: (flat.palette as PaletteId) ?? DEFAULT_SETTINGS.palette,
+    // The legacy blob is the OLDEST storage in the app, so it is the most
+    // likely to carry an id this build no longer has. Validated, not cast.
+    palette: isPaletteId(flat.palette) ? flat.palette : DEFAULT_SETTINGS.palette,
     customColors:
       (flat.customColors as [string, string, string]) ?? DEFAULT_SETTINGS.customColors,
     autoTintFromAlbumArt:
@@ -238,6 +277,13 @@ function load(): Settings {
       };
       if (!Array.isArray(merged.customColors) || merged.customColors.length !== 3) {
         merged.customColors = DEFAULT_SETTINGS.customColors;
+      }
+      // Same treatment as customColors above, for the same reason: `parsed`
+      // is spread wholesale, so anything in storage lands here as-is. An
+      // unknown palette id is the one that takes the whole app down — see
+      // PALETTE_IDS.
+      if (!isPaletteId(merged.palette)) {
+        merged.palette = DEFAULT_SETTINGS.palette;
       }
       merged.immersive = false;
       return merged;
@@ -285,7 +331,14 @@ export function useSettings() {
   // Debounce: sliders drag at ~60 Hz. See useEQ for the same rationale.
   useEffect(() => {
     const t = window.setTimeout(() => {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      } catch (err) {
+        // Quota, private mode, or a disk error. The app runs off live state
+        // either way; what is lost is the look coming back after a restart.
+        // Logged rather than swallowed — same treatment as useEQ.
+        console.error('settings: persist failed', err);
+      }
     }, 250);
     return () => window.clearTimeout(t);
   }, [settings]);

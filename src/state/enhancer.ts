@@ -60,7 +60,13 @@ export function useEnhancer() {
   // write. See useEQ for the same rationale.
   useEffect(() => {
     const t = window.setTimeout(() => {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (err) {
+        // Quota, private mode, or a disk error. The knobs keep working off
+        // live state; what is lost is their positions after a restart.
+        console.error('enhancer: persist failed', err);
+      }
     }, 250);
     return () => window.clearTimeout(t);
   }, [state]);

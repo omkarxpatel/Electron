@@ -471,6 +471,12 @@ console.log('\nTrack memory');
   // The store is written on every track change and read whole at startup, so
   // its size is a real cost the user is shown in Settings. Assert the budget
   // rather than trusting the encoding to stay terse.
+  //
+  // Measured at the cap with realistic entries: ~138 KB, ~141 B per track.
+  // The 150 KB bound below is therefore about 8% of headroom — deliberately
+  // tight. Another stored field will trip it, which is the point: the store
+  // is written synchronously on the main thread once per track, so growth
+  // here is a decision, not a detail.
   const MAX_TRACKS = 1000;
   const big = {};
   for (let i = 0; i < MAX_TRACKS; i++) {
@@ -486,7 +492,13 @@ console.log('\nTrack memory');
       -14 - (i % 60) / 10,
       i % 24,
       0.5 + (i % 40) / 100,
-      90 + (i % 50),
+      // Fractional, because encodeProfile stores BPM at 0.1 and real
+      // detection almost never lands on a whole number. Integer BPMs here
+      // made every entry two characters shorter than a real one and
+      // understated the whole store by ~15%, against a budget with only a
+      // few percent of headroom — so the generator's easy setting was
+      // quietly buying the assertion its margin.
+      90 + (i % 50) + (i % 10) / 10,
       0.4 + (i % 50) / 100,
     );
   }

@@ -19,11 +19,17 @@ const STORAGE_KEY = 'av.trackMemory.v1';
 /**
  * Entries kept, least-recently-heard evicted.
  *
- * At the measured ~100 bytes per track (check:enhancer asserts the budget)
- * this is roughly 100 KB — a couple of percent of the localStorage budget,
- * and more distinct tracks than a listening rotation reaches. The cap exists
- * so the store has a known ceiling rather than growing with play history
- * forever.
+ * At the measured ~141 bytes per track (check:enhancer asserts the budget)
+ * this is about 138 KB — a few percent of the localStorage budget, and more
+ * distinct tracks than a listening rotation reaches. The cap exists so the
+ * store has a known ceiling rather than growing with play history forever.
+ *
+ * The figure was "~100 bytes / ~100 KB" until it was re-measured: that
+ * described the store before the loudness meter and the key/tempo fields
+ * existed, and check:enhancer's generator was using integer BPMs, which are
+ * two characters shorter than the 0.1 precision actually written. Both were
+ * understating it. The assertion's headroom over the real figure is now
+ * about 8%, so adding a field here will trip it on purpose.
  */
 export const MAX_TRACKS = 1000;
 

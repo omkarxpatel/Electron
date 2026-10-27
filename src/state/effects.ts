@@ -67,7 +67,13 @@ export function useEffectsRack() {
   // drags fire at ~60 Hz and each write is a blocking JSON.stringify.
   useEffect(() => {
     const t = window.setTimeout(() => {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (err) {
+        // Quota, private mode, or a disk error. The rack keeps running off
+        // live state; what is lost is the settings coming back next launch.
+        console.error('effects: persist failed', err);
+      }
     }, 250);
     return () => window.clearTimeout(t);
   }, [state]);

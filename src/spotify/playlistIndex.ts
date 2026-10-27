@@ -45,6 +45,10 @@ const started = new Set<string>();
 const listeners = new Set<() => void>();
 
 let crawling = 0;
+/** Bumped by `clearIndex()`. A worker captures the value it started under and
+ *  throws its page away if it has moved since — see clearIndex for why that is
+ *  the only way to retire a crawl that is already in flight. */
+let generation = 0;
 
 function emit(): void {
   for (const fn of listeners) fn();
@@ -88,6 +92,7 @@ export function ensureIndexed(playlists: SpotifyPlaylist[]): void {
   const queue = [...todo];
   const workers = Math.min(CONCURRENCY, queue.length);
   crawling += workers;
+  const gen = generation;
 
   for (let i = 0; i < workers; i++) {
     void (async () => {
@@ -95,9 +100,17 @@ export function ensureIndexed(playlists: SpotifyPlaylist[]): void {
         const id = queue.shift();
         if (id === undefined) break;
         try {
-          contents.set(id, await getPlaylistTrackUris(id));
+          const uris = await getPlaylistTrackUris(id);
+          // clearIndex() ran while that page was in flight, so it belongs to
+          // an account we have signed out of. Returning rather than breaking
+          // is deliberate: it also skips the decrement below, which clearIndex
+          // has already zeroed, and decrementing a zeroed count would make the
+          // next account's crawl report itself finished before it was.
+          if (generation !== gen) return;
+          contents.set(id, uris);
           emit();
         } catch (err) {
+          if (generation !== gen) return;
           // Left unread, not recorded as empty — an empty set would claim the
           // track is absent from a playlist we failed to read.
           started.delete(id);
@@ -108,6 +121,33 @@ export function ensureIndexed(playlists: SpotifyPlaylist[]): void {
       emit();
     })();
   }
+}
+
+/**
+ * Forget everything, for a sign-out.
+ *
+ * The index is per-account and nothing used to drop it. One real account
+ * measured 14,047 uris and 1.25 MB, and signing into a second stacked on top
+ * of the first — but the memory is the smaller half. A leftover entry from
+ * account A marks a playlist as already containing a track for account B, and
+ * since this store only ever reports containment (see the header), the user's
+ * only way to find out is to go looking for a song they were told was already
+ * there.
+ *
+ * Subscribers are kept: they are mounted components, and they need the emit to
+ * drop the markers they are showing right now.
+ */
+export function clearIndex(): void {
+  contents.clear();
+  started.clear();
+  // A crawl in flight has no abort path — its workers are parked in
+  // `await getPlaylistTrackUris`. Moving the generation is what retires them:
+  // they discard their page and stop, and because they then skip their own
+  // decrement, zeroing the count here can neither drive it negative nor leave
+  // `isIndexing()` stuck reporting a crawl that nothing will ever finish.
+  generation += 1;
+  crawling = 0;
+  emit();
 }
 
 /** Keep the index true after our own write, so the marker is right at once

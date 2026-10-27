@@ -114,6 +114,22 @@ export interface UserPreset {
 
 const USER_PRESETS_KEY = 'av.eq.userPresets.v1';
 
+/**
+ * Write the preset list, best effort. `setItem` throws synchronously when the
+ * origin's quota is exhausted (also in private mode, and on some disk
+ * errors), and this used to run inside a `setUserPresets` updater where that
+ * throw escapes through React's commit — the nearest boundary is the root
+ * one, whose only recovery is a full reload. Out here the list is still
+ * correct for this session; what is lost is it being there next launch.
+ */
+function persistUserPresets(presets: UserPreset[]): void {
+  try {
+    localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(presets));
+  } catch (err) {
+    console.error('eq: user presets persist failed', err);
+  }
+}
+
 function loadUserPresets(): UserPreset[] {
   try {
     const raw = localStorage.getItem(USER_PRESETS_KEY);
@@ -262,7 +278,15 @@ export function useEQ() {
   // a drag burst to a single write.
   useEffect(() => {
     const t = window.setTimeout(() => {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (err) {
+        // Quota, private mode, or a disk error. An uncaught throw in a timer
+        // takes nothing down with it, but it is still a crash in the log for
+        // something recoverable: the EQ runs off live state regardless, and
+        // all that is lost is the curve coming back after a restart.
+        console.error('eq: persist failed', err);
+      }
     }, 250);
     return () => window.clearTimeout(t);
   }, [state]);
@@ -358,12 +382,14 @@ export function useEQ() {
       bands: s.bands.slice(),
       preamp: s.preamp,
     };
-    setUserPresets((prev) => {
-      const next = prev.filter((p) => p.name !== trimmed).concat(entry);
-      next.sort((a, b) => a.name.localeCompare(b.name));
-      localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(next));
-      return next;
-    });
+    // Built and persisted outside the updater: a `setState` updater has to be
+    // pure and has to return, and a quota throw in there aborts the state
+    // transition on its way out of the commit. The ref is already kept in
+    // sync every render for exactly this kind of read.
+    const next = userPresetsRef.current.filter((p) => p.name !== trimmed).concat(entry);
+    next.sort((a, b) => a.name.localeCompare(b.name));
+    persistUserPresets(next);
+    setUserPresets(next);
     setState((cur) => ({ ...cur, activePreset: 'custom', activeUserPreset: trimmed }));
   }, []);
 
@@ -392,11 +418,10 @@ export function useEQ() {
   }, []);
 
   const deleteUserPreset = useCallback((name: string) => {
-    setUserPresets((prev) => {
-      const next = prev.filter((p) => p.name !== name);
-      localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(next));
-      return next;
-    });
+    // Out of the updater for the same reason as saveUserPreset above.
+    const next = userPresetsRef.current.filter((p) => p.name !== name);
+    persistUserPresets(next);
+    setUserPresets(next);
     setState((s) => (s.activeUserPreset === name ? { ...s, activeUserPreset: null } : s));
   }, []);
 

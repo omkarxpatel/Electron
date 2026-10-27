@@ -8,6 +8,13 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.28 (prompt)
+
+- A saved setting the app doesn't recognise — after going back to an older version, for example — no longer stops the app from opening. It falls back to the default instead, and the error screen has a new "Reset appearance & reload" button for anything like it.
+- Leaving a playlist and coming back to it no longer loses part of its track list.
+- Signing out now forgets which of your playlists contain which tracks, so the next account to sign in doesn't see the last one's markers.
+- If the app's own storage fills up, settings that can't be saved no longer crash it — they just aren't remembered after a restart — and your Spotify sign-in can no longer be left half-saved.
+
 ## 1.4.27 (prompt)
 
 - The visualizer, the output meters and the EQ curve now work with Live turned off. Visualize-only mode used to draw a flat line, so the app looked switched off even with music playing.

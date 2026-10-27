@@ -24,6 +24,27 @@ export type SourceMode = 'none' | 'system' | 'device';
 const STORAGE_MODE_KEY = 'av.audioSource.mode';
 const STORAGE_DEVICE_KEY = 'av.audioSource.deviceId';
 
+/**
+ * Remember the source choice, best effort. `setItem` throws synchronously
+ * when the origin's quota is exhausted — also in private mode, and on some
+ * disk errors — and the stream is already swapped by the time we get here:
+ * the capture runs either way, and all that is lost is it coming back
+ * selected next launch.
+ *
+ * The device id is written BEFORE the mode. If only the first write lands,
+ * storage holds the new id under the old mode, which is either already right
+ * or simply unread. The other order is the one that bites: mode 'device'
+ * beside the previous device's id reconnects the wrong input on next launch.
+ */
+function remember(mode: SourceMode, deviceId: string | null): void {
+  try {
+    if (deviceId !== null) localStorage.setItem(STORAGE_DEVICE_KEY, deviceId);
+    localStorage.setItem(STORAGE_MODE_KEY, mode);
+  } catch (err) {
+    console.error('audioSource: persist failed', err);
+  }
+}
+
 /** How long a track may sit `muted` before we treat it as dead. Short
  *  stalls are self-healing and fire `unmute` well inside this window. */
 const MUTE_GRACE_MS = 1500;
@@ -124,7 +145,7 @@ export function useAudioSource() {
       }
 
       swap(stream);
-      localStorage.setItem(STORAGE_MODE_KEY, 'system');
+      remember('system', null);
       setState((s) => ({ ...s, mode: 'system', deviceId: null, busy: false }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -145,8 +166,7 @@ export function useAudioSource() {
           },
         });
         swap(stream);
-        localStorage.setItem(STORAGE_MODE_KEY, 'device');
-        localStorage.setItem(STORAGE_DEVICE_KEY, deviceId);
+        remember('device', deviceId);
         setState((s) => ({ ...s, mode: 'device', deviceId, busy: false }));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -243,7 +263,7 @@ export function useAudioSource() {
 
   const disconnect = useCallback(() => {
     swap(null);
-    localStorage.setItem(STORAGE_MODE_KEY, 'none');
+    remember('none', null);
     setState((s) => ({ ...s, mode: 'none', deviceId: null, error: null }));
   }, [swap]);
 

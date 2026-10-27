@@ -187,7 +187,14 @@ function AppContent() {
   const hasSource = audioSource.stream !== null;
 
   useEffect(() => {
-    localStorage.setItem(PLAYTHROUGH_KEY, String(playthrough));
+    try {
+      localStorage.setItem(PLAYTHROUGH_KEY, String(playthrough));
+    } catch (err) {
+      // Quota, private mode, or a disk error. Playthrough is already on or
+      // off for this session; only its default next launch is lost, and a
+      // throw here would escape straight out of a commit.
+      console.error('App: playthrough persist failed', err);
+    }
   }, [playthrough]);
 
   // Tell main whether sound is actually coming out of us. A release marked
@@ -345,7 +352,13 @@ function AppContent() {
     setRightCollapsed((v) => !v);
   }, []);
   useEffect(() => {
-    localStorage.setItem(RIGHT_COLLAPSED_KEY, String(rightCollapsed));
+    try {
+      localStorage.setItem(RIGHT_COLLAPSED_KEY, String(rightCollapsed));
+    } catch (err) {
+      // Same as playthrough above: the column is already collapsed or not,
+      // and only the next launch forgets which.
+      console.error('App: right-column persist failed', err);
+    }
   }, [rightCollapsed]);
 
   return (
