@@ -47,6 +47,7 @@ HANDOFF.md
 /PERFORMANCE_PROFILING_PLAN.md
 /QUICK_WINS_CHECKLIST.md
 /RISKY_CHANGES.md
+/audit/
 
 # compiled CoreAudio volume helper (rebuilt by scripts/build-helper.sh)
 build/helpers/avvolume

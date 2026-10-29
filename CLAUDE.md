@@ -493,3 +493,8 @@ root (`HANDOFF.md`, `MASTER_OPTIMIZATION_ROADMAP.md`, `IMPLEMENTATION_PHASES.md`
 `RISKY_CHANGES.md`, `DEEP_REFACTOR_CANDIDATES.md`, `QUICK_WINS_CHECKLIST.md`,
 `PERFORMANCE_PROFILING_PLAN.md`, `CLAUDE_CHANGES/`, `CODEX_CHANGES/`) are gitignored on purpose —
 they are working notes, not public docs. Don't un-ignore them.
+
+The same goes for `audit/`: the codebase audit (`SUMMARY.md`, one report per area), the
+remediation plan that sequenced v1.4.26 onward, and the stress-test tools — a corpus generator,
+a parser fuzzer and a soak logger. Read `audit/REMEDIATION-PLAN.md` before picking up any of its
+open items; it records what was measured, what was tried and backed out, and why.
