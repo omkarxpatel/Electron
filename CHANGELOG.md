@@ -8,6 +8,11 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.30 (silent)
+
+- Changing tracks with album-art tinting on is a little smoother: the colour fade no longer throws away the visualizer's cached colours at every step.
+- Playlist folders are read more carefully from the Spotify app's cache. A damaged cache file can no longer produce the wrong folders, or use up enough memory to crash the app.
+
 ## 1.4.29 (prompt)
 
 - Quitting with Live on could leave your speakers or headphones stuck at full volume, with nothing left to put them back. The app now keeps the volume it needs to restore until it has actually restored it, so if a restore ever fails it is put right the next time the app starts.

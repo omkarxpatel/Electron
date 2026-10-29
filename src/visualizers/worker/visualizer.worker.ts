@@ -126,9 +126,27 @@ self.addEventListener('message', (event: MessageEvent<InboundMessage>) => {
       break;
     case 'PALETTE_OVERRIDE':
       paletteOverride = msg.palette;
-      // Override changes invalidate any cached gradients keyed on the old
-      // palette id — clear so the next frame rebuilds with the new colors.
-      if (ctx) clearGradientCache(ctx);
+      /* Deliberately does NOT clear the gradient cache.
+       *
+       * It used to, on the theory that a new override invalidates gradients
+       * keyed on the old palette. It does not: every palette in this app
+       * derives its id from its own colours, so a different colour set is
+       * always a different cache key —
+       *   static      a fixed id with fixed colours
+       *   custom      `custom:${low}${mid}${high}`      (palettes.ts)
+       *   album art   `auto-${primary}-${secondary}`    (extractPalette.ts)
+       *   cross-fade  `mix:${a}>${b}@${k*1000}`         (mixPalettes)
+       * A stale entry is therefore never *read*; it just ages out against the
+       * 24-entry ceiling.
+       *
+       * Clearing was actively harmful. The album-art cross-fade emits a fresh
+       * palette identity at 30 Hz for 900 ms, so a track change sent ~27 of
+       * these, and each one also threw away every unrelated gradient — other
+       * coordinate variants, and the user's base palette — at the exact
+       * moment the user is watching a transition.
+       *
+       * The RESIZE branch below still clears, and must: those keys encode
+       * canvas coordinates that genuinely no longer apply. */
       break;
     case 'RESIZE':
       dpr = msg.dpr;

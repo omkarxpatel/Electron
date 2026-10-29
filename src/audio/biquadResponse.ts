@@ -71,10 +71,17 @@ function highShelfCoefs(fc: number, gainDb: number, sampleRate: number): BiquadC
   };
 }
 
-function magnitudeDb(coefs: BiquadCoefs, f: number, sampleRate: number): number {
-  const w = (2 * Math.PI * f) / sampleRate;
-  const cosw = Math.cos(w);
-  const cos2w = Math.cos(2 * w);
+/**
+ * `cos(w)` and `cos(2w)` for one frequency, computed once and handed to every
+ * band at that frequency.
+ *
+ * They depend only on `f` and `sampleRate` — never on the coefficients — but
+ * they used to be computed inside magnitudeDb, which runs once per band per
+ * frequency. The AI enhancer's 10 Hz tick walks a 96-point curve across 13
+ * biquads, so that was ~2,500 cosines every tick for 192 distinct values,
+ * ten times a second, on the main thread.
+ */
+function magnitudeDbAt(coefs: BiquadCoefs, cosw: number, cos2w: number): number {
   const { b0, b1, b2, a1, a2 } = coefs;
 
   const num =
@@ -88,6 +95,12 @@ function magnitudeDb(coefs: BiquadCoefs, f: number, sampleRate: number): number 
 
   if (den <= 0) return -Infinity;
   return 10 * Math.log10(num / den);
+}
+
+/** Single-frequency convenience wrapper, for callers outside the curve loop. */
+function magnitudeDb(coefs: BiquadCoefs, f: number, sampleRate: number): number {
+  const w = (2 * Math.PI * f) / sampleRate;
+  return magnitudeDbAt(coefs, Math.cos(w), Math.cos(2 * w));
 }
 
 /**
@@ -203,15 +216,20 @@ export function responseCurveDb(
   set: BandCoefSet,
   sampleRate: number = DEFAULT_SAMPLE_RATE,
 ): number {
+  // Once per frequency, not once per band per frequency — see magnitudeDbAt.
+  const w = (2 * Math.PI * freq) / sampleRate;
+  const cosw = Math.cos(w);
+  const cos2w = Math.cos(2 * w);
+
   let total = set.preampDb;
   for (let i = 0; i < set.bandCoefs.length; i++) {
     const entry = set.bandCoefs[i];
     if (!entry.nonZero) continue;
-    total += magnitudeDb(entry.coefs, freq, sampleRate);
+    total += magnitudeDbAt(entry.coefs, cosw, cos2w);
   }
-  if (set.bassEnhCoefs) total += magnitudeDb(set.bassEnhCoefs.coefs, freq, sampleRate);
-  if (set.trebleEnhCoefs) total += magnitudeDb(set.trebleEnhCoefs.coefs, freq, sampleRate);
-  if (set.midEnhCoefs) total += magnitudeDb(set.midEnhCoefs.coefs, freq, sampleRate);
+  if (set.bassEnhCoefs) total += magnitudeDbAt(set.bassEnhCoefs.coefs, cosw, cos2w);
+  if (set.trebleEnhCoefs) total += magnitudeDbAt(set.trebleEnhCoefs.coefs, cosw, cos2w);
+  if (set.midEnhCoefs) total += magnitudeDbAt(set.midEnhCoefs.coefs, cosw, cos2w);
   return total;
 }
 
