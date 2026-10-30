@@ -170,8 +170,8 @@ const SCENES = [
   },
   {
     // The album view. Its rows are the only ones in the app with no artwork
-    // column, which is what made .sp-track-title-cell's `display: flex`
-    // visible here and nowhere else — see that rule.
+    // column, which is where .sp-track-title-cell's old `display: flex` was
+    // easiest to see — see .sp-track-title-inner.
     name: 'album',
     width: 1440, height: 900,
     capture: { settings: { waveformStyle: 'bars', palette: 'aurora' }, playlistId: 'pl1' },

@@ -537,16 +537,18 @@ function PopularRow({
         )}
       </td>
       <td className="sp-track-title-cell">
-        {thumb ? (
-          <img className="sp-track-thumb" src={thumb} alt="" loading="lazy" draggable={false} />
-        ) : (
-          <div className="sp-track-thumb sp-track-thumb-fallback" />
-        )}
-        <div className="sp-track-text">
-          <div className="sp-track-name">{track.name}</div>
-          <div className="sp-track-artists">
-            {track.explicit ? <span className="sp-track-explicit">E</span> : null}
-            {track.album?.name}
+        <div className="sp-track-title-inner">
+          {thumb ? (
+            <img className="sp-track-thumb" src={thumb} alt="" loading="lazy" draggable={false} />
+          ) : (
+            <div className="sp-track-thumb sp-track-thumb-fallback" />
+          )}
+          <div className="sp-track-text">
+            <div className="sp-track-name">{track.name}</div>
+            <div className="sp-track-artists">
+              {track.explicit ? <span className="sp-track-explicit">E</span> : null}
+              {track.album?.name}
+            </div>
           </div>
         </div>
       </td>

@@ -508,16 +508,18 @@ function TrackRow({ track, active, playing, onClick, onContextMenu }: TrackRowPr
       onContextMenu={onContextMenu}
     >
       <td className="sp-track-title-cell">
-        {thumbUrl ? (
-          <img className="sp-track-thumb" src={thumbUrl} alt="" loading="lazy" draggable={false} />
-        ) : (
-          <div className="sp-track-thumb sp-track-thumb-fallback" />
-        )}
-        <div className="sp-track-text">
-          <div className="sp-track-name">{track.name}</div>
-          <div className="sp-track-artists">
-            {track.explicit ? <span className="sp-track-explicit">E</span> : null}
-            {track.artists.map((a) => a.name).join(', ')}
+        <div className="sp-track-title-inner">
+          {thumbUrl ? (
+            <img className="sp-track-thumb" src={thumbUrl} alt="" loading="lazy" draggable={false} />
+          ) : (
+            <div className="sp-track-thumb sp-track-thumb-fallback" />
+          )}
+          <div className="sp-track-text">
+            <div className="sp-track-name">{track.name}</div>
+            <div className="sp-track-artists">
+              {track.explicit ? <span className="sp-track-explicit">E</span> : null}
+              {track.artists.map((a) => a.name).join(', ')}
+            </div>
           </div>
         </div>
       </td>

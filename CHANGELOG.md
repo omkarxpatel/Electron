@@ -14,6 +14,7 @@ section here.
 - The visualizer, the output meters and the EQ curve now work with Live turned off. Visualize-only mode used to draw a flat line, so the app looked switched off even with music playing. Live off is still silent: nothing plays out of the app until you turn Live on.
 - Quitting with Live on could leave your speakers or headphones stuck at full volume. The app now keeps the volume it needs to restore until it has actually restored it, and puts it right the next time it starts if a restore ever fails.
 - With no audio source connected, the Spotify panel (library, search, artist and album pages) stopped short of the player bar, with the EQ showing through underneath. It now reaches all the way down.
+- The line under each song in playlists and search results is one continuous line now, instead of stepping up under the song's title.
 - A saved setting the app doesn't recognise — after going back to an older version, for example — no longer stops the app from opening, and the error screen has a new "Reset appearance & reload" button for anything like it.
 - Leaving a playlist and coming back to it no longer loses part of its track list.
 - If you change your output device's volume yourself while Live is on, turning Live off no longer overwrites your change.

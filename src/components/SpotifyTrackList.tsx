@@ -856,16 +856,18 @@ function TrackRowImpl({
         )}
       </td>
       <td className="sp-track-title-cell">
-        {thumbUrl ? (
-          <img className="sp-track-thumb" src={thumbUrl} alt="" loading="lazy" draggable={false} />
-        ) : (
-          <div className="sp-track-thumb sp-track-thumb-fallback" />
-        )}
-        <div className="sp-track-text">
-          <div className="sp-track-name">{track.name}</div>
-          <div className="sp-track-artists">
-            {track.explicit ? <span className="sp-track-explicit">E</span> : null}
-            {artistNames}
+        <div className="sp-track-title-inner">
+          {thumbUrl ? (
+            <img className="sp-track-thumb" src={thumbUrl} alt="" loading="lazy" draggable={false} />
+          ) : (
+            <div className="sp-track-thumb sp-track-thumb-fallback" />
+          )}
+          <div className="sp-track-text">
+            <div className="sp-track-name">{track.name}</div>
+            <div className="sp-track-artists">
+              {track.explicit ? <span className="sp-track-explicit">E</span> : null}
+              {artistNames}
+            </div>
           </div>
         </div>
       </td>
