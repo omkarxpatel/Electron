@@ -33,6 +33,7 @@ yarn-error.log*
 .env.production.local
 
 # local-only dev notes
+/CLAUDE.md
 HANDOFF.md
 .claude/
 .claude-flow/
