@@ -1939,6 +1939,15 @@
   pointer-events: auto;
 }
 
+/* There is no viz banner while no audio source is connected, and the 198px
+   above assumes one. The panel then stopped 110px short of the player bar,
+   with the EQ panel showing through underneath it, so the artist page looked
+   cut off. The player bar is always there when this panel can be: both need a
+   Spotify sign-in. */
+.app[data-viz-strip='false'] .hover-overlay-panel {
+  bottom: 88px; /* clear the player bar only */
+}
+
 .hover-overlay-header {
   flex: 0 0 44px;
   display: flex;

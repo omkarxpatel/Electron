@@ -269,6 +269,10 @@ function AppContent() {
 
   const needsOnboarding = !library.clientId || !library.authed;
   const showPlayerBar = library.authed;
+  /** The visualizer strip above the player bar. One value drives both the
+   *  render and `data-viz-strip`, because the Spotify overlay is positioned
+   *  to clear the strip and has to know when it isn't there. */
+  const showVizStrip = !!analyser && !needsOnboarding;
 
   // Drive the whole app's accent color off the effective palette — either a
   // synthesized one extracted from the current album art (when "Auto-tint
@@ -366,6 +370,7 @@ function AppContent() {
       className="app"
       data-immersive={settings.immersive ? 'true' : 'false'}
       data-right-collapsed={rightCollapsed ? 'true' : 'false'}
+      data-viz-strip={showVizStrip ? 'true' : 'false'}
       style={themeStyle}
     >
       {settings.albumArtBackdrop && albumImageUrl && (
@@ -455,7 +460,7 @@ function AppContent() {
         )}
       </main>
 
-      {analyser && !needsOnboarding && (
+      {showVizStrip && (
         <SectionBoundary label="visualizer">
         <VisualizerBanner
           analyser={analyser}
