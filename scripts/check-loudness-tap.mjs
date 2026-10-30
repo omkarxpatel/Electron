@@ -27,11 +27,17 @@
  * rendering pulls strictly from the destination, so it is a stricter test of
  * "is this node scheduled" than real time would be.
  *
+ * The page runs under the app's own Content-Security-Policy, read out of
+ * index.html. Both taps load their processors from blob: URLs, and from
+ * 1.4.13 to 1.4.30 the app's `script-src 'self'` refused them. Every case
+ * here passed on a page with no policy at all, while the shipped app never
+ * measured the loudness or tempo of a single track.
+ *
  *   npm run check:loudness-tap
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +56,7 @@ const work = mkdtempSync(join(tmpdir(), 'av-loudness-tap-'));
 writeFileSync(
   join(work, 'entry.ts'),
   `export { createLoudnessTap } from ${JSON.stringify(join(repoRoot, 'src/audio/loudnessTap'))};\n` +
+    `export { createOnsetTap } from ${JSON.stringify(join(repoRoot, 'src/audio/onsetTap'))};\n` +
     `export { measureIntegratedLufs } from ${JSON.stringify(join(repoRoot, 'src/audio/loudness'))};\n`,
   'utf-8',
 );
@@ -66,15 +73,32 @@ execFileSync(
   { stdio: ['ignore', 'ignore', 'inherit'] },
 );
 
-/**
- * The page. Builds the app's graph shape around the tap, renders a tone
- * through it, and reports what the worklet measured.
- */
+/** Read from the app's page rather than restated here, so a change to the
+ *  policy that blocks the worklets fails this check instead of shipping. */
+const APP_CSP = readFileSync(join(repoRoot, 'index.html'), 'utf-8').match(
+  /http-equiv="Content-Security-Policy"\s+content="([^"]*)"/,
+)?.[1];
+if (!APP_CSP) {
+  console.error('index.html has no Content-Security-Policy meta tag to run under');
+  process.exit(1);
+}
+
+// The script is a file, not inline: the app's policy refuses inline scripts.
 writeFileSync(
   join(work, 'probe.html'),
-  `<!doctype html><meta charset="utf-8"><body>
-<script type="module">
-import { createLoudnessTap, measureIntegratedLufs } from './tap.js';
+  `<!doctype html><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${APP_CSP}">
+<body><script type="module" src="./probe.js"></script></body>`,
+  'utf-8',
+);
+
+/**
+ * The page's script. Builds the app's graph shape around the tap, renders a
+ * tone through it, and reports what the worklet measured.
+ */
+writeFileSync(
+  join(work, 'probe.js'),
+  `import { createLoudnessTap, createOnsetTap, measureIntegratedLufs } from './tap.js';
 
 /** EBU Tech 3341 states its tones by peak amplitude, not RMS — same helper
  *  as check-enhancer, so the two checks are describing the same signal. */
@@ -260,6 +284,29 @@ window.__run = async () => {
   const dbfs = -23;
 
   try {
+    // First, because nothing below can pass without it. Chromium fires no
+    // securitypolicyviolation event for a refused worklet module and the
+    // taps swallow the error by design, so a refusal otherwise shows up only
+    // as null taps and a dozen unrelated-looking failures. A trivial blob:
+    // module tells "the policy refused it" apart from "a tap's own module is
+    // broken".
+    const policyCtx = new OfflineAudioContext({ numberOfChannels: 2, length: rate, sampleRate: rate });
+    const trivial = URL.createObjectURL(new Blob(
+      ['registerProcessor("csp-probe", class extends AudioWorkletProcessor { process() { return false; } });'],
+      { type: 'application/javascript' },
+    ));
+    let refusal = '';
+    try {
+      await policyCtx.audioWorklet.addModule(trivial);
+    } catch (e) {
+      refusal = String((e && e.message) || e);
+    } finally {
+      URL.revokeObjectURL(trivial);
+    }
+    check("the app's CSP lets a blob: worklet module load", !refusal, refusal);
+    check('so the loudness tap builds', await createLoudnessTap(policyCtx));
+    check('and so does the onset tap', await createOnsetTap(policyCtx));
+
     const ref = measureIntegratedLufs([sine(seconds, dbfs, rate), sine(seconds, dbfs, rate)], rate);
 
     const wired = await measureThroughWorklet(seconds, dbfs, rate, true);
@@ -379,7 +426,7 @@ window.__run = async () => {
   }
   return results;
 };
-</script></body>`,
+`,
   'utf-8',
 );
 

@@ -5,13 +5,19 @@
     <!--
       Content Security Policy:
       - default 'self' so any unspecified source is denied.
-      - script: 'self' only (no inline / no eval; React 19 doesn't need eval).
+      - script: 'self', plus blob: for the loudness and onset AudioWorklets,
+        whose processors load from Blob URLs (see loudnessTap.ts). No inline,
+        no eval; React 19 doesn't need eval. Without blob: both worklets were
+        refused from 1.4.13 to 1.4.30, silently, and no loudness or tempo was
+        ever measured. A blob: URL can only be minted by script already
+        running in the page, so this lets nothing new in. check:loudness-tap
+        runs under this exact policy.
       - style: inline allowed (React inline styles + CSS-var theme generation).
       - img: Spotify CDN hosts + data: for in-memory thumbs.
       - connect: Spotify Web API + lyrics providers.
       - frame / object: deny entirely.
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://i.scdn.co https://mosaic.scdn.co https://image-cdn-fa.spotifycdn.com https://image-cdn-ak.spotifycdn.com https://lineup-images.scdn.co https://daily-mix.scdn.co https://newjams-images.scdn.co; connect-src 'self' ws://localhost:* http://localhost:* https://accounts.spotify.com https://api.spotify.com https://lrclib.net https://api.lyrics.ovh https://api.github.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://i.scdn.co https://mosaic.scdn.co https://image-cdn-fa.spotifycdn.com https://image-cdn-ak.spotifycdn.com https://lineup-images.scdn.co https://daily-mix.scdn.co https://newjams-images.scdn.co; connect-src 'self' ws://localhost:* http://localhost:* https://accounts.spotify.com https://api.spotify.com https://lrclib.net https://api.lyrics.ovh https://api.github.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Audio Visualizer & Modifier</title>
   </head>

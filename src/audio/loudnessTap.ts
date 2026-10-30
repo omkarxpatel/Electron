@@ -29,6 +29,10 @@ const PROCESSOR_NAME = 'loudness-tap';
  * Shipping it as a Blob keeps it out of the Vite build graph entirely — no
  * extra entry point, no worklet plugin, and no chance of the bundler
  * rewriting it into something `AudioWorkletGlobalScope` can't evaluate.
+ *
+ * The price is that the page's CSP must allow `blob:` scripts. Until 1.4.31
+ * it didn't, so the module was refused and this tap was null in every
+ * shipped build. See index.html.
  */
 const PROCESSOR_SOURCE = `
 class LoudnessTapProcessor extends AudioWorkletProcessor {
