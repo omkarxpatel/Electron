@@ -438,6 +438,13 @@ forgetting to think about it.
 Mixed release? It's `prompt`. The class describes the whole release, not one
 commit — a release is what installs.
 
+Several releases going out at once? The updater only ever reads the newest one:
+its class and its notes are all a client on an older version is shown, whatever
+it skips. So the newest release has to be classed, and noted, for the whole
+jump — most important first, since the post-install notice shows only four.
+v1.4.26 to v1.4.30 nearly went out as one silent install that carried three
+prompt releases, behind two lines of notes about gradients and folders.
+
 What `silent` actually does: downloads without asking, then applies itself
 either on the next quit, or once `powerMonitor` reports the machine
 unattended for 10 minutes **and** no audio is playing through the app. Both

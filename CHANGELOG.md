@@ -8,10 +8,19 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
-## 1.4.30 (silent)
+## 1.4.30 (prompt)
 
-- Changing tracks with album-art tinting on is a little smoother: the colour fade no longer throws away the visualizer's cached colours at every step.
+- The visualizer, the output meters and the EQ curve now work with Live turned off. Visualize-only mode used to draw a flat line, so the app looked switched off even with music playing. Live off is still silent: nothing plays out of the app until you turn Live on.
+- Quitting with Live on could leave your speakers or headphones stuck at full volume. The app now keeps the volume it needs to restore until it has actually restored it, and puts it right the next time it starts if a restore ever fails.
+- A saved setting the app doesn't recognise — after going back to an older version, for example — no longer stops the app from opening, and the error screen has a new "Reset appearance & reload" button for anything like it.
+- Leaving a playlist and coming back to it no longer loses part of its track list.
+- If you change your output device's volume yourself while Live is on, turning Live off no longer overwrites your change.
+- Signing out now forgets which of your playlists contain which tracks, so the next account to sign in doesn't see the last one's markers.
+- If the app's own storage fills up, settings that can't be saved no longer crash it, and your Spotify sign-in can no longer be left half-saved.
+- If a visualizer style ever runs into an error, it now stops cleanly instead of freezing the picture and keeping a processor core busy. An error in the EQ or notch panel no longer takes the window down, or leaves an empty panel stuck on screen.
+- Checking for updates while one is already downloading no longer risks throwing the download away.
 - Playlist folders are read more carefully from the Spotify app's cache. A damaged cache file can no longer produce the wrong folders, or use up enough memory to crash the app.
+- Changing tracks with album-art tinting on is a little smoother.
 
 ## 1.4.29 (prompt)
 
