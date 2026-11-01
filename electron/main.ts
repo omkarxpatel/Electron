@@ -31,6 +31,12 @@ import {
   type SinkVolumeState,
 } from './deviceVolume';
 import {
+  onCaptureVolumeChange,
+  stopCaptureVolumeWatch,
+  watchCaptureVolume,
+  type CaptureVolumeState,
+} from './captureVolume';
+import {
   declineTest,
   recordCalibration,
   resolveProfile,
@@ -776,6 +782,16 @@ ipcMain.on('sink-volume:get-state', (event) => {
 });
 
 /**
+ * How far the slider has turned down the input we record — see
+ * electron/captureVolume.ts. The renderer adds it back on its measuring side
+ * only; the sound still follows the slider. Takes the enumerateDevices()
+ * label, like sink-volume:pin, or null to stop.
+ */
+ipcMain.handle('capture-volume:watch', (_event, deviceLabel: unknown) => {
+  watchCaptureVolume(typeof deviceLabel === 'string' && deviceLabel ? deviceLabel : null);
+});
+
+/**
  * Renderer → main now-playing mirror. The renderer is the only thing holding
  * a Spotify session, so the tray can't read playback itself; it gets told.
  * Coerced and length-capped here because this crosses the IPC boundary and
@@ -1022,6 +1038,11 @@ app.whenReady().then(async () => {
       win.webContents.send('sink-volume:state', next);
     }
   });
+  onCaptureVolumeChange((next: CaptureVolumeState) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('capture-volume:state', next);
+    }
+  });
 
   // Clicking the dock icon (or Cmd+Tabbing back) on macOS. If we still have
   // a window object, just show it (preserves all state). If somehow the
@@ -1043,6 +1064,7 @@ app.on('before-quit', () => {
     authServer = null;
   }
   teardownAutoUpdater();
+  stopCaptureVolumeWatch();
   // before-quit gives us no chance to await, so this one is fully synchronous:
   // it blocks here for a single helper spawn (~100 ms, measured) rather than
   // letting the quit race it and leave someone's output device at 100%.

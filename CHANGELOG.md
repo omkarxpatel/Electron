@@ -10,6 +10,7 @@ section here.
 
 ## 1.4.31 (prompt)
 
+- The visualizer and the EQ's level bars no longer shrink when you turn your Mac's volume down. The volume slider turns the music down before the app can hear it, so at a normal listening volume the visuals barely moved. The app now adds that back for what it shows and measures, and only there: your volume works exactly as before, and the OUT meter still shows the real level going to your speakers or headphones.
 - Level matching never actually did anything, and the DJ view never knew a track's tempo: the part of the app that measures loudness and tempo was being blocked from starting. Both work now. Level matching evens out a track once you've heard it through, and with AI Enhance on, the DJ view picks up the tempo of what's playing within about 15 seconds.
 - The visualizer, the output meters and the EQ curve now work with Live turned off. Visualize-only mode used to draw a flat line, so the app looked switched off even with music playing. Live off is still silent: nothing plays out of the app until you turn Live on.
 - Quitting with Live on could leave your speakers or headphones stuck at full volume. The app now keeps the volume it needs to restore until it has actually restored it, and puts it right the next time it starts if a restore ever fails.

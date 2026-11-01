@@ -21,6 +21,7 @@ import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
 import { useAudioSource } from './audio/useAudioSource';
 import { useSinkVolumePin } from './audio/useSinkVolumePin';
+import { useCaptureCompensation } from './audio/useCaptureCompensation';
 import { useAutoSelectDevices } from './audio/useAutoSelectDevices';
 import { useVisibility } from './hooks/useVisibility';
 import { PerfOverlay, useRenderCount } from './perf';
@@ -153,8 +154,16 @@ function AppContent() {
    */
   const [liveMeasurement, setLiveMeasurement] = useState<LiveMeasurement | null>(null);
 
+  // What the macOS slider took off BlackHole before we captured it, added
+  // back for the visuals and the measurements only. See the hook.
+  const captureCompensationDb = useCaptureCompensation(
+    audioSource.mode,
+    audioSource.deviceId,
+    !!audioSource.stream,
+  );
+
   const {
-    analyser, analyserL, analyserR, preEqAnalyserL, preEqAnalyserR,
+    analyser, analyserL, analyserR, visualAnalyserL, visualAnalyserR, preEqAnalyserL, preEqAnalyserR,
     chromaAnalyser, limiter, loudnessTapRef, onsetTapRef, duckGainRef, voiceGainRef,
   } =
     useAudioEngine(
@@ -169,6 +178,8 @@ function AppContent() {
     0.08,
     aiEffectsRef,
     autoLevelDb,
+    0,
+    captureCompensationDb,
   );
   // Hold the output device at unity while we're actually playing through it.
   // The macOS slider only reaches the DEFAULT output device, so once system
@@ -464,8 +475,8 @@ function AppContent() {
         <SectionBoundary label="visualizer">
         <VisualizerBanner
           analyser={analyser}
-          analyserL={analyserL}
-          analyserR={analyserR}
+          analyserL={visualAnalyserL}
+          analyserR={visualAnalyserR}
           settings={resolved}
           active={isActive}
           paletteOverride={albumPalette}

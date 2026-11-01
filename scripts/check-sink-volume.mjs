@@ -28,7 +28,11 @@
  *     if the pin's `set … 1` happens to land last the device is stranded at
  *     unity with the record already gone.
  *
- * Those last two are driven against a STUB helper, not the real one. The
+ *   - `avvolume watch`, which feeds the capture compensation, must report a
+ *     device as it starts and on every change, call only a loopback one, and
+ *     exit once its stdin closes, so no watcher outlives the app.
+ *
+ * Those two quit cases are driven against a STUB helper, not the real one. The
  * failure being reproduced is "the helper did not do its job", and there is no
  * reason to point that at someone's speakers.
  *
@@ -243,6 +247,61 @@ app.whenReady().then(async () => {
     state = await dv.pinSinkToUnity('Definitely Not A Device');
     ok('an unknown device reports an error', state.kind === 'error', JSON.stringify(state));
     ok('and writes no pin file', readPin() === null);
+
+    // ── watch: the capture compensation's feed (electron/captureVolume.ts) ──
+    // Read-only, but it is a long-lived process reading devices this file
+    // writes, so it is held to the real helper here: a line on start, the
+    // right loopback verdict, a line per change, and gone once its stdin
+    // closes, which is how main stops it and what a crash of main does too.
+    {
+      const { spawn } = require('child_process');
+      const watchLines = (name) => {
+        const lines = [];
+        const child = spawn(HELPER, ['watch', name], { stdio: ['pipe', 'pipe', 'ignore'] });
+        let buf = '';
+        child.stdout.on('data', (d) => {
+          buf += d;
+          let i;
+          while ((i = buf.indexOf('\\n')) >= 0) {
+            lines.push(JSON.parse(buf.slice(0, i)));
+            buf = buf.slice(i + 1);
+          }
+        });
+        const exited = new Promise((r) => child.on('exit', (code) => r(code)));
+        return { child, lines, exited };
+      };
+
+      write(0.4);
+      const w = watchLines(DEVICE);
+      await waitFor(() => w.lines.length >= 1, 2000);
+      ok('watch reports the device as it starts',
+         w.lines.length >= 1 && near(w.lines[0].volume, 0.4) && typeof w.lines[0].db === 'number',
+         JSON.stringify(w.lines[0]));
+      // Speakers' volume says nothing about what a recording of them hears.
+      ok('and says an output device is not a loopback',
+         w.lines[0] && w.lines[0].loopback === false, JSON.stringify(w.lines[0]));
+      write(0.7);
+      ok('watch reports a change as it happens',
+         await waitFor(() => w.lines.some((l) => near(l.volume, 0.7)), 2000),
+         JSON.stringify(w.lines[w.lines.length - 1]));
+      w.child.stdin.end();
+      const code = await Promise.race([w.exited, sleep(2000).then(() => 'still running')]);
+      ok('closing its stdin stops it', code === 0, 'exit: ' + code);
+      if (code !== 0) w.child.kill();
+
+      // The device the slider reaches is the one the app records, and on a
+      // machine set up for it that is BlackHole: the case this exists for.
+      if (/blackhole/i.test(SLIDER)) {
+        const s = watchLines(SLIDER);
+        await waitFor(() => s.lines.length >= 1, 2000);
+        ok('and says BlackHole is one, with its level in dB',
+           s.lines[0] && s.lines[0].loopback === true && typeof s.lines[0].db === 'number',
+           JSON.stringify(s.lines[0]));
+        s.child.stdin.end();
+        await Promise.race([s.exited, sleep(2000)]);
+        s.child.kill();
+      }
+    }
 
     // ── the quit path, from here down, against a stub helper ──
     // Everything below drives restoreSinkOnQuit(), which main.ts calls from

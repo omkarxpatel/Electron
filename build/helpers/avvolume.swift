@@ -17,6 +17,8 @@
 //   avvolume list
 //   avvolume get <device-name>
 //   avvolume set <device-name> <scalar 0..1>
+//   avvolume watch <device-name>   one line now and one per change, until
+//                                  stdin closes. Read-only.
 
 import Foundation
 import CoreAudio
@@ -91,6 +93,38 @@ private func readVolume(_ id: AudioDeviceID) -> Float? {
     return value
 }
 
+/// The attenuation in dB, as the HAL states it rather than derived from the
+/// scalar: tapers differ per device (BlackHole is linear in dB over 64 dB, the
+/// built-in speakers are not), and only the driver knows which it uses.
+private func readDecibels(_ id: AudioDeviceID) -> Float? {
+    guard let element = volumeElements(id).first else { return nil }
+    var addr = address(kAudioDevicePropertyVolumeDecibels, kAudioDevicePropertyScopeOutput, element)
+    var value: Float32 = 0
+    var size = UInt32(MemoryLayout<Float32>.size)
+    guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
+    return value
+}
+
+private func hasStreams(_ id: AudioDeviceID, _ scope: AudioObjectPropertyScope) -> Bool {
+    var addr = address(kAudioDevicePropertyStreams, scope)
+    var size: UInt32 = 0
+    return AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr && size > 0
+}
+
+/// A virtual device that is both an input and an output: a loopback, whose
+/// output volume is applied before anything recording its input hears it.
+/// BlackHole measured that way (-11.97 dB back at a -12.0 dB setting). A
+/// microphone is never one, which is the case this exists to rule out.
+private func isLoopback(_ id: AudioDeviceID) -> Bool {
+    var addr = address(kAudioDevicePropertyTransportType)
+    var transport: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &transport) == noErr else { return false }
+    return transport == kAudioDeviceTransportTypeVirtual
+        && hasStreams(id, kAudioDevicePropertyScopeInput)
+        && hasStreams(id, kAudioDevicePropertyScopeOutput)
+}
+
 /// Returns nil on success, or a human-readable reason on failure.
 private func writeVolume(_ id: AudioDeviceID, _ requested: Float) -> String? {
     let elements = volumeElements(id)
@@ -128,6 +162,12 @@ private func emit(_ payload: [String: Any], exitCode: Int32 = 0) -> Never {
 }
 
 private func fail(_ message: String) -> Never { emit(["error": message], exitCode: 1) }
+
+/// One line of a stream. `emit` ends the process, so `watch` can't use it.
+private func emitLine(_ payload: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+    FileHandle.standardOutput.write(data + Data("\n".utf8))
+}
 
 // ── Device lookup ────────────────────────────────────────────────────
 
@@ -198,7 +238,7 @@ private func findOutput(named name: String) -> OutputDevice {
 // ── Entry point ──────────────────────────────────────────────────────
 
 let args = Array(CommandLine.arguments.dropFirst())
-guard let command = args.first else { fail("usage: avvolume list|default|get <name>|set <name> <scalar>") }
+guard let command = args.first else { fail("usage: avvolume list|default|get <name>|set <name> <scalar>|watch <name>") }
 
 switch command {
 case "list":
@@ -248,6 +288,41 @@ case "set":
           "uid": device.uid,
           "hasVolumeControl": true,
           "volume": readVolume(device.id).map { Double($0) } as Any])
+
+case "watch":
+    // How far the slider has turned down the device the app is recording, as
+    // it moves, so the app's meters and measurements can add it back. Nothing
+    // here sets a property.
+    guard args.count >= 2 else { fail("usage: avvolume watch <name>") }
+    let device = findOutput(named: args[1])
+    let loopback = isLoopback(device.id)
+    let report = {
+        emitLine(["name": device.name,
+                  "uid": device.uid,
+                  "loopback": loopback,
+                  "volume": readVolume(device.id).map { Double($0) } as Any,
+                  "db": readDecibels(device.id).map { Double($0) } as Any])
+    }
+    report()
+    for element in volumeElements(device.id) {
+        var addr = address(kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyScopeOutput, element)
+        AudioObjectAddPropertyListenerBlock(device.id, &addr, DispatchQueue.main) { _, _ in report() }
+    }
+    var alive = address(kAudioDevicePropertyDeviceIsAlive)
+    AudioObjectAddPropertyListenerBlock(device.id, &alive, DispatchQueue.main) { _, _ in
+        var addr = address(kAudioDevicePropertyDeviceIsAlive)
+        var isAlive: UInt32 = 1
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        AudioObjectGetPropertyData(device.id, &addr, 0, nil, &size, &isAlive)
+        if isAlive == 0 { emit(["name": device.name, "gone": true]) }
+    }
+    // The parent closing stdin is the stop signal. It is also what happens
+    // when the parent dies, however it dies, so no watcher outlives the app.
+    DispatchQueue.global().async {
+        while readLine() != nil {}
+        exit(0)
+    }
+    dispatchMain()
 
 default:
     fail("unknown command \(command)")

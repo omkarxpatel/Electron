@@ -13,6 +13,11 @@ interface AudioEngineState {
   analyser: AnalyserNode | null;
   analyserL: AnalyserNode | null;
   analyserR: AnalyserNode | null;
+  /** Per-channel analysers for the visualizer's stereo styles. Unlike
+   *  analyserL/R, which the output meter reads, these carry the capture
+   *  compensation — see `captureCompensationDb`. */
+  visualAnalyserL: AnalyserNode | null;
+  visualAnalyserR: AnalyserNode | null;
   /** Stereo analysers tapped BEFORE the EQ filters. Used by the AI enhancer
    *  so its analysis isn't a closed feedback loop with its own corrections. */
   preEqAnalyserL: AnalyserNode | null;
@@ -104,10 +109,18 @@ export function useAudioEngine(
    *  (before the preamp / EQ / analysers). Used to lift quiet virtual inputs
    *  like BlackHole back to parity with direct system audio. Default 0 dB. */
   inputCompensationDb = 0,
+  /** How far the macOS volume slider has turned a loopback input down before
+   *  we capture it, in dB (>= 0). Added back on the measuring side only: the
+   *  visual analysers and the loudness and onset taps. The sound never gets
+   *  it, because that slider is the user's volume control. See
+   *  electron/captureVolume.ts. */
+  captureCompensationDb = 0,
 ): AudioEngineState {
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [analyserL, setAnalyserL] = useState<AnalyserNode | null>(null);
   const [analyserR, setAnalyserR] = useState<AnalyserNode | null>(null);
+  const [visualAnalyserL, setVisualAnalyserL] = useState<AnalyserNode | null>(null);
+  const [visualAnalyserR, setVisualAnalyserR] = useState<AnalyserNode | null>(null);
   const [preEqAnalyserL, setPreEqAnalyserL] = useState<AnalyserNode | null>(null);
   const [preEqAnalyserR, setPreEqAnalyserR] = useState<AnalyserNode | null>(null);
   const [chromaAnalyser, setChromaAnalyser] = useState<AnalyserNode | null>(null);
@@ -152,6 +165,16 @@ export function useAudioEngine(
   const splitterRef = useRef<ChannelSplitterNode | null>(null);
   const analyserLRef = useRef<AnalyserNode | null>(null);
   const analyserRRef = useRef<AnalyserNode | null>(null);
+  /** The capture compensation's two taps: one ahead of the loudness and
+   *  onset worklets, one ahead of the visual analysers. Neither has a path
+   *  to the destination. */
+  const measureTapRef = useRef<GainNode | null>(null);
+  const visualTapRef = useRef<GainNode | null>(null);
+  const visualSplitterRef = useRef<ChannelSplitterNode | null>(null);
+  const visualAnalyserLRef = useRef<AnalyserNode | null>(null);
+  const visualAnalyserRRef = useRef<AnalyserNode | null>(null);
+  const captureCompensationDbRef = useRef(captureCompensationDb);
+  captureCompensationDbRef.current = captureCompensationDb;
   const preEqSplitterRef = useRef<ChannelSplitterNode | null>(null);
   const preEqAnalyserLRef = useRef<AnalyserNode | null>(null);
   const preEqAnalyserRRef = useRef<AnalyserNode | null>(null);
@@ -199,6 +222,8 @@ export function useAudioEngine(
       setAnalyser(null);
       setAnalyserL(null);
       setAnalyserR(null);
+      setVisualAnalyserL(null);
+      setVisualAnalyserR(null);
       setPreEqAnalyserL(null);
       setPreEqAnalyserR(null);
       setStatus('Idle');
@@ -221,6 +246,17 @@ export function useAudioEngine(
         // below as the user switches between input devices.
         const inputGain = ctx.createGain();
         inputGain.gain.value = Math.pow(10, inputCompensationDb / 20);
+        /* Capture compensation. The macOS slider attenuates a loopback like
+         * BlackHole before we ever see it, 32 dB at 50%, so every visual and
+         * measurement used to shrink with the volume, and the loudness tap
+         * recorded the slider rather than the track. These two taps add the
+         * slider back for the measuring side. Neither has a path to the
+         * destination, so the sound still follows the slider. */
+        const captureCompensation = Math.pow(10, captureCompensationDbRef.current / 20);
+        const measureTap = ctx.createGain();
+        measureTap.gain.value = captureCompensation;
+        const visualTap = ctx.createGain();
+        visualTap.gain.value = captureCompensation;
         const preamp = ctx.createGain();
         preamp.gain.value = 1;
 
@@ -273,8 +309,8 @@ export function useAudioEngine(
          * are leaves, so they kept the splitter, the limiter and everything
          * upstream alive, including the loudness and onset worklets.
          *
-         * The main `analyser` is NOT a leaf. It feeds duckGain, which
-         * disqualifies it, so its only route was masterGain -> destination —
+         * The main `analyser` was NOT a leaf. It fed duckGain, which
+         * disqualified it, so its only route was masterGain -> destination —
          * connected only when `playthrough` is on. With Live off, which is
          * the stored default for a fresh install, it was never processed:
          * every byte read back as the 128 midpoint, so the visualizer drew a
@@ -290,6 +326,10 @@ export function useAudioEngine(
          * put an AUDIBLE path behind a float, and with system output routed
          * to BlackHole, a bug that leaves it non-zero is a feedback loop. A
          * node whose gain is never modulated cannot do that.
+         *
+         * The analyser has since moved off the sound path, onto visualTap,
+         * where it is a leaf and auto-pulled on its own. The sink stays as the
+         * guarantee that doesn't depend on any one node's connections.
          */
         const silentSink = ctx.createGain();
         silentSink.gain.value = 0;
@@ -345,6 +385,17 @@ export function useAudioEngine(
         analyserLNode.smoothingTimeConstant = 0.5;
         analyserRNode.smoothingTimeConstant = 0.5;
 
+        // The visualizer's own stereo pair, fed from visualTap. Separate from
+        // analyserL/R because the output meter reads those, and a meter has
+        // to show what is actually going out.
+        const visualSplitter = ctx.createChannelSplitter(2);
+        const visualAnalyserLNode = ctx.createAnalyser();
+        const visualAnalyserRNode = ctx.createAnalyser();
+        visualAnalyserLNode.fftSize = 1024;
+        visualAnalyserRNode.fftSize = 1024;
+        visualAnalyserLNode.smoothingTimeConstant = 0.5;
+        visualAnalyserRNode.smoothingTimeConstant = 0.5;
+
         // Pre-EQ stereo analysers — tapped between preamp and EQ filters so
         // the AI Enhancer analyses the source music, NOT its own corrections.
         // Without this, a band boost from the engine would increase that
@@ -363,10 +414,10 @@ export function useAudioEngine(
 
         // Wire the chain:
         //   source → inputGain → preamp → eq filters → bass → mid → treble
-        //         → panner → limiter → analyser → splitter (taps)
-        //                                    └─→ duckGain ─┐
-        //                        DJ commentary → voiceGain ─┴→ masterGain
-        //                                                      → destination
+        //         → panner → limiter ─┬─→ duckGain ─┐
+        //            DJ commentary → voiceGain ─────┴→ masterGain → destination
+        //                             ├─→ splitter → analyserL/R (output meter)
+        //                             └─→ visualTap → analyser, visual L/R
         //
         // The limiter sits BEFORE masterGain so it only protects against
         // stage-overflow (preamp + EQ + enhancer can stack +30+ dB cumulative)
@@ -399,16 +450,19 @@ export function useAudioEngine(
         source.connect(inputGain);
         inputGain.connect(autoLevel);
         autoLevel.connect(preamp);
+        inputGain.connect(measureTap);
 
-        /* BS.1770 tap, fed from inputGain — deliberately upstream of every
-         * gain this measurement could ever drive. Measuring after an
-         * auto-level would be a closed loop: the correction would change the
-         * reading that produced it, exactly the trap the pre-EQ analysers
-         * already exist to avoid for the EQ.
+        /* BS.1770 tap, fed from inputGain through measureTap — deliberately
+         * upstream of every gain this measurement could ever drive. Measuring
+         * after an auto-level would be a closed loop: the correction would
+         * change the reading that produced it, exactly the trap the pre-EQ
+         * analysers already exist to avoid for the EQ.
          *
          * inputGain itself is device compensation, constant per device, so
          * including it costs nothing and means we measure the signal the
-         * rest of the chain actually works with. */
+         * rest of the chain actually works with. measureTap adds back only
+         * what the volume slider took off before capture, so the reading is
+         * the track's loudness and not the slider's position. */
         const [loudnessTap, onsetTap] = await Promise.all([
           createLoudnessTap(ctx),
           createOnsetTap(ctx),
@@ -423,12 +477,12 @@ export function useAudioEngine(
           // Same tap point and the same reason: upstream of every gain, so
           // nothing we do to the signal can colour what the beat detector
           // sees.
-          inputGain.connect(onsetTap.node);
+          measureTap.connect(onsetTap.node);
           onsetTap.node.connect(limiter);
           onsetTapRef.current = onsetTap;
         }
         if (loudnessTap) {
-          inputGain.connect(loudnessTap.node);
+          measureTap.connect(loudnessTap.node);
           // Keeps the node in the pulled graph: a worklet whose output
           // reaches nothing is not guaranteed to be scheduled. process()
           // never writes to the output buffer, so what arrives here is
@@ -494,9 +548,13 @@ export function useAudioEngine(
         inputGain.connect(abRaw);
         abRaw.connect(limiter);
 
-        limiter.connect(analyserNode);
+        limiter.connect(duckGain);
         limiter.connect(splitter);
-        analyserNode.connect(duckGain);
+        limiter.connect(visualTap);
+        visualTap.connect(analyserNode);
+        visualTap.connect(visualSplitter);
+        visualSplitter.connect(visualAnalyserLNode, 0, 0);
+        visualSplitter.connect(visualAnalyserRNode, 1, 0);
         duckGain.connect(masterGain);
         voiceGain.connect(masterGain);
         // Unconditional, and the only connection to the destination that is.
@@ -530,6 +588,11 @@ export function useAudioEngine(
         splitterRef.current = splitter;
         analyserLRef.current = analyserLNode;
         analyserRRef.current = analyserRNode;
+        measureTapRef.current = measureTap;
+        visualTapRef.current = visualTap;
+        visualSplitterRef.current = visualSplitter;
+        visualAnalyserLRef.current = visualAnalyserLNode;
+        visualAnalyserRRef.current = visualAnalyserRNode;
         preEqSplitterRef.current = preEqSplitter;
         preEqAnalyserLRef.current = preEqAnalyserLNode;
         preEqAnalyserRRef.current = preEqAnalyserRNode;
@@ -554,6 +617,8 @@ export function useAudioEngine(
         setAnalyser(analyserNode);
         setAnalyserL(analyserLNode);
         setAnalyserR(analyserRNode);
+        setVisualAnalyserL(visualAnalyserLNode);
+        setVisualAnalyserR(visualAnalyserRNode);
         setPreEqAnalyserL(preEqAnalyserLNode);
         setPreEqAnalyserR(preEqAnalyserRNode);
         setStatus('Listening');
@@ -578,6 +643,11 @@ export function useAudioEngine(
       analyserLRef.current?.disconnect();
       analyserRRef.current?.disconnect();
       splitterRef.current?.disconnect();
+      measureTapRef.current?.disconnect();
+      visualTapRef.current?.disconnect();
+      visualSplitterRef.current?.disconnect();
+      visualAnalyserLRef.current?.disconnect();
+      visualAnalyserRRef.current?.disconnect();
       masterGainRef.current?.disconnect();
       silentSinkRef.current?.disconnect();
       duckGainRef.current?.disconnect();
@@ -617,11 +687,26 @@ export function useAudioEngine(
       analyserLRef.current = null;
       analyserRRef.current = null;
       splitterRef.current = null;
+      measureTapRef.current = null;
+      visualTapRef.current = null;
+      visualSplitterRef.current = null;
+      visualAnalyserLRef.current = null;
+      visualAnalyserRRef.current = null;
       limiterRef.current = null;
       setLimiter(null);
       destinationConnectedRef.current = false;
     };
   }, [stream, eqState.bandCount]);
+
+  // Follow the slider as it moves. A ramp rather than a jump: a volume key
+  // sends a burst of small steps, and the visuals should glide through them.
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    const linear = Math.pow(10, captureCompensationDb / 20);
+    measureTapRef.current?.gain.setTargetAtTime(linear, ctx.currentTime, PARAM_RAMP);
+    visualTapRef.current?.gain.setTargetAtTime(linear, ctx.currentTime, PARAM_RAMP);
+  }, [captureCompensationDb]);
 
   /* ─────────────────────────────────────────────────────────────
      Slider/preset/bypass changes — update node params in place.
@@ -935,6 +1020,8 @@ export function useAudioEngine(
     analyser,
     analyserL,
     analyserR,
+    visualAnalyserL,
+    visualAnalyserR,
     preEqAnalyserL,
     preEqAnalyserR,
     chromaAnalyser,

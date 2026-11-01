@@ -33,6 +33,15 @@ export interface ElectronApi {
     getInitialState(): SinkVolumeState;
     onState(handler: (state: SinkVolumeState) => void): () => void;
   };
+  /**
+   * How far the slider has turned down the input we record. Mirrors
+   * CaptureVolumeState in electron/captureVolume.ts.
+   */
+  captureVolume: {
+    /** Takes the enumerateDevices() label; null stops watching. */
+    watch(deviceLabel: string | null): Promise<void>;
+    onState(handler: (state: CaptureVolumeState) => void): () => void;
+  };
   shell: {
     openExternal(url: string): Promise<void>;
   };
@@ -341,6 +350,19 @@ export type SinkVolumeState =
   | { kind: 'already-unity'; deviceName: string }
   | { kind: 'unsupported'; deviceName: string; reason: string }
   | { kind: 'error'; deviceName: string; message: string };
+
+/**
+ * Mirror of CaptureVolumeState in electron/captureVolume.ts. Both this and
+ * the preload bridge have to move together with that union.
+ *
+ * Only `tracking` adds anything back. `untracked` covers a microphone, a
+ * device with no volume control, or a helper that couldn't say, and is
+ * treated exactly like `idle`.
+ */
+export type CaptureVolumeState =
+  | { kind: 'idle' }
+  | { kind: 'tracking'; deviceName: string; db: number }
+  | { kind: 'untracked'; deviceName: string; reason: string };
 
 /**
  * Mirror of RootlistNode / RootlistResult in electron/spotifyFolders.ts.

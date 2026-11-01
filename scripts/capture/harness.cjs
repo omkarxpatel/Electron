@@ -60,6 +60,9 @@ const INVOKE = [
   // screenshot.
   'update:get-just-installed', 'update:acknowledge-installed',
   'sink-volume:pin', 'sink-volume:restore',
+  // Never answered, so the capture adds nothing back: its synthesised input
+  // never went through a volume slider in the first place.
+  'capture-volume:watch',
 ];
 for (const ch of INVOKE) ipcMain.handle(ch, () => null);
 // The automatic-update switch reads a boolean, and null would leave it in its

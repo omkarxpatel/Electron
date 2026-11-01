@@ -55,6 +55,24 @@ const api = {
     },
   },
 
+  /**
+   * How far the macOS slider has turned down the input we record, so the
+   * measuring side can add it back. `watch` takes the enumerateDevices()
+   * label, like `sinkVolume.pin`; null stops it.
+   *
+   * Returns `unknown`; the shape is declared once in src/types/api.d.ts.
+   */
+  captureVolume: {
+    watch(deviceLabel: string | null): Promise<void> {
+      return ipcRenderer.invoke('capture-volume:watch', deviceLabel);
+    },
+    onState(handler: (state: unknown) => void): () => void {
+      const wrapped = (_e: unknown, state: unknown): void => handler(state);
+      ipcRenderer.on('capture-volume:state', wrapped);
+      return () => ipcRenderer.off('capture-volume:state', wrapped);
+    },
+  },
+
   shell: {
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
   },

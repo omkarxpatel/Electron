@@ -138,7 +138,7 @@ export function onSinkVolumeChange(handler: (state: SinkVolumeState) => void): v
 
 // ── Helper process ─────────────────────────────────────────────────────────
 
-function helperPath(): string {
+export function helperPath(): string {
   // Same split as trayIconPath(): extraResources in a shipped build, straight
   // out of the repo in dev. isPackagedBuild(), never app.isPackaged — see
   // updater.ts for why that check is permanently false here.

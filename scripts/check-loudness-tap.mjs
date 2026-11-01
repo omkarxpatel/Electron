@@ -171,10 +171,11 @@ async function measureThroughWorklet(seconds, dbfs, rate, connectOutput, playthr
  * but it builds a two-node graph that always reaches the destination. The
  * app's graph is longer and its destination connection is conditional:
  *
- *     limiter ─┬─→ analyser → duckGain → masterGain ─→ destination
- *              │                                        (Live only)
- *              └─→ splitter ─→ analyserL        (leaves, no outputs)
- *                          └─→ analyserR
+ *     limiter ─┬─→ duckGain → masterGain ─→ destination        (Live only)
+ *              │                       └─→ silentSink (gain 0) → destination
+ *              ├─→ splitter ─→ analyserL / analyserR  (leaves; output meter)
+ *              └─→ visualTap ─→ analyser               (leaf; visuals)
+ *     inputGain ─→ measureTap ─→ tap
  *
  * Two things fall out of that shape, and this function measures both:
  *
@@ -182,15 +183,18 @@ async function measureThroughWorklet(seconds, dbfs, rate, connectOutput, playthr
  *     to its automatic-pull list. They keep the splitter, the limiter and
  *     everything upstream — including the tap — being processed even with
  *     nothing connected to the destination.
- *   - the main analyser IS connected onward (to duckGain), which
- *     disqualifies it from that same list. Its only route to being processed
- *     is masterGain → destination, which exists only when Live is on.
+ *   - the main analyser used to be connected onward (to duckGain), which
+ *     took it off that same list, so with Live off nothing processed it and
+ *     the visualiser went flat. The silent sink fixed that, and the analyser
+ *     has since moved onto visualTap as a leaf as well.
  *
- * So with Live off the taps keep working and the visualiser's analyser goes
- * flat. Returns the analyser's peak deviation from the 128 midpoint, which is
- * 0 for a graph that was never pulled.
+ * measureTap and visualTap carry the capture compensation: what the macOS
+ * slider took off BlackHole before capture, added back for the measuring side
+ * only. compensationDb sets both. Returns the analyser's peak deviation from
+ * the 128 midpoint, which is 0 for a graph that was never pulled, plus float
+ * peaks for the comparisons the byte data is too coarse for.
  */
-async function measureAppGraph(seconds, dbfs, rate, playthrough) {
+async function measureAppGraph(seconds, dbfs, rate, playthrough, compensationDb = 0) {
   const ctx = new OfflineAudioContext({
     numberOfChannels: 2,
     length: Math.round(seconds * rate),
@@ -208,25 +212,47 @@ async function measureAppGraph(seconds, dbfs, rate, playthrough) {
   const inputGain = ctx.createGain();
   const preamp = ctx.createGain();
   const limiter = ctx.createDynamicsCompressor();
+  // Tuned as useAudioEngine tunes it. At the defaults it compresses a -23 dBFS
+  // tone, and the compensation cases below need the path to be linear below
+  // the threshold, as the app's is.
+  limiter.threshold.value = -1;
+  limiter.knee.value = 2;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.002;
+  limiter.release.value = 0.05;
   const analyser = ctx.createAnalyser();
   const splitter = ctx.createChannelSplitter(2);
   const analyserL = ctx.createAnalyser();
   const analyserR = ctx.createAnalyser();
   const duckGain = ctx.createGain();
   const masterGain = ctx.createGain();
+  const measureTap = ctx.createGain();
+  const visualTap = ctx.createGain();
+  measureTap.gain.value = Math.pow(10, compensationDb / 20);
+  visualTap.gain.value = Math.pow(10, compensationDb / 20);
 
   src.connect(inputGain);
   inputGain.connect(preamp);
   preamp.connect(limiter);
+  inputGain.connect(measureTap);
   if (tap) {
-    inputGain.connect(tap.node);
+    measureTap.connect(tap.node);
     tap.node.connect(limiter);
   }
-  limiter.connect(analyser);
+  // Both worklets feed the limiter, as in the app, so a processor that ever
+  // started passing its input through would carry measureTap's compensation
+  // into the sound — and the destination case below would catch it.
+  const onset = await createOnsetTap(ctx);
+  if (onset) {
+    measureTap.connect(onset.node);
+    onset.node.connect(limiter);
+  }
+  limiter.connect(duckGain);
   limiter.connect(splitter);
   splitter.connect(analyserL, 0, 0);
   splitter.connect(analyserR, 1, 0);
-  analyser.connect(duckGain);
+  limiter.connect(visualTap);
+  visualTap.connect(analyser);
   duckGain.connect(masterGain);
   // Mirrors useAudioEngine: a gain-0 node wired to the destination
   // unconditionally, so the graph is pulled whether or not Live is on. If
@@ -272,8 +298,19 @@ async function measureAppGraph(seconds, dbfs, rate, playthrough) {
     if (d > leafPeak) leafPeak = d;
   }
 
+  const floatPeak = (node) => {
+    const data = new Float32Array(node.fftSize);
+    node.getFloatTimeDomainData(data);
+    let peak = 0;
+    for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+    return peak;
+  };
+
   const lufs = tap ? await settle(tap.meter) : null;
-  return { analyserPeak, leafPeak, lufs, outputPeak };
+  return {
+    analyserPeak, leafPeak, lufs, outputPeak,
+    analyserPeakF: floatPeak(analyser), leafPeakF: floatPeak(analyserL),
+  };
 }
 
 window.__run = async () => {
@@ -370,11 +407,11 @@ window.__run = async () => {
       'peak deviation from midpoint: ' + liveOn.analyserPeak,
     );
 
-    // The one this file exists for now. analyser.connect(duckGain) takes
-    // the analyser off Blink's automatic-pull list, and with Live off there
-    // is no other route to the destination — so it is never processed and
-    // every byte reads back as the 128 midpoint. The visualiser draws a
-    // flat line, the EQ halo never fills and the meters read nothing.
+    // The one this file existed for until 1.4.27. analyser.connect(duckGain)
+    // took the analyser off Blink's automatic-pull list, and with Live off
+    // there was no other route to the destination — so it was never
+    // processed and every byte read back as the 128 midpoint. The visualiser
+    // drew a flat line, the EQ halo never filled and the meters read nothing.
     check(
       'in the app graph with Live OFF, the visualiser analyser still sees audio',
       liveOff.analyserPeak > 0,
@@ -420,6 +457,39 @@ window.__run = async () => {
       Number.isFinite(liveOff.lufs)
         ? liveOff.lufs.toFixed(2) + ' LUFS (kept alive by the leaf analysers)'
         : 'no quarters arrive — the leaf analysers are no longer pulling the graph',
+    );
+
+    // ── Capture compensation ───────────────────────────────────────────
+    // The macOS slider turns BlackHole down before we capture it: 32 dB at
+    // 50%. Model that as the same tone 32 dB quieter, with 32 dB of
+    // compensation, and check where the 32 dB lands. The measuring side must
+    // read the track as if the slider were at full; the sound and the output
+    // meter must still be 32 dB down, because that slider is the volume.
+    const SLIDER_DB = 32;
+    const slid = await measureAppGraph(seconds, dbfs - SLIDER_DB, rate, true, SLIDER_DB);
+    const dbOf = (ratio) => 20 * Math.log10(ratio);
+    check(
+      'compensated, the loudness tap reads the track and not the slider',
+      Number.isFinite(slid.lufs) && Math.abs(slid.lufs - liveOn.lufs) <= 0.1,
+      Number(slid.lufs).toFixed(2) + ' LUFS vs ' + Number(liveOn.lufs).toFixed(2) + ' at full volume',
+    );
+    check(
+      'and the visual analyser sees the level it would at full volume',
+      Math.abs(dbOf(slid.analyserPeakF / liveOn.analyserPeakF)) <= 0.1,
+      dbOf(slid.analyserPeakF / liveOn.analyserPeakF).toFixed(2) + ' dB from full volume',
+    );
+    // The one with teeth: a compensation that reached the destination would
+    // undo the user's volume control, and with the sink held at unity that
+    // is a 32 dB jump in their ears.
+    check(
+      'but none of it reaches the destination: the sound is still 32 dB down',
+      Math.abs(dbOf(slid.outputPeak / liveOn.outputPeak) + SLIDER_DB) <= 0.1,
+      dbOf(slid.outputPeak / liveOn.outputPeak).toFixed(2) + ' dB at the destination',
+    );
+    check(
+      'or the output meter: it still reads what goes out',
+      Math.abs(dbOf(slid.leafPeakF / liveOn.leafPeakF) + SLIDER_DB) <= 0.1,
+      dbOf(slid.leafPeakF / liveOn.leafPeakF).toFixed(2) + ' dB at the meter',
     );
   } catch (e) {
     check('probe ran without throwing', false, String((e && e.stack) || e));
