@@ -133,6 +133,11 @@ export function shouldRestartTrack(progressMs: number): boolean {
 const POLL_INTERVAL_ACTIVE = 1500;   // ms — window visible
 const POLL_INTERVAL_HIDDEN = 10000;  // ms — window hidden, ramp down to save battery + quota
 const POLL_BACKOFF_MAX = 30000;      // ms — 429/503 backoff cap
+/** How long after a track's predicted end the hidden-window poll fires, so
+ *  Spotify is already reporting the next one, and the floor that keeps a
+ *  stale prediction from turning into a burst of requests. */
+const POLL_TRACK_END_SLACK_MS = 750;
+const POLL_TRACK_END_MIN_MS = 1000;
 /** Playlist edits are rare compared to playback changes, and the check costs
  *  a request each time, so this polls far slower than the playback loop. */
 const PLAYLIST_REFRESH_ACTIVE_MS = 60000;
@@ -1081,9 +1086,28 @@ export function useSpotify() {
     let inflight = false;
     let backoff = 0;
 
+    /* Hidden, the flat 10 s let a track change go unnoticed for up to 10 s,
+     * and that is the background-listening case away mode exists for. For
+     * that long AI Enhance kept the last track's curve, and the last track's
+     * loudness and tempo measurement swallowed up to 10 s of the next one
+     * before it was committed to track memory. So the hidden poll lands when
+     * the playing track should end, and the 10 s is only the ceiling, for
+     * skips made somewhere else. */
+    const msUntilTrackEnd = (): number => {
+      const progress = progressRef.current;
+      const duration = stateRef.current.playback?.item?.duration_ms;
+      if (!progress.playing || !duration) return Infinity;
+      return duration - (progress.ms + (Date.now() - progress.at));
+    };
+
     const schedule = () => {
       if (cancelled) return;
-      const base = isActive ? POLL_INTERVAL_ACTIVE : POLL_INTERVAL_HIDDEN;
+      const base = isActive
+        ? POLL_INTERVAL_ACTIVE
+        : Math.min(
+            POLL_INTERVAL_HIDDEN,
+            Math.max(POLL_TRACK_END_MIN_MS, msUntilTrackEnd() + POLL_TRACK_END_SLACK_MS),
+          );
       const delay = backoff > 0 ? Math.min(backoff, POLL_BACKOFF_MAX) : base;
       timer = window.setTimeout(tick, delay);
     };
