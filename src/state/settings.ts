@@ -44,6 +44,14 @@ export const WAVEFORM_STYLES = [
 ] as const;
 export type WaveformStyle = (typeof WAVEFORM_STYLES)[number];
 
+/** What the visuals do while the window is on screen behind another app. */
+export const BACKGROUND_VISUALS = ['full', 'reduced', 'pause'] as const;
+export type BackgroundVisuals = (typeof BACKGROUND_VISUALS)[number];
+
+function isBackgroundVisuals(v: unknown): v is BackgroundVisuals {
+  return typeof v === 'string' && (BACKGROUND_VISUALS as readonly string[]).includes(v);
+}
+
 function isPaletteId(v: unknown): v is PaletteId {
   return typeof v === 'string' && (PALETTE_IDS as readonly string[]).includes(v);
 }
@@ -124,6 +132,11 @@ export interface SharedSettings {
    *  loudness. Only acts on tracks already in track memory — the figure
    *  isn't known until a track has been heard through once. */
   autoLevel: boolean;
+  /** While the window is on screen but another app has focus: 'full' keeps
+   *  drawing at the display's rate, 'reduced' caps the continuous loops at
+   *  30 Hz, 'pause' stops them as if the window were covered. A covered,
+   *  minimised or other-Space window always pauses; nobody can see it. */
+  backgroundVisuals: BackgroundVisuals;
 }
 
 export interface Settings extends SharedSettings {
@@ -179,6 +192,7 @@ export const DEFAULT_SETTINGS: Settings = {
   immersive: false,
   rememberTracks: true,
   autoLevel: false,
+  backgroundVisuals: 'reduced',
   profiles: {
     banner: BANNER_PROFILE,
     immersive: IMMERSIVE_PROFILE,
@@ -284,6 +298,9 @@ function load(): Settings {
       // PALETTE_IDS.
       if (!isPaletteId(merged.palette)) {
         merged.palette = DEFAULT_SETTINGS.palette;
+      }
+      if (!isBackgroundVisuals(merged.backgroundVisuals)) {
+        merged.backgroundVisuals = DEFAULT_SETTINGS.backgroundVisuals;
       }
       merged.immersive = false;
       return merged;

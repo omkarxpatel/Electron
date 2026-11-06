@@ -50,5 +50,6 @@ HANDOFF.md
 /RISKY_CHANGES.md
 /audit/
 
-# compiled CoreAudio volume helper (rebuilt by scripts/build-helper.sh)
+# compiled native helpers (rebuilt by scripts/build-helper.sh)
 build/helpers/avvolume
+build/helpers/avwindow

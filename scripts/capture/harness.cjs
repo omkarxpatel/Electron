@@ -44,6 +44,11 @@ ipcMain.on('update:get-state', (e) => {
 ipcMain.on('sink-volume:get-state', (e) => {
   e.returnValue = { kind: 'idle' };
 });
+// Window presence too. Focused, always: a capture window is never on screen,
+// and anything else would pause the visuals it exists to photograph.
+ipcMain.on('window:presence-get', (e) => {
+  e.returnValue = { kind: 'focused' };
+});
 // Everything else: accept and return nothing. The renderer treats a rejected
 // or empty bridge call as "feature unavailable" and renders its default,
 // which for the quality tier is full quality — exactly what we want in a

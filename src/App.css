@@ -2288,6 +2288,23 @@
   }
 }
 
+/* Behind another app, the mark holds still too. It is the one infinite
+   animation in the app, it sits on a backdrop-filter blur, and the overlay
+   that holds it stays mounted while closed, so it alone kept the window
+   repainting at the display's rate. A held mark still says "playing". */
+.app[data-visuals='reduced'] .sp-playing-mark i {
+  animation-play-state: paused;
+}
+
+/* Nobody can see the window, so nothing animates. The JS loops already stop
+   on `active`; this is the CSS half, without which a covered window kept
+   compositing frames for animations nobody could see. */
+.app[data-visuals='paused'] *,
+.app[data-visuals='paused'] *::before,
+.app[data-visuals='paused'] *::after {
+  animation-play-state: paused !important;
+}
+
 .sp-library-tile-cover-fallback {
   background: linear-gradient(135deg, var(--accent-soft-bg), rgba(255, 255, 255, 0.04));
 }

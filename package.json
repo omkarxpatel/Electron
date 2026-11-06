@@ -24,6 +24,7 @@
     "check:quality": "node scripts/check-quality.mjs",
     "check:folders": "node scripts/check-folders.mjs",
     "check:contrast": "node scripts/check-contrast.mjs",
+    "check:presence": "node scripts/check-presence.mjs",
     "icon:gen": "bash scripts/build-icon.sh",
     "capture": "node scripts/capture.mjs",
     "helper": "bash scripts/build-helper.sh",
@@ -146,7 +147,8 @@
         "from": "build/helpers",
         "to": "helpers",
         "filter": [
-          "avvolume"
+          "avvolume",
+          "avwindow"
         ]
       }
     ]

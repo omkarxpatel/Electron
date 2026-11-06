@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
+  BackgroundVisuals,
   ResolvedSettings,
   SharedSettings,
   VisualProfile,
@@ -78,6 +79,47 @@ function PerformanceSection({ quality }: { quality: UseQuality }) {
           </span>
         </span>
       </div>
+    </>
+  );
+}
+
+const BACKGROUND_HINTS: Record<BackgroundVisuals, string> = {
+  full: 'Visuals keep their full frame rate. Covered or minimized, they still pause.',
+  reduced: 'The visualizer drops to 30 fps and the EQ meters pause. Covered or minimized, everything pauses.',
+  pause: 'Visuals pause until you come back. The sound never changes.',
+};
+
+/**
+ * What the visuals do while another app has focus and this window is still on
+ * screen: the one case the app can't decide for the user, because a second
+ * display showing the visualizer is the whole point for some people. A window
+ * nobody can see (covered, minimized, on another Space) pauses whatever this
+ * says.
+ */
+function BackgroundVisualsRow({
+  value,
+  onChange,
+}: {
+  value: BackgroundVisuals;
+  onChange: (v: BackgroundVisuals) => void;
+}) {
+  return (
+    <>
+      <div className="setting-toggle-row">
+        <span className="setting-toggle-label">
+          <span className="setting-toggle-title">While you're in another app</span>
+          <span className="setting-toggle-hint">{BACKGROUND_HINTS[value]}</span>
+        </span>
+      </div>
+      <Segmented<BackgroundVisuals>
+        value={value}
+        options={[
+          { id: 'full', label: 'Full' },
+          { id: 'reduced', label: 'Reduced' },
+          { id: 'pause', label: 'Pause' },
+        ]}
+        onChange={onChange}
+      />
     </>
   );
 }
@@ -421,6 +463,10 @@ export function SettingsPanel({
 
         <Section title="Performance">
           <PerformanceSection quality={quality} />
+          <BackgroundVisualsRow
+            value={settings.backgroundVisuals}
+            onChange={(v) => update('backgroundVisuals', v)}
+          />
         </Section>
 
         <Section title="Menu bar">

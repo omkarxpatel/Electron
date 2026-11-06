@@ -138,13 +138,13 @@ export function onSinkVolumeChange(handler: (state: SinkVolumeState) => void): v
 
 // ── Helper process ─────────────────────────────────────────────────────────
 
-export function helperPath(): string {
+export function helperPath(name: 'avvolume' | 'avwindow' = 'avvolume'): string {
   // Same split as trayIconPath(): extraResources in a shipped build, straight
   // out of the repo in dev. isPackagedBuild(), never app.isPackaged — see
   // updater.ts for why that check is permanently false here.
   return isPackagedBuild()
-    ? path.join(process.resourcesPath, 'helpers', 'avvolume')
-    : path.join(__dirname, '..', 'build', 'helpers', 'avvolume');
+    ? path.join(process.resourcesPath, 'helpers', name)
+    : path.join(__dirname, '..', 'build', 'helpers', name);
 }
 
 interface HelperResult {

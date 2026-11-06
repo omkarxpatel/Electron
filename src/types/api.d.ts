@@ -42,6 +42,14 @@ export interface ElectronApi {
     watch(deviceLabel: string | null): Promise<void>;
     onState(handler: (state: CaptureVolumeState) => void): () => void;
   };
+  /**
+   * Whether anyone can see the main window. Mirrors WindowPresence in
+   * electron/windowPresence.ts.
+   */
+  windowPresence: {
+    getInitialState(): WindowPresence;
+    onState(handler: (state: WindowPresence) => void): () => void;
+  };
   shell: {
     openExternal(url: string): Promise<void>;
   };
@@ -363,6 +371,18 @@ export type CaptureVolumeState =
   | { kind: 'idle' }
   | { kind: 'tracking'; deviceName: string; db: number }
   | { kind: 'untracked'; deviceName: string; reason: string };
+
+/**
+ * Mirror of WindowPresence in electron/windowPresence.ts. Both this and the
+ * preload bridge have to move together with that union.
+ *
+ * `background` is on screen behind another app, which the user may still be
+ * watching on a second display. `away` is nobody watching at all.
+ */
+export type WindowPresence =
+  | { kind: 'focused' }
+  | { kind: 'background' }
+  | { kind: 'away'; reason: 'hidden' | 'minimized' | 'covered' | 'not-on-screen' | 'locked' };
 
 /**
  * Mirror of RootlistNode / RootlistResult in electron/spotifyFolders.ts.

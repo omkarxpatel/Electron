@@ -74,6 +74,7 @@ function settingsFor(style: WaveformStyle): ResolvedSettings {
     autoGain: true,
     rememberTracks: false,
     autoLevel: false,
+    backgroundVisuals: 'full',
     spectralPosition: true,
     trail: 0.42,
     smoothing: 0.88,

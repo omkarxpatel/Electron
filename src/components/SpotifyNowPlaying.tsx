@@ -4,6 +4,8 @@ import type { SpotifyPlaybackState, SpotifyImage } from '../spotify/types';
 import { formatDuration as formatTime } from '../shared/format';
 import { requestOverlayNav } from '../spotify/navigation';
 import { shouldRestartTrack } from '../spotify/useSpotify';
+import { useFrameBudget } from '../hooks/frameBudget';
+import { frameDue } from '../state/quality';
 
 interface Props {
   playback: SpotifyPlaybackState | null;
@@ -160,15 +162,24 @@ function SpotifyNowPlayingImpl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playback?.progress_ms, duration]);
 
-  // RAF-driven progress tick. Wakes ~60 Hz while playing; reads/writes DOM
-  // directly with zero React state changes. Auto-suspends when paused.
+  // RAF-driven progress tick. Wakes on every display refresh while playing;
+  // reads/writes DOM directly with zero React state changes. Auto-suspends
+  // when paused, and when nobody can see the window: it was the one loop
+  // App's `active` never reached, so a covered window kept repainting at
+  // 120 Hz for a progress bar. The next poll puts the bar right on return.
+  const { active: visualsActive, frameCapHz } = useFrameBudget();
+  const frameCapHzRef = useRef(frameCapHz);
+  frameCapHzRef.current = frameCapHz;
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!isPlaying || !visualsActive) return;
     let rafId = 0;
     let lastTick = performance.now();
     const tick = () => {
       rafId = requestAnimationFrame(tick);
       const now = performance.now();
+      // Progress advances by elapsed time, so skipping frames only lowers
+      // the rate. frameDue, not a bare comparison: see FRAME_CAP_SLACK_MS.
+      if (!frameDue(now, lastTick, frameCapHzRef.current)) return;
       const dt = now - lastTick;
       lastTick = now;
       if (draggingRef.current) return;
@@ -180,7 +191,7 @@ function SpotifyNowPlayingImpl({
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, duration]);
+  }, [isPlaying, duration, visualsActive]);
 
   // Volume poll-sync (unchanged behavior).
   useEffect(() => {

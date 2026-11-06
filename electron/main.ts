@@ -37,6 +37,13 @@ import {
   type CaptureVolumeState,
 } from './captureVolume';
 import {
+  getWindowPresence,
+  onWindowPresenceChange,
+  stopWindowPresenceWatch,
+  trackWindowPresence,
+  type WindowPresence,
+} from './windowPresence';
+import {
   declineTest,
   recordCalibration,
   resolveProfile,
@@ -454,6 +461,8 @@ function createWindow(startHidden = false) {
     },
   });
 
+  trackWindowPresence(win);
+
   win.once('ready-to-show', () => {
     if (startHidden) {
       // Never shown at all on a login launch. Cheaper and safer than
@@ -792,6 +801,15 @@ ipcMain.handle('capture-volume:watch', (_event, deviceLabel: unknown) => {
 });
 
 /**
+ * Whether anyone can see the main window — see electron/windowPresence.ts.
+ * Synchronous for the first render, so the renderer never starts out drawing
+ * for a window that was launched hidden.
+ */
+ipcMain.on('window:presence-get', (event) => {
+  event.returnValue = getWindowPresence();
+});
+
+/**
  * Renderer → main now-playing mirror. The renderer is the only thing holding
  * a Spotify session, so the tray can't read playback itself; it gets told.
  * Coerced and length-capped here because this crosses the IPC boundary and
@@ -1043,6 +1061,11 @@ app.whenReady().then(async () => {
       win.webContents.send('capture-volume:state', next);
     }
   });
+  onWindowPresenceChange((next: WindowPresence) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('window:presence', next);
+    }
+  });
 
   // Clicking the dock icon (or Cmd+Tabbing back) on macOS. If we still have
   // a window object, just show it (preserves all state). If somehow the
@@ -1065,6 +1088,7 @@ app.on('before-quit', () => {
   }
   teardownAutoUpdater();
   stopCaptureVolumeWatch();
+  stopWindowPresenceWatch();
   // before-quit gives us no chance to await, so this one is fully synchronous:
   // it blocks here for a single helper spawn (~100 ms, measured) rather than
   // letting the quit race it and leave someone's output device at 100%.

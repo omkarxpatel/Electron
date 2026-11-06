@@ -24,6 +24,8 @@ import { useSinkVolumePin } from './audio/useSinkVolumePin';
 import { useCaptureCompensation } from './audio/useCaptureCompensation';
 import { useAutoSelectDevices } from './audio/useAutoSelectDevices';
 import { useVisibility } from './hooks/useVisibility';
+import { useWindowPresence } from './hooks/useWindowPresence';
+import { BACKGROUND_FRAME_CAP_HZ, FrameBudgetContext } from './hooks/frameBudget';
 import { PerfOverlay, useRenderCount } from './perf';
 import { useSettings } from './state/settings';
 import { useQuality } from './state/quality';
@@ -72,15 +74,33 @@ function AppContent() {
     onUseDevice: audioSource.useDevice,
     onSelectOutput: audioOutput.setOutputDevice,
   });
-  // When the window is hidden, after a brief grace period we mark the app
-  // inactive — visual loops (canvas RAF, halo, activity bars, audio stats)
-  // gate on this and fully suspend, so the app uses no rendering CPU/GPU
-  // while it's not on screen. Audio playback is unaffected.
-  const isActive = useVisibility(2500);
+  // When nobody can see the window (hidden, minimized, covered, another
+  // Space), after a brief grace period we mark the app inactive — visual loops
+  // (canvas RAF, halo, activity bars, audio stats) gate on this and fully
+  // suspend, so the app uses no rendering CPU/GPU while it's not on screen.
+  // On screen behind another app is the user's call: Pause joins the same
+  // path. Reduced keeps the show moving, the visualizer and the progress bar
+  // at 30 Hz, and pauses the EQ panel's meters. Capping those as well saved
+  // almost nothing, measured: each loop throttles on its own clock, so six
+  // of them at 30 Hz still composite close to a frame on every refresh.
+  // Audio is unaffected.
+  const presence = useWindowPresence();
+  const inBackground = presence.kind === 'background';
+  const isActive = useVisibility(2500, inBackground && settings.backgroundVisuals === 'pause');
+  const reducedInBackground = inBackground && settings.backgroundVisuals === 'reduced';
+  const frameCapHz = reducedInBackground ? BACKGROUND_FRAME_CAP_HZ : null;
+  const frameBudget = useMemo(() => ({ active: isActive, frameCapHz }), [isActive, frameCapHz]);
   // Machine capability -> render scale and frame cap. Resolves asynchronously
   // from main; until it does, `knobs` is full quality, so a slow profile read
   // can never make the visualizer start out degraded.
   const quality = useQuality();
+  const visualizerKnobs = useMemo(
+    () =>
+      frameCapHz !== null
+        ? { ...quality.knobs, frameCapHz: Math.min(quality.knobs.frameCapHz ?? frameCapHz, frameCapHz) }
+        : quality.knobs,
+    [quality.knobs, frameCapHz],
+  );
   // NOTE: there used to be an automatic +6 dB "BlackHole compensation" here.
   // It was removed — it sat at inputGain, UPSTREAM of the -1 dBFS / ratio-20
   // limiter, so the limiter clawed it straight back on anything loud:
@@ -377,11 +397,13 @@ function AppContent() {
   }, [rightCollapsed]);
 
   return (
+    <FrameBudgetContext.Provider value={frameBudget}>
     <div
       className="app"
       data-immersive={settings.immersive ? 'true' : 'false'}
       data-right-collapsed={rightCollapsed ? 'true' : 'false'}
       data-viz-strip={showVizStrip ? 'true' : 'false'}
+      data-visuals={!isActive ? 'paused' : reducedInBackground ? 'reduced' : 'full'}
       style={themeStyle}
     >
       {settings.albumArtBackdrop && albumImageUrl && (
@@ -448,7 +470,9 @@ function AppContent() {
               aiDeltaRef={aiDeltaRef}
               aiEffectsRef={aiEffectsRef}
               baselineRef={baselineRef}
-              active={isActive}
+              // Visual only (curve halo, activity bars, meters); AI Enhance
+              // does not read it, so the sound is the same either way.
+              active={isActive && !reducedInBackground}
               playthrough={playthrough}
               togglePlaythrough={handleTogglePlaythrough}
               hasSource={hasSource}
@@ -480,7 +504,7 @@ function AppContent() {
           settings={resolved}
           active={isActive}
           paletteOverride={albumPalette}
-          quality={quality.knobs}
+          quality={visualizerKnobs}
         />
         </SectionBoundary>
       )}
@@ -533,6 +557,7 @@ function AppContent() {
 
       <PerfOverlay />
     </div>
+    </FrameBudgetContext.Provider>
   );
 }
 

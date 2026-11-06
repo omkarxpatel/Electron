@@ -62,6 +62,25 @@ const api = {
    *
    * Returns `unknown`; the shape is declared once in src/types/api.d.ts.
    */
+  /**
+   * Whether anyone can see the main window: focused, on screen behind another
+   * app, or away (covered, minimised, hidden, another Space, screen locked).
+   * Main works it out because the page cannot: Electron turns off Chromium's
+   * occlusion detection on macOS. See electron/windowPresence.ts.
+   *
+   * Returns `unknown`; the shape is declared once in src/types/api.d.ts.
+   */
+  windowPresence: {
+    getInitialState(): unknown {
+      return ipcRenderer.sendSync('window:presence-get');
+    },
+    onState(handler: (state: unknown) => void): () => void {
+      const wrapped = (_e: unknown, state: unknown): void => handler(state);
+      ipcRenderer.on('window:presence', wrapped);
+      return () => ipcRenderer.off('window:presence', wrapped);
+    },
+  },
+
   captureVolume: {
     watch(deviceLabel: string | null): Promise<void> {
       return ipcRenderer.invoke('capture-volume:watch', deviceLabel);
