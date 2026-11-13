@@ -1330,6 +1330,131 @@ function createParticles(n: number): Particle[] {
   return out;
 }
 
+// ── Particle glow sprites ─────────
+// Every particle used to be filled with the canvas shadow on: ~380 blurred
+// draw calls a frame in a 1512x110 banner. The canvas runs a fresh blur for
+// each one. In a real v1.4.30 session (M5, 120 Hz, glow 0.3) that alone held
+// the app at 41-97 fps with the GPU process's main thread pinned at ~94%;
+// Glow at 0 gave a locked 120 fps at ~50%. Batching is not the way out:
+// one path per alpha level made particles 2x SLOWER (each union path's
+// bounding box spans the stage, and the blur cost is its area), and a single
+// union shadow loses the separation between dots.
+//
+// A particle's glow is a blurred disc in the glow colour, so it depends only
+// on its radius, the blur and the colour. Each one is drawn once into a small
+// sprite and stamped with drawImage; the sharp dot is filled on top with the
+// shadow off, in the same order as before. Glow still means what it says on
+// the slider: the same blur radius, colour and alpha, without re-running
+// the blur 380 times a frame.
+
+/** Radius of the smallest sprite bucket, in device pixels. */
+const GLOW_SPRITE_R0_PX = 0.25;
+/** Each bucket is 3% wider than the last. A glow drawn for a radius up to
+ *  1.5% off is not visible; a bucket per exact radius would bake a new
+ *  sprite almost every frame. */
+const GLOW_SPRITE_STEP = 1.03;
+const LOG_GLOW_SPRITE_STEP = Math.log(GLOW_SPRITE_STEP);
+
+interface GlowSprite {
+  image: ImageBitmap;
+  /** CSS px from the sprite's corner to the disc's centre. */
+  half: number;
+  /** CSS px across. */
+  size: number;
+}
+
+interface GlowSpriteSet {
+  key: string;
+  dpr: number;
+  blur: number;
+  color: string;
+  /** undefined = not baked yet; null = baking failed, draw no glow. */
+  byBucket: (GlowSprite | null | undefined)[];
+}
+
+let glowSpriteSet: GlowSpriteSet | null = null;
+
+/** Sprites for this blur, colour and pixel ratio. Album-art tinting changes
+ *  the glow colour per track, so the previous set is released rather than
+ *  kept. Null when the context has nowhere to bake (no OffscreenCanvas),
+ *  in which case the caller keeps drawing with the shadow. */
+function glowSpritesFor(blur: number, color: string, dpr: number): GlowSpriteSet | null {
+  if (typeof OffscreenCanvas === 'undefined' || !(dpr > 0)) return null;
+  const key = `${blur}|${color}|${dpr}`;
+  if (glowSpriteSet && glowSpriteSet.key === key) return glowSpriteSet;
+  if (glowSpriteSet) for (const s of glowSpriteSet.byBucket) s?.image.close();
+  glowSpriteSet = { key, dpr, blur, color, byBucket: [] };
+  return glowSpriteSet;
+}
+
+function glowSpriteAt(set: GlowSpriteSet, rCss: number): GlowSprite | null {
+  const rPx = rCss * set.dpr;
+  if (!(rPx > 0)) return null;
+  const b = Math.max(0, Math.round(Math.log(rPx / GLOW_SPRITE_R0_PX) / LOG_GLOW_SPRITE_STEP));
+  let s = set.byBucket[b];
+  if (s === undefined) {
+    s = bakeGlowSprite(GLOW_SPRITE_R0_PX * Math.pow(GLOW_SPRITE_STEP, b), set);
+    set.byBucket[b] = s;
+  }
+  return s;
+}
+
+function bakeGlowSprite(rPx: number, set: GlowSpriteSet): GlowSprite | null {
+  // The canvas blurs a shadow with a Gaussian of sigma = shadowBlur / 2, in
+  // device pixels: shadows ignore the transform, which is why the sprite is
+  // baked on an untransformed canvas at device resolution. 3 sigma holds
+  // all but 0.3% of it.
+  const halfPx = Math.ceil(rPx + 1.5 * set.blur + 2);
+  const sizePx = halfPx * 2;
+  const canvas = new OffscreenCanvas(sizePx, sizePx);
+  const sctx = canvas.getContext('2d');
+  if (!sctx) return null;
+  // Shadow only. The disc itself is drawn one sprite-width off the canvas and
+  // the offset (device pixels, like the blur) carries its shadow back to the
+  // centre. A sprite holding the disc too would be wrong under globalAlpha:
+  // the original shows a little of the glow through every translucent dot.
+  sctx.shadowColor = set.color;
+  sctx.shadowBlur = set.blur;
+  sctx.shadowOffsetX = sizePx;
+  sctx.fillStyle = '#000';
+  sctx.beginPath();
+  sctx.arc(halfPx - sizePx, halfPx, rPx, 0, Math.PI * 2);
+  sctx.fill();
+  return { image: canvas.transferToImageBitmap(), half: halfPx / set.dpr, size: sizePx / set.dpr };
+}
+
+// ── Particle line layer ─────────
+// The same style strokes 8 full-width waveform lines under the particles,
+// and each stroke paid for its own blur across the whole strip. With the
+// particles on sprites, those 8 blurs were all that kept the banner off
+// 120 fps (harness, 1512x110 @2x: 92-99 fps with them, 120 with line glow
+// off). The lines are drawn into a cleared layer instead and the layer goes
+// down in one shadowed draw: one blur, the same colour and radius, and each
+// line's own alpha is already in the layer. The only difference is
+// ordering. Every line's glow now sits under every line, where before each
+// glow also veiled the lines drawn ahead of it.
+const particleLineLayers = new WeakMap<AnyCanvasCtx, OffscreenCanvasRenderingContext2D>();
+
+/** A cleared layer matching `ctx`'s backing store and transform, or null
+ *  when there is no OffscreenCanvas to make one with. */
+function particleLineLayerFor(ctx: AnyCanvasCtx): OffscreenCanvasRenderingContext2D | null {
+  if (typeof OffscreenCanvas === 'undefined') return null;
+  const wPx = ctx.canvas.width;
+  const hPx = ctx.canvas.height;
+  let layer = particleLineLayers.get(ctx);
+  if (!layer || layer.canvas.width !== wPx || layer.canvas.height !== hPx) {
+    const made = new OffscreenCanvas(wPx, hPx).getContext('2d');
+    if (!made) return null;
+    layer = made;
+    particleLineLayers.set(ctx, layer);
+  } else {
+    layer.setTransform(1, 0, 0, 1, 0, 0);
+    layer.clearRect(0, 0, wPx, hPx);
+  }
+  layer.setTransform(ctx.getTransform());
+  return layer;
+}
+
 function drawParticles(
   ctx: AnyCanvasCtx,
   w: number,
@@ -1374,9 +1499,14 @@ function drawParticles(
   const prevShadow = ctx.shadowBlur;
   ctx.shadowBlur = Math.min(prevShadow, 10);
 
+  // See "Particle line layer": with a glow on, the lines go into a layer that
+  // is blurred once, instead of once per stroke.
+  const layer = ctx.shadowBlur > 0 ? particleLineLayerFor(ctx) : null;
+  const lc: AnyCanvasCtx = layer ?? ctx;
   ctx.strokeStyle = grad;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  lc.strokeStyle = grad;
+  lc.lineCap = 'round';
+  lc.lineJoin = 'round';
 
   const LINE_COUNT = 7;
   const phaseStep = Math.max(2, Math.floor(n / 90));
@@ -1396,9 +1526,9 @@ function drawParticles(
     const sineFreq2 = 2.3 + k * 0.47;
     const sinePhase1 = k * 1.07 + tick * 0.013;
     const sinePhase2 = k * 0.59 - tick * 0.009;
-    ctx.globalAlpha = 0.26 - distNorm * 0.10;
-    ctx.lineWidth = 1.0;
-    ctx.beginPath();
+    lc.globalAlpha = 0.26 - distNorm * 0.10;
+    lc.lineWidth = 1.0;
+    lc.beginPath();
     for (let i = 0; i < n; i++) {
       const idx = ((i + phaseShift) % n + n) % n;
       const sample = smoothedSamples[idx];
@@ -1410,23 +1540,28 @@ function drawParticles(
       ) * envelopeAtT;
       const x = t * w;
       const y = midY + (sample * audioWeight + overlay * sineWeight) * amp * ampScale + yBob;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      if (i === 0) lc.moveTo(x, y);
+      else lc.lineTo(x, y);
     }
-    ctx.stroke();
+    lc.stroke();
   }
 
-  ctx.globalAlpha = 0.55;
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
+  lc.globalAlpha = 0.55;
+  lc.lineWidth = 1.6;
+  lc.beginPath();
   for (let i = 0; i < n; i++) {
     const sample = smoothedSamples[i];
     const x = (i / (n - 1)) * w;
     const y = midY + sample * amp;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    if (i === 0) lc.moveTo(x, y);
+    else lc.lineTo(x, y);
   }
-  ctx.stroke();
+  lc.stroke();
+
+  if (layer) {
+    ctx.globalAlpha = 1;
+    ctx.drawImage(layer.canvas, 0, 0, w, h);
+  }
 
   ctx.fillStyle = grad;
   // Damped: these are oscillations, not layout. Undamped they scaled 8x into
@@ -1436,6 +1571,14 @@ function drawParticles(
   // Radius has to grow with the stage or particles stay 0.4-2.4px specks on
   // a 900px canvas. sqrt keeps them from becoming blobs.
   const sizeScale = Math.sqrt(scale) * sizeMul;
+
+  // The lines above still get the canvas shadow, once, through their layer.
+  // The particles must not; see "Particle glow sprites". `ctx.shadowBlur`
+  // here is already the capped value the lines used.
+  const glowSet = ctx.shadowBlur > 0
+    ? glowSpritesFor(ctx.shadowBlur, String(ctx.shadowColor), ctx.getTransform().a)
+    : null;
+  if (glowSet) ctx.shadowBlur = 0;
 
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];
@@ -1479,6 +1622,10 @@ function drawParticles(
     ctx.globalAlpha =
       Math.min(1, 0.6 + localEnergy * 0.4 + vocalBoost * 0.25 + onsetEnv * 0.3 + localBand * 0.15)
       * (large ? 0.35 + depth * 0.65 : 1);
+    if (glowSet) {
+      const g = glowSpriteAt(glowSet, r);
+      if (g) ctx.drawImage(g.image, x - g.half, y - g.half, g.size, g.size);
+    }
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();

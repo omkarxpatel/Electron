@@ -8,6 +8,10 @@ concrete — a few lines, no internals. `scripts/release-notes.mjs` extracts
 them; the release workflow fails early if the version being tagged has no
 section here.
 
+## 1.4.32 (prompt)
+
+- The particles visualizer keeps up with your screen again with Glow on. Every particle and each waveform line was blurred separately on every frame, which held the strip above the player to about 40–90 frames a second on a 120 Hz display, and full screen to about 40, with a processor core kept busy. The glow is now drawn once and reused, so it looks the same and runs at the display's full rate.
+
 ## 1.4.31 (prompt)
 
 - The visualizer and the EQ's level bars no longer shrink when you turn your Mac's volume down. The volume slider turns the music down before the app can hear it, so at a normal listening volume the visuals barely moved. The app now adds that back for what it shows and measures, and only there: your volume works exactly as before, and the OUT meter still shows the real level going to your speakers or headphones.
