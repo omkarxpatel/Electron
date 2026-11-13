@@ -44,12 +44,19 @@ concurrency:
 jobs:
   build-mac:
     name: Build & publish (macOS)
-    # Pinned to macos-14 (Sonoma). macos-latest started rolling to macos-15
-    # (Sequoia) in 2025, and dmg-builder hits an intermittent
-    # FileNotFoundError on '.background/background.tiff' there during the
-    # mounted-DMG asset-copy step. Sonoma stays reliable. Bump this once
-    # electron-builder / dmg-builder versions catch up.
-    runs-on: macos-14
+    # macos-15 (Sequoia). GitHub retired every macOS 14 image on 2026-11-02,
+    # and a job still pinned to macos-14 is cancelled before its first step
+    # with "The configuration 'macos-14-arm64-us-default' is not supported".
+    # That is how the v1.4.31 tag push failed to build.
+    #
+    # macos-14 had been pinned because dmg-builder hit an intermittent
+    # FileNotFoundError on '.background/background.tiff' on Sequoia during the
+    # mounted-DMG asset-copy step. If that comes back, re-run the job: the
+    # build step fails before anything is uploaded. macos-15 rather than
+    # macos-latest (now macOS 26) because it is the smallest step from the
+    # image every earlier release was built on, and the helpers are compiled
+    # here by swiftc for a macOS 11 target.
+    runs-on: macos-15
     env:
       # A manual run builds the tag it was given, not whatever main happens to
       # be. The previous version of this workflow accepted the input and then
