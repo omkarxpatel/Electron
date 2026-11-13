@@ -11,6 +11,7 @@ section here.
 ## 1.4.32 (prompt)
 
 - The particles visualizer keeps up with your screen again with Glow on. Every particle and each waveform line was blurred separately on every frame, which held the strip above the player to about 40–90 frames a second on a 120 Hz display, and full screen to about 40, with a processor core kept busy. The glow is now drawn once and reused, so it looks the same and runs at the display's full rate.
+- Changing tracks now dissolves the album-art backdrop from one cover to the next over about two seconds, and the app's colours move with it. The old cover used to disappear the moment the new one began fading in, so every track change flashed through to the bare background.
 
 ## 1.4.31 (prompt)
 

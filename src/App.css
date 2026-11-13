@@ -6152,7 +6152,12 @@
   z-index: -1;
   pointer-events: none;
   overflow: hidden;
-  animation: album-backdrop-in 700ms ease-out;
+  /* Duration comes from AlbumBackdrop, which also owns the timer that
+     retires the outgoing layer — the two have to agree or a layer is
+     dropped mid-dissolve. ease-in-out, not ease-out: the old cover is
+     still underneath, so a front-loaded curve reads as a jump to the
+     new art rather than a dissolve. */
+  animation: album-backdrop-in var(--album-backdrop-fade-ms, 700ms) ease-in-out;
 }
 
 .album-backdrop img {

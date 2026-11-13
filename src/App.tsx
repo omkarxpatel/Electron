@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { AlbumBackdrop } from './components/AlbumBackdrop';
 import { ChromeBar } from './components/ChromeBar';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SpotifyOnboarding } from './components/SpotifyOnboarding';
@@ -406,13 +407,7 @@ function AppContent() {
       data-visuals={!isActive ? 'paused' : reducedInBackground ? 'reduced' : 'full'}
       style={themeStyle}
     >
-      {settings.albumArtBackdrop && albumImageUrl && (
-        // key forces a fresh element per track so the fade-in replays instead
-        // of the browser swapping src on a already-opaque image.
-        <div className="album-backdrop" key={albumImageUrl} aria-hidden>
-          <img src={albumImageUrl} alt="" />
-        </div>
-      )}
+      <AlbumBackdrop url={settings.albumArtBackdrop ? albumImageUrl : null} />
       <UpdateBanner />
       <UpdatedNotice />
       <UpdateDialog />

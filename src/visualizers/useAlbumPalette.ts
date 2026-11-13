@@ -25,8 +25,11 @@ import { extractPaletteFromUrl } from './extractPalette';
 
 /** How long one theme takes to become the next. Long enough to read as a
  *  fade rather than a cut, short enough that the new track's colors are
- *  established well inside its intro. */
-const FADE_MS = 900;
+ *  established well inside its intro. 900ms read as a flicker: most of a
+ *  smoothstep's movement lands in its middle third, so the eye only ever
+ *  saw ~300ms of it. Matched to AlbumBackdrop's dissolve so the wash and
+ *  the accent colors travel together. */
+const FADE_MS = 2200;
 /** Ceiling on how often the fade emits. Each emission re-renders the visual
  *  chain and posts the palette to the render worker, so matching a 120 Hz
  *  display would buy a smoothness nobody can see in a slow color ramp at
