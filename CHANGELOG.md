@@ -10,8 +10,25 @@ section here.
 
 ## 1.4.32 (prompt)
 
+- The visualizer and the EQ's level bars no longer shrink when you turn your Mac's volume down. The volume slider turns the music down before the app can hear it, so at a normal listening volume the visuals barely moved. The app now adds that back for what it shows and measures, and only there: your volume works exactly as before, and the OUT meter still shows the real level going to your speakers or headphones.
+- The app stops drawing when nobody can see it, covered by other windows, on another desktop or minimized, so it uses far less power while you work in something else. The sound never changes. A new setting under Performance chooses what happens while it's still on screen behind another app: Full, Reduced (the default: the visualizer at 30 fps, the EQ meters paused) or Pause.
+- Level matching never actually did anything, and the DJ view never knew a track's tempo: the part of the app that measures loudness and tempo was being blocked from starting. Both work now. Level matching evens out a track once you've heard it through, and with AI Enhance on, the DJ view picks up the tempo of what's playing within about 15 seconds.
 - The particles visualizer keeps up with your screen again with Glow on. Every particle and each waveform line was blurred separately on every frame, which held the strip above the player to about 40–90 frames a second on a 120 Hz display, and full screen to about 40, with a processor core kept busy. The glow is now drawn once and reused, so it looks the same and runs at the display's full rate.
 - Changing tracks now dissolves the album-art backdrop from one cover to the next over about two seconds, and the app's colours move with it. The old cover used to disappear the moment the new one began fading in, so every track change flashed through to the bare background.
+- The visualizer, the output meters and the EQ curve now work with Live turned off. Visualize-only mode used to draw a flat line, so the app looked switched off even with music playing. Live off is still silent: nothing plays out of the app until you turn Live on.
+- Quitting with Live on could leave your speakers or headphones stuck at full volume. The app now keeps the volume it needs to restore until it has actually restored it, and puts it right the next time it starts if a restore ever fails.
+- With the window out of sight, a new track is picked up as it starts instead of up to ten seconds later, so AI Enhance switches curves on time and each track's measurements stay its own.
+- With no audio source connected, the Spotify panel (library, search, artist and album pages) stopped short of the player bar, with the EQ showing through underneath. It now reaches all the way down.
+- The line under each song in playlists and search results is one continuous line now, instead of stepping up under the song's title.
+- A saved setting the app doesn't recognise — after going back to an older version, for example — no longer stops the app from opening, and the error screen has a new "Reset appearance & reload" button for anything like it.
+- Leaving a playlist and coming back to it no longer loses part of its track list.
+- If you change your output device's volume yourself while Live is on, turning Live off no longer overwrites your change.
+- Signing out now forgets which of your playlists contain which tracks, so the next account to sign in doesn't see the last one's markers.
+- If the app's own storage fills up, settings that can't be saved no longer crash it, and your Spotify sign-in can no longer be left half-saved.
+- If a visualizer style ever runs into an error, it now stops cleanly instead of freezing the picture and keeping a processor core busy. An error in the EQ or notch panel no longer takes the window down, or leaves an empty panel stuck on screen.
+- Checking for updates while one is already downloading no longer risks throwing the download away.
+- Playlist folders are read more carefully from the Spotify app's cache. A damaged cache file can no longer produce the wrong folders, or use up enough memory to crash the app.
+- Changing tracks with album-art tinting on is a little smoother.
 
 ## 1.4.31 (prompt)
 
