@@ -748,24 +748,67 @@ ipcMain.handle('speech:render', (_event, text: unknown, voice: unknown) =>
 // at about 2 a.m. and the run just stops. And a hidden window gets its timers
 // throttled, so the 10 Hz measuring setInterval fires far slower while the
 // code still counts ticks x 0.1 s: the "seconds heard" it records would lie.
-// One blocker id at module scope: starting twice must not leak a second
-// blocker, and stopping with none held must be a no-op.
-let learnerBlockerId: number | null = null;
+// One blocker at module scope: starting twice must not leak a second one, and
+// stopping with none held must be a no-op.
+//
+// The hold is tied to the webContents that took it, because only main can see
+// that webContents go away. A renderer crash or a logo-button reload restarts
+// the page with no memory of the hold, and a reload runs no React cleanup, so
+// without a main-side release the Mac never idle-sleeps again until quit.
+// Every release funnels through releaseLearnerHold.
+type LearnerNavigation = { isMainFrame: boolean; isSameDocument: boolean };
+type LearnerHold = {
+  id: number;
+  owner: Electron.WebContents;
+  onGone: () => void;
+  onNavigate: (details: LearnerNavigation) => void;
+};
+let learnerHold: LearnerHold | null = null;
+
+function releaseLearnerHold(): void {
+  const hold = learnerHold;
+  if (hold === null) return;
+  learnerHold = null;
+  powerSaveBlocker.stop(hold.id);
+  const { owner } = hold;
+  // A destroyed owner has no listeners to remove and nothing to restore;
+  // touching it throws.
+  if (owner.isDestroyed()) return;
+  owner.removeListener('destroyed', hold.onGone);
+  owner.removeListener('render-process-gone', hold.onGone);
+  owner.removeListener('did-start-navigation', hold.onNavigate);
+  owner.setBackgroundThrottling(true);
+}
 
 ipcMain.handle('learner:set-keep-awake', (event, on: unknown) => {
+  const sender = event.sender;
   if (on === true) {
-    if (learnerBlockerId === null || !powerSaveBlocker.isStarted(learnerBlockerId)) {
-      learnerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    // A second caller while another live webContents holds it simply takes
+    // over: release first, which drops the old owner's listeners, then
+    // register on the new one. The same owner calling again is left alone, so
+    // listeners never stack.
+    if (learnerHold !== null && learnerHold.owner !== sender) releaseLearnerHold();
+    if (learnerHold === null) {
+      const onGone = () => releaseLearnerHold();
+      const onNavigate = (details: LearnerNavigation) => {
+        if (details.isMainFrame && !details.isSameDocument) releaseLearnerHold();
+      };
+      learnerHold = {
+        id: powerSaveBlocker.start('prevent-app-suspension'),
+        owner: sender,
+        onGone,
+        onNavigate,
+      };
+      sender.on('destroyed', onGone);
+      sender.on('render-process-gone', onGone);
+      sender.on('did-start-navigation', onNavigate);
     }
-    event.sender.setBackgroundThrottling(false);
+    sender.setBackgroundThrottling(false);
   } else {
-    if (learnerBlockerId !== null) {
-      powerSaveBlocker.stop(learnerBlockerId);
-      learnerBlockerId = null;
-    }
-    event.sender.setBackgroundThrottling(true);
+    releaseLearnerHold();
+    if (!sender.isDestroyed()) sender.setBackgroundThrottling(true);
   }
-  return learnerBlockerId !== null && powerSaveBlocker.isStarted(learnerBlockerId);
+  return learnerHold !== null && powerSaveBlocker.isStarted(learnerHold.id);
 });
 
 ipcMain.handle('shell:open-external', async (_event, url: string) => {
@@ -1121,6 +1164,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  releaseLearnerHold();
   // Cmd+Q, the App menu's Quit, the tray's Quit and a logout-initiated
   // shutdown all arrive here.
   //
