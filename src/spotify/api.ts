@@ -280,17 +280,20 @@ export const PLAY_URIS_LIMIT = 100;
  *  here: Spotify drops unavailable and local items when it builds the
  *  playback context, so every position past one of them resolves to the
  *  following track, and the final position falls off the end and plays
- *  nothing. A URI is resolved against the context by Spotify itself. */
+ *  nothing. A URI is resolved against the context by Spotify itself.
+ *  `positionMs` is milliseconds into the track; omitted means Spotify's default (0). */
 export async function play(
   uris?: string[],
   contextUri?: string,
   offsetTrackUri?: string,
   deviceId?: string,
+  positionMs?: number,
 ): Promise<void> {
   const body: Record<string, unknown> = {};
   if (uris && uris.length > 0) body.uris = uris;
   if (contextUri) body.context_uri = contextUri;
   if (offsetTrackUri) body.offset = { uri: offsetTrackUri };
+  if (positionMs !== undefined) body.position_ms = Math.max(0, Math.round(positionMs));
   const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
   await request(`/me/player/play${query}`, {
     method: 'PUT',

@@ -79,7 +79,7 @@ const MAX_SCAN = 600;
  * Post-Feb-2026 client IDs return playlist entries under `item`; older ones
  * under `track`. Reading `.track` directly works until the day it doesn't.
  */
-function entryTrack(entry: SpotifyPlaylistTrackItem): SpotifyTrack | null {
+export function entryTrack(entry: SpotifyPlaylistTrackItem): SpotifyTrack | null {
   return entry.item ?? entry.track ?? null;
 }
 
