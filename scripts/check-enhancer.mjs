@@ -105,6 +105,7 @@ async function loadModules() {
       'src/dj/commentary.ts',
       'src/dj/intent.ts',
       'src/dj/learnPlan.ts',
+      'src/dj/learnMachine.ts',
       '--outDir', out,
       // Pinned so the output tree is predictable. Without it tsc derives a
       // root from the common prefix of the inputs, so adding the first file
@@ -126,11 +127,12 @@ async function loadModules() {
   const commentary = await import(pathToFileURL(join(out, 'dj/commentary.js')).href);
   const intent = await import(pathToFileURL(join(out, 'dj/intent.js')).href);
   const plan = await import(pathToFileURL(join(out, 'dj/learnPlan.js')).href);
+  const machine = await import(pathToFileURL(join(out, 'dj/learnMachine.js')).href);
   const loudness = await import(pathToFileURL(join(out, 'audio/loudness.js')).href);
-  return { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, plan, cleanup: () => rmSync(out, { recursive: true, force: true }) };
+  return { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, plan, machine, cleanup: () => rmSync(out, { recursive: true, force: true }) };
 }
 
-const { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, plan, cleanup } = await loadModules();
+const { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, plan, machine, cleanup } = await loadModules();
 const { buildBandCoefs, responseCurveDb, buildCurveSolver, solveBandGains, logSpacedFrequencies } =
   biquad;
 const { ENHANCE_PROFILES, ISO_10 } = profiles;
@@ -1415,6 +1417,83 @@ console.log('\nOvernight learner: plan');
     JSON.stringify([['new', 'duplicate'], ['done', 'already-learned'], ['loc', 'local-file'], ['ep', 'not-a-track'], ['tiny', 'too-short']]));
   check('queue items carry their slices', p.queue[0].windows.length === 3);
   check('300 songs is about six and a quarter hours', plan.estimateRunMs(300) === 22_500_000);
+}
+
+console.log('\nOvernight learner: run');
+{
+  const c = (id, o = {}) => ({ id, uri: `spotify:track:${id}`, name: id, artists: 'x', durationMs: 200_000, isLocal: false, ...o });
+  const one = plan.planRun([c('a')], () => null);
+  const run = (events) => {
+    let state = { kind: 'idle' };
+    const effects = [];
+    for (const e of events) {
+      const r = machine.learnStep(state, e);
+      state = r.state;
+      effects.push(...r.effects);
+    }
+    return { state, effects };
+  };
+  check('the learnable minimum matches the commit minimum', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000);
+  const happy = run([{ kind: 'start', plan: one }, ...[0, 1, 2].flatMap(() => [{ kind: 'confirmed' }, { kind: 'section-elapsed' }]), { kind: 'committed' }, { kind: 'spotify-paused' }]);
+  check('a full song ends learned and unmuted', happy.state.kind === 'done' && happy.state.reason === 'finished' && happy.state.tally.learned === 1 && happy.state.muted === false);
+  check('muting starts the run and keeps the Mac awake', JSON.stringify(happy.effects.slice(0, 2)) === JSON.stringify([{ kind: 'keep-awake', on: true }, { kind: 'mute', on: true }]));
+  check('measure modes follow the slices', happy.effects.filter((e) => e.kind === 'measure').map((e) => e.mode + ':' + e.trackId).join() ===
+    'none:a,key-tempo:a,none:a,none:a,all:a,none:a,none:a,key-tempo:a,none:a,none:null');
+  check('loudness is reset and read around the middle only', happy.effects.filter((e) => e.kind === 'reset-loudness' || e.kind === 'snapshot-loudness').map((e) => e.kind).join() === 'reset-loudness,snapshot-loudness');
+  check('the intro plays, the other slices seek', happy.effects.filter((e) => e.kind === 'play' || e.kind === 'seek').map((e) => e.kind + '@' + e.positionMs).join() === 'play@0,seek@80000,seek@185000');
+  check('the song is marked only after the commit settles', happy.effects.findIndex((e) => e.kind === 'mark-learned') > happy.effects.findIndex((e) => e.kind === 'wait' && e.then === 'committed'));
+  check('unmute comes only after Spotify is paused', (() => { const i = happy.effects.findIndex((e) => e.kind === 'mute' && !e.on); return i > happy.effects.findIndex((e) => e.kind === 'pause-spotify'); })());
+  const failedPause = run([{ kind: 'start', plan: one }, { kind: 'stop' }, { kind: 'pause-failed' }]);
+  check('a pause that fails leaves the app muted', failedPause.state.kind === 'done' && failedPause.state.muted === true && !failedPause.effects.some((e) => e.kind === 'mute' && !e.on));
+  const timeouts = run([{ kind: 'start', plan: one }, { kind: 'confirm-timeout' }, { kind: 'confirm-timeout' }]);
+  check('two confirm timeouts fail the song with a reason', timeouts.state.kind === 'ending' && timeouts.state.tally.failed[0]?.reason === 'Spotify did not start playback');
+  const lost = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'input-lost', now: 0 }]);
+  check('a lost input pauses without touching Spotify', lost.state.kind === 'paused' && lost.state.reason === 'input-lost' && !lost.effects.some((e) => e.kind === 'pause-spotify'));
+  check('the input coming back restarts the song from its intro', run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'input-lost', now: 0 }, { kind: 'input-back' }]).effects.filter((e) => e.kind === 'play').length === 2);
+  check('ten minutes without input ends the run', run([{ kind: 'start', plan: one }, { kind: 'input-lost', now: 0 }, { kind: 'tick', now: 600_000 }]).state.kind === 'ending');
+  check('silence pauses Spotify at once', run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'silence' }]).effects.at(-2)?.kind === 'pause-spotify');
+  const taken = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'takeover' }]);
+  check('a takeover never pauses or unmutes', taken.state.kind === 'paused' && !taken.effects.some((e) => e.kind === 'pause-spotify' || (e.kind === 'mute' && !e.on)));
+  check('stopping after a takeover hands playback back unmuted', (() => { const r = run([{ kind: 'start', plan: one }, { kind: 'takeover' }, { kind: 'stop' }]); return r.state.kind === 'done' && r.state.muted === false && !r.effects.some((e) => e.kind === 'pause-spotify'); })());
+  check('an empty plan never mutes', (() => { const r = run([{ kind: 'start', plan: { queue: [], skipped: [] } }]); return r.state.kind === 'done' && r.effects.length === 0; })());
+  check('a relinked track still confirms', machine.playerMatches({ itemId: 'm', linkedFromId: 'a', isPlaying: true, progressMs: 500 }, 'a', 0, 15_000));
+  check('a paused player does not confirm', !machine.playerMatches({ itemId: 'a', linkedFromId: null, isPlaying: false, progressMs: 500 }, 'a', 0, 15_000));
+
+  // Fuzz: the one unrecoverable mistake is unmuting while Spotify might still
+  // be playing, so every unmute must trace to a pause report or a person's Stop.
+  const mulberry32 = (seed) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const rnd = mulberry32(0x1437);
+  const two = plan.planRun([c('a'), c('b')], () => null);
+  let badUnmute = 0;
+  let badState = 0;
+  for (let r = 0; r < 500; r++) {
+    let state = { kind: 'idle' };
+    let now = 0;
+    for (let i = 0; i < 60; i++) {
+      now += 1 + Math.floor(rnd() * 400_000);
+      const events = [
+        { kind: 'start', plan: rnd() < 0.5 ? one : two }, { kind: 'confirmed' }, { kind: 'confirm-timeout' },
+        { kind: 'section-elapsed' }, { kind: 'committed' }, { kind: 'input-lost', now }, { kind: 'input-back' },
+        { kind: 'silence' }, { kind: 'takeover' }, { kind: 'device-lost' }, { kind: 'resume' }, { kind: 'stop' },
+        { kind: 'signed-out' }, { kind: 'tick', now }, { kind: 'spotify-paused' }, { kind: 'pause-failed' },
+      ];
+      const e = events[Math.floor(rnd() * events.length)];
+      const before = state;
+      const res = machine.learnStep(state, e);
+      if (!res.state || typeof res.state.kind !== 'string') badState++;
+      const unmutes = res.effects.some((x) => x.kind === 'mute' && !x.on);
+      const handedBack = e.kind === 'stop' && before.kind === 'paused' && (before.reason === 'takeover' || before.reason === 'device-lost');
+      if (unmutes && !(e.kind === 'spotify-paused' || handedBack)) badUnmute++;
+      state = res.state;
+    }
+  }
+  check('fuzz: an unmute always follows a pause report or a hand-back', badUnmute === 0, `${badUnmute} bad`);
+  check('fuzz: every step returns a state with a kind', badState === 0, `${badState} bad`);
 }
 
 cleanup();
