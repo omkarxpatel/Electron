@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { readLearnMuteFlag } from '../state/learnMute';
 import type { EQState } from '../state/eq';
 import { frequenciesFor, qFor } from '../state/eq';
 import type { EnhancerState } from '../state/enhancer';
@@ -313,7 +314,9 @@ export function useAudioEngine(
         masterGain.gain.value = 1;
 
         const learnMuteGain = ctx.createGain();
-        learnMuteGain.gain.value = 1;
+        // Born closed when a run was in progress: a relaunch after a mid-run
+        // death would otherwise leak music until the App effect's ramp lands.
+        learnMuteGain.gain.value = readLearnMuteFlag() ? 0 : 1;
 
         /* Keeps the graph being processed when Live is off.
          *
