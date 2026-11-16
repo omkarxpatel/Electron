@@ -108,9 +108,11 @@ export function useTrackMemory(enabled: boolean) {
   /**
    * Record that a learning run covered this track. False, and nothing
    * stored, when the track has no record: a marker with no measurements
-   * behind it would make the planner skip a track it never learned.
+   * behind it would make the planner skip a track it never learned. Also
+   * false, and nothing stored, when "Remember tracks" is off.
    */
   const markLearned = useCallback((trackId: string, version: number): boolean => {
+    if (!enabledRef.current) return false;
     const store = storeRef.current;
     const prev = store?.[trackId];
     if (!store || !prev) return false;

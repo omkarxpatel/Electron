@@ -475,9 +475,10 @@ console.log('\nTrack memory');
   // rather than trusting the encoding to stay terse.
   //
   // There is no cap on entries any more, so what this bounds is the cost of
-  // each one, measured over a sample of 1000 realistic entries: ~141 B each.
-  // The 150 KB bound below is therefore about 8% of headroom — deliberately
-  // tight. Another stored field will trip it, which is the point: the store
+  // each one, measured over a sample of 1000 realistic entries: ~147 B each,
+  // ~143 KB per 1000. The sample entries carry the overnight learner's run
+  // marker (`r`), the worst case. The 150 KB bound below is therefore about
+  // 4.5% of headroom — deliberately tight. Another stored field will trip it, which is the point: the store
   // is written synchronously on the main thread once per track, so growth
   // here is a decision, not a detail.
   const SAMPLE_TRACKS = 1000;
