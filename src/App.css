@@ -288,11 +288,92 @@
   flex-shrink: 0;
 }
 
+/* The logo is also the reload control. It sits in the draggable title bar,
+   so it has to opt out of the drag region or a click moves the window
+   instead of pressing anything. */
+.brand-reload {
+  -webkit-app-region: no-drag;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.brand-reload:hover,
+.brand-reload:focus-visible {
+  background: var(--accent-soft-bg);
+  outline: none;
+}
+
+/* Both marks stack in the same cell and trade places. */
+.brand-reload > svg {
+  grid-area: 1 / 1;
+  display: block;
+  transition:
+    opacity 160ms ease,
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 .brand-logo {
   color: var(--accent);
   filter: drop-shadow(0 0 4px var(--accent-glow));
   display: block;
   transition: color 200ms ease;
+}
+
+.brand-reload:hover .brand-logo,
+.brand-reload:focus-visible .brand-logo,
+.brand-reload[data-reloading='true'] .brand-logo {
+  opacity: 0;
+  transform: scale(0.55) rotate(-90deg);
+}
+
+.brand-refresh {
+  color: var(--accent-bright);
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+  opacity: 0;
+  transform: scale(0.55) rotate(90deg);
+}
+
+.brand-reload:hover .brand-refresh,
+.brand-reload:focus-visible .brand-refresh,
+.brand-reload[data-reloading='true'] .brand-refresh {
+  opacity: 1;
+  transform: none;
+}
+
+/* The press, not the hover: the window goes away a moment later, so this is
+   the only confirmation that the click landed. */
+.brand-reload[data-reloading='true'] .brand-refresh {
+  animation: brand-reload-spin 700ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes brand-reload-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-reload > svg {
+    transition: opacity 160ms ease;
+    transform: none;
+  }
+
+  .brand-reload:hover .brand-logo,
+  .brand-reload:focus-visible .brand-logo,
+  .brand-reload[data-reloading='true'] .brand-logo {
+    transform: none;
+  }
+
+  .brand-reload[data-reloading='true'] .brand-refresh {
+    animation: none;
+  }
 }
 
 .topbar-right {

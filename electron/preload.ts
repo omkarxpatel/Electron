@@ -9,6 +9,8 @@ const api = {
   app: {
     version: ipcRenderer.sendSync('app:version') as string,
     arch: process.arch,
+    /** Hard-reload this window, ignoring the HTTP cache. */
+    reload: (): Promise<void> => ipcRenderer.invoke('app:reload'),
   },
 
   spotifyAuth: {

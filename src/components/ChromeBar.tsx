@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { AudioSourceSelector } from './AudioSourceSelector';
 import { OutputDeviceSelector } from './OutputDeviceSelector';
 import type { SourceMode } from '../audio/useAudioSource';
@@ -52,7 +52,7 @@ function ChromeBarImpl({
   return (
     <header className="topbar">
       <div className="brand">
-        <LogoIcon />
+        <ReloadLogo />
         <div className="title">Electron</div>
       </div>
       <div className="topbar-right">
@@ -112,6 +112,49 @@ function ExpandIcon() {
   );
 }
 
+/**
+ * The brand mark, which turns into a reload control when you reach for it.
+ *
+ * It is the escape hatch for the states the UI has no button for: an audio
+ * graph that has stopped, a visualizer that froze, a bundle left stale by an
+ * update. Quitting and reopening did that already — this is the same thing
+ * without losing the window, and it is parked on the logo because that is
+ * dead space in the title bar rather than another icon to learn.
+ *
+ * The bars do not become the arrow: four straight lines and a circle share
+ * no point for point morph worth writing. They hand over instead — the bars
+ * drop back and turn away as the arrow turns in — which at this size reads
+ * as one mark changing its mind.
+ */
+function ReloadLogo() {
+  const [reloading, setReloading] = useState(false);
+
+  const reload = useCallback((): void => {
+    setReloading(true);
+    // The page is torn down from under us, so there is no success path to
+    // handle and nothing to sequence after it. A rejection only means the
+    // reload never started, which leaves the spinner lying.
+    void window.api.app.reload().catch((err) => {
+      console.error('ChromeBar: reload failed', err);
+      setReloading(false);
+    });
+  }, []);
+
+  return (
+    <button
+      type="button"
+      className="brand-reload"
+      data-reloading={reloading ? 'true' : 'false'}
+      onClick={reload}
+      aria-label="Reload the app"
+      title="Reload the app"
+    >
+      <LogoIcon />
+      <RefreshIcon />
+    </button>
+  );
+}
+
 function LogoIcon() {
   return (
     <svg
@@ -129,6 +172,26 @@ function LogoIcon() {
       <line x1="10" y1="18" x2="10" y2="6" />
       <line x1="14.5" y1="16" x2="14.5" y2="8" />
       <line x1="19" y1="14" x2="19" y2="10" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg
+      className="brand-refresh"
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+      <polyline points="20 4 20 10 14 10" />
     </svg>
   );
 }

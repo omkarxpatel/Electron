@@ -9,6 +9,10 @@ export interface ElectronApi {
   app: {
     version: string;
     arch: string;
+    /** Hard-reload this window, ignoring the HTTP cache. Resolves as the
+     *  reload starts; the page is gone a moment later, so nothing should be
+     *  sequenced after it. */
+    reload(): Promise<void>;
   };
   spotifyAuth: {
     listenForCallback(expectedState: string): Promise<{ code: string }>;

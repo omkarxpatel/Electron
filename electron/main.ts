@@ -665,6 +665,25 @@ function isAllowedExternalUrl(url: string): boolean {
   return false;
 }
 
+/**
+ * Reload the window that asked, cache and all.
+ *
+ * `reloadIgnoringCache`, not `reload`: this exists for the case where the
+ * renderer is in a state the UI has no button for — a wedged audio graph, a
+ * visualizer that stopped, a stale bundle after an update — and a reload that
+ * may serve the same cached assets is not the escape hatch it looks like.
+ *
+ * Only the sender reloads. The notch window is a separate renderer that is
+ * fed from main rather than holding its own state, so it picks the new
+ * values up on its own; reloading it as well would make the HUD blink for
+ * nothing. Main's own state is untouched, which is what makes this safe
+ * while Live is on: the output-sink pin lives in deviceVolume.ts, so it
+ * survives the reload and is still restored on quit.
+ */
+ipcMain.handle('app:reload', (event) => {
+  event.sender.reloadIgnoringCache();
+});
+
 ipcMain.on('app:version', (event) => {
   // Sync IPC at preload-init time so the renderer can read window.api.app.version
   // as a plain string instead of an async getter.
