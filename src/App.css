@@ -5390,7 +5390,11 @@
   right: 0;
   max-width: 360px;
   padding: 8px 12px;
-  background: rgba(255, 107, 107, 0.1);
+  /* Opaque, because this floats over the Live toggle rather than pushing it
+     down: at a 10% tint those buttons read straight through the sentence and
+     the whole thing looked like a rendering fault. */
+  background: #2b1719;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   border: 1px solid rgba(255, 107, 107, 0.35);
   border-radius: 6px;
   color: #ff9b9b;
