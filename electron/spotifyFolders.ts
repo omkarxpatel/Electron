@@ -314,6 +314,138 @@ function tableEntries(file: Buffer): BlockEntry[] {
 
 // ── Rootlist markers ─────────────────────────────────────────────────
 
+// ── Write-ahead log ──────────────────────────────────────────────────
+
+/*
+ * A write reaches a `.ldb` table only when LevelDB compacts, which it may not
+ * do for hours — until then it lives in the `.log`. Reading tables alone meant
+ * the folder tree was whatever Spotify last compacted: on one machine the
+ * tables still had a playlist loose at the root four hours after it was moved
+ * into a folder, and re-importing could never fix it, because every copy in
+ * the log already had it filed. The log is newer than every table by
+ * construction, so what it holds wins.
+ */
+
+/** Log records are laid out in 32 KB blocks and never cross one. */
+const LOG_BLOCK_BYTES = 32768;
+/** crc32c(4) + length(2) + type(1), ahead of every record fragment. */
+const LOG_HEADER_BYTES = 7;
+const LOG_TYPE_FULL = 1;
+const LOG_TYPE_FIRST = 2;
+const LOG_TYPE_MIDDLE = 3;
+const LOG_TYPE_LAST = 4;
+/** sequence(8) + count(4), ahead of the first operation in a write batch. */
+const BATCH_HEADER_BYTES = 12;
+const BATCH_OP_DELETE = 0;
+const BATCH_OP_PUT = 1;
+/** tag(1) + a one-byte key length + a one-byte value length. */
+const MIN_BATCH_OP_BYTES = 3;
+
+/**
+ * Reassemble a log file's write batches, in the order they were written.
+ *
+ * FULL stands alone; FIRST .. MIDDLE .. LAST rebuild into one batch. The
+ * checksum is deliberately not verified: crc32c isn't in node's stdlib, and
+ * the structural checks here are what actually protect the reader — a torn
+ * fragment fails to decode into operations rather than quietly becoming some.
+ *
+ * Malformed input stops the read and keeps what came before it, rather than
+ * throwing. Spotify is writing into this file while we read, so a half-written
+ * record at the tail is the normal case and not corruption; LevelDB's own
+ * reader treats it the same way.
+ */
+function logBatches(file: Buffer): Buffer[] {
+  const batches: Buffer[] = [];
+  let pending: Buffer[] | null = null;
+
+  for (let blockStart = 0; blockStart < file.length; blockStart += LOG_BLOCK_BYTES) {
+    const blockEnd = Math.min(blockStart + LOG_BLOCK_BYTES, file.length);
+    let i = blockStart;
+    while (i + LOG_HEADER_BYTES <= blockEnd) {
+      const length = file.readUInt16LE(i + 4);
+      const type = file[i + 6];
+      // The tail of a block too short for another header is zero-filled, and
+      // so is a log preallocated but not yet written into.
+      if (type === 0 && length === 0) break;
+      if (type < LOG_TYPE_FULL || type > LOG_TYPE_LAST) return batches;
+      const dataStart = i + LOG_HEADER_BYTES;
+      const dataEnd = dataStart + length;
+      if (dataEnd > blockEnd) return batches;
+      const data = file.subarray(dataStart, dataEnd);
+
+      if (type === LOG_TYPE_FULL) {
+        pending = null;
+        batches.push(data);
+      } else if (type === LOG_TYPE_FIRST) {
+        pending = [data];
+      } else if (pending !== null && (type === LOG_TYPE_MIDDLE || type === LOG_TYPE_LAST)) {
+        pending.push(data);
+        if (type === LOG_TYPE_LAST) {
+          batches.push(Buffer.concat(pending));
+          pending = null;
+        }
+      }
+      // A MIDDLE or LAST with nothing open is a fragment whose FIRST we never
+      // saw — the start of a log that was rotated, say. Skipped, not fatal.
+
+      i = dataEnd;
+    }
+  }
+  return batches;
+}
+
+/**
+ * Every put in one write batch. Deletions carry no value, so they contribute
+ * nothing to read; the rootlist key being deleted means the account signed
+ * out, and the table copy is no better.
+ */
+function batchEntries(batch: Buffer): BlockEntry[] {
+  if (batch.length < BATCH_HEADER_BYTES) return [];
+  const count = batch.readUInt32LE(8);
+  // The count is a claim from the file. Each operation costs at least three
+  // bytes, so anything past that is malformed rather than merely dense — and
+  // the loop below would otherwise trust it while reading past the batch.
+  if (count > (batch.length - BATCH_HEADER_BYTES) / MIN_BATCH_OP_BYTES) return [];
+
+  const entries: BlockEntry[] = [];
+  let i = BATCH_HEADER_BYTES;
+  for (let n = 0; n < count && i < batch.length; n += 1) {
+    const op = batch[i];
+    i += 1;
+    if (op !== BATCH_OP_PUT && op !== BATCH_OP_DELETE) return entries;
+
+    const keyLength = readVarint(batch, i);
+    const keyEnd = keyLength.next + keyLength.value;
+    if (keyEnd > batch.length) return entries;
+    const key = batch.subarray(keyLength.next, keyEnd);
+    if (op === BATCH_OP_DELETE) {
+      i = keyEnd;
+      continue;
+    }
+
+    const valueLength = readVarint(batch, keyEnd);
+    const valueEnd = valueLength.next + valueLength.value;
+    if (valueEnd > batch.length) return entries;
+    entries.push({ key, value: batch.subarray(valueLength.next, valueEnd) });
+    i = valueEnd;
+  }
+  return entries;
+}
+
+/** Every put in one log file, oldest first. */
+function logEntries(file: Buffer): BlockEntry[] {
+  const entries: BlockEntry[] = [];
+  for (const batch of logBatches(file)) {
+    try {
+      entries.push(...batchEntries(batch));
+    } catch {
+      // A varint that ran off the end — the torn tail again. Keep the rest.
+      break;
+    }
+  }
+  return entries;
+}
+
 /**
  * The rootlist value is protobuf, but the URIs inside it are plain ASCII and
  * appear in document order, which is all the structure we need. Scanning for
@@ -440,6 +572,12 @@ async function findLdbDir(): Promise<string | null> {
  * The rootlist is one key among tens of thousands, spread over whichever
  * tables LevelDB last compacted it into. An older table can still hold a
  * superseded copy, so the richest match wins rather than the first.
+ *
+ * The log is read after them and wins outright when it has the key, because
+ * it holds every write LevelDB has not compacted yet — including, on the
+ * machine this was found on, a folder move the tables were four hours behind
+ * on. The richest-match rule cannot find that one: moving a playlist between
+ * folders changes no marker count at all.
  */
 async function findRootlistValue(dirPath: string): Promise<string | null> {
   const names = (await readdir(dirPath)).filter((n) => n.endsWith('.ldb')).sort();
@@ -475,7 +613,51 @@ async function findRootlistValue(dirPath: string): Promise<string | null> {
       if (matches > 0 && (best === null || matches > best.matches)) best = { text, matches };
     }
   }
-  return best === null ? null : best.text;
+
+  const fromLog = await findRootlistInLogs(dirPath);
+  return fromLog ?? (best === null ? null : best.text);
+}
+
+/**
+ * The newest rootlist written to a log, or null.
+ *
+ * Last write wins here rather than richest match: within the log the order IS
+ * the answer, so a copy with fewer playlists than an earlier one means
+ * playlists were removed. Logs are read oldest first (LevelDB's names are
+ * zero-padded and increment), so the last match across all of them is the
+ * newest write on this machine.
+ */
+async function findRootlistInLogs(dirPath: string): Promise<string | null> {
+  const names = (await readdir(dirPath)).filter((n) => n.endsWith('.log')).sort();
+
+  let latest: string | null = null;
+  for (const name of names) {
+    const filePath = path.join(dirPath, name);
+    let entries: BlockEntry[];
+    try {
+      const sizeBytes = (await stat(filePath)).size;
+      if (sizeBytes > MAX_LDB_FILE_BYTES) {
+        console.warn(
+          `[spotifyFolders] skipping ${name}: ${(sizeBytes / 1048576).toFixed(1)} MB is past any log LevelDB writes`,
+        );
+        continue;
+      }
+      entries = logEntries(await readFile(filePath));
+    } catch {
+      // Rotated out from under us mid-read, like a table being compacted.
+      continue;
+    }
+    for (const { key, value } of entries) {
+      if (!key.includes('rootlist')) continue;
+      // latin1 for the same reason as the table path above: utf8 would
+      // collapse invalid byte sequences and shift the markers after them.
+      const text = value.toString('latin1');
+      // `match`, not `test`: MARKER_PATTERN is global, so `test` would carry
+      // its lastIndex into the next value and start reading it part-way in.
+      if (text.match(MARKER_PATTERN) !== null) latest = text;
+    }
+  }
+  return latest;
 }
 
 // ── Entry point ──────────────────────────────────────────────────────

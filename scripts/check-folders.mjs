@@ -71,7 +71,7 @@ function check(label, ok, detail) {
  * `electron/spotifyFolders.ts` is left alone. Already-exported names are
  * skipped, so promoting one of these for real later doesn't break the check.
  */
-const INTERNALS = ['blockEntries'];
+const INTERNALS = ['blockEntries', 'logEntries'];
 
 /** Compile the decoder and import it. */
 async function loadModule() {
@@ -105,7 +105,7 @@ async function loadModule() {
 }
 
 const { mod, cleanup } = await loadModule();
-const { snappyDecompress, blockEntries, buildTree, decodeFolderName, readSpotifyRootlist } = mod;
+const { snappyDecompress, blockEntries, logEntries, buildTree, decodeFolderName, readSpotifyRootlist } = mod;
 
 // ── Snappy vectors, hand-encoded ─────────────────────────────────────
 
@@ -587,6 +587,138 @@ check(
   'a lone % does not take the tree down with it',
   decodeFolderName('100%+Bangers') === '100%+Bangers',
   decodeFolderName('100%+Bangers'),
+);
+
+// ── Write-ahead log ──────────────────────────────────────────────────
+
+console.log('\nWrite-ahead log');
+
+const LOG_BLOCK = 32768;
+
+/** One write batch: sequence(8) + count(4), then tag/key/value per operation. */
+function batch(ops, countOverride) {
+  const header = Buffer.alloc(12);
+  header.writeUInt32LE(countOverride ?? ops.length, 8);
+  const body = ops.map(({ key, value }) => {
+    const k = Buffer.from(key);
+    if (value === null) return Buffer.concat([Buffer.from([0]), varint(k.length), k]);
+    const v = Buffer.from(value);
+    return Buffer.concat([Buffer.from([1]), varint(k.length), k, varint(v.length), v]);
+  });
+  return Buffer.concat([header, ...body]);
+}
+
+/** One log record fragment: crc(4, never checked) + length(2) + type(1). */
+function record(type, data) {
+  const header = Buffer.alloc(7);
+  header.writeUInt16LE(data.length, 4);
+  header.writeUInt8(type, 6);
+  return Buffer.concat([header, data]);
+}
+
+/** Pad to the end of the current 32 KB block, as LevelDB does. */
+function padBlock(buf) {
+  const used = buf.length % LOG_BLOCK;
+  return used === 0 ? buf : Buffer.concat([buf, Buffer.alloc(LOG_BLOCK - used)]);
+}
+
+function entryPairs(file) {
+  return logEntries(file).map((e) => `${e.key.toString()}=${e.value.toString()}`);
+}
+
+function logCase(label, file, want) {
+  const got = entryPairs(file);
+  check(label, JSON.stringify(got) === JSON.stringify(want), got.join(' '));
+}
+
+logCase(
+  'a FULL record decodes its puts',
+  record(1, batch([{ key: 'rootlist', value: 'one' }, { key: 'other', value: 'two' }])),
+  ['rootlist=one', 'other=two'],
+);
+
+logCase(
+  'a deletion contributes no value',
+  record(1, batch([{ key: 'gone', value: null }, { key: 'kept', value: 'yes' }])),
+  ['kept=yes'],
+);
+
+// A batch too big for one block. Real logs are mostly these: the rootlist
+// value alone runs past 32 KB on an account with a few hundred playlists.
+{
+  const big = batch([{ key: 'rootlist', value: 'x'.repeat(LOG_BLOCK) }]);
+  const firstSize = LOG_BLOCK - 7;
+  const file = Buffer.concat([
+    record(2, big.subarray(0, firstSize)),
+    record(3, big.subarray(firstSize, firstSize + (LOG_BLOCK - 7))),
+    record(4, big.subarray(firstSize + (LOG_BLOCK - 7))),
+  ]);
+  const got = logEntries(file);
+  check(
+    'FIRST + MIDDLE + LAST rebuild into one batch',
+    got.length === 1 && got[0].value.length === LOG_BLOCK,
+    `${got.length} entries, ${got[0]?.value.length ?? 0} value bytes`,
+  );
+}
+
+logCase(
+  'zero padding at a block end is not a record',
+  Buffer.concat([
+    padBlock(record(1, batch([{ key: 'rootlist', value: 'first' }]))),
+    record(1, batch([{ key: 'rootlist', value: 'second' }])),
+  ]),
+  ['rootlist=first', 'rootlist=second'],
+);
+
+// The tail is the normal case, not corruption: Spotify is writing into this
+// file while we read it. Everything before the tear has to survive, because
+// that is where the folder tree is.
+logCase(
+  'a half-written record at the tail keeps what came before it',
+  Buffer.concat([
+    record(1, batch([{ key: 'rootlist', value: 'complete' }])),
+    record(1, batch([{ key: 'rootlist', value: 'torn' }])).subarray(0, 9),
+  ]),
+  ['rootlist=complete'],
+);
+
+logCase(
+  'a record type that is not 1..4 stops the read',
+  Buffer.concat([
+    record(1, batch([{ key: 'rootlist', value: 'good' }])),
+    record(9, Buffer.from('nonsense')),
+    record(1, batch([{ key: 'rootlist', value: 'unreachable' }])),
+  ]),
+  ['rootlist=good'],
+);
+
+// The count is a claim from a file we don't own. Trusted, it walks the reader
+// past the batch and into whatever follows.
+logCase(
+  'an operation count the batch cannot hold yields nothing',
+  record(1, batch([{ key: 'rootlist', value: 'one' }], 9999)),
+  [],
+);
+
+logCase(
+  'a value length past the end of the batch is refused',
+  record(1, Buffer.concat([
+    (() => { const h = Buffer.alloc(12); h.writeUInt32LE(1, 8); return h; })(),
+    Buffer.from([1]), varint(8), Buffer.from('rootlist'), varint(200), Buffer.from('short'),
+  ])),
+  [],
+);
+
+// Why the log is read at all, and why last-write-wins rather than
+// richest-match: a folder move changes no marker count, so the only thing
+// that can tell the copies apart is their order.
+logCase(
+  'later writes of the same key come last',
+  Buffer.concat([
+    record(1, batch([{ key: 'rootlist', value: 'older' }])),
+    record(1, batch([{ key: 'rootlist', value: 'newer' }])),
+  ]),
+  ['rootlist=older', 'rootlist=newer'],
 );
 
 // ── The real cache, if this machine has one ──────────────────────────
