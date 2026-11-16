@@ -215,7 +215,6 @@ function AppContent() {
     () => pickMediumImage(playback.playback?.item?.album?.images) ?? null,
     [playback.playback?.item?.album?.images],
   );
-  const albumPalette = useAlbumPalette(albumImageUrl, settings.autoTintFromAlbumArt);
   const hasSource = audioSource.stream !== null;
 
   useEffect(() => {
@@ -322,6 +321,13 @@ function AppContent() {
         ? buildCustomPalette(settings.customColors)
         : PALETTES[settings.palette],
     [settings.palette, settings.customColors],
+  );
+  // Below basePalette, which it needs: "no album tint" is one end of the
+  // hook's cross-fade, and that end is the user's own palette.
+  const albumPalette = useAlbumPalette(
+    albumImageUrl,
+    settings.autoTintFromAlbumArt,
+    basePalette,
   );
   const effectivePalette = albumPalette ?? basePalette;
   const { accent, themeStyle } = useMemo(() => {

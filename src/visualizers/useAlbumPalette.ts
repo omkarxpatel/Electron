@@ -6,11 +6,9 @@ import { extractPaletteFromUrl } from './extractPalette';
 /**
  * Hook that resolves a synthesized Palette from an album-art image URL.
  *
- * Returns null when:
- *   - `enabled` is false (toggle off)
- *   - `imageUrl` is null/empty
- *   - extraction is still in flight for the current URL
- *   - extraction failed (CORS, decode, etc.)
+ * Returns null when there is no album tint to apply — the toggle is off, or
+ * the colors have settled back on `basePalette`, which the caller already
+ * has. A null return is "nothing to override with", never "mid-change".
  *
  * Successful extractions are cached by URL in a module-scope LRU (last 50
  * tracks). Switching back to a recently-seen track avoids re-downloading +
@@ -62,6 +60,11 @@ function cacheSet(url: string, palette: Palette): void {
 export function useAlbumPalette(
   imageUrl: string | null | undefined,
   enabled: boolean,
+  /** The palette the app wears with no album tint — the user's choice from
+   *  Settings. Needed here, not just in the caller, because "no tint" is one
+   *  end of the ramp: without a color for it the hook had to cut. Must be
+   *  referentially stable (memoize it) or every render restarts the ramp. */
+  basePalette: Palette,
 ): Palette | null {
   const initial = () => {
     if (!enabled || !imageUrl) return null;
@@ -79,6 +82,11 @@ export function useAlbumPalette(
     shownRef.current = p;
     setShownState(p);
   }, []);
+  // Whether the last ramp ended on album art. Two non-album endpoints in a
+  // row means `basePalette` itself changed — the user moving a color picker
+  // in Settings, which has to land under their finger, not ramp for two
+  // seconds.
+  const lastWasAlbumRef = useRef(false);
   // Tracks the URL currently being extracted so a late resolve from a
   // previous URL doesn't clobber the current state.
   const inflightUrlRef = useRef<string | null>(null);
@@ -119,14 +127,25 @@ export function useAlbumPalette(
   }, [imageUrl, enabled]);
 
   useEffect(() => {
+    // "No album palette" is not an absence of color — the app wears
+    // `basePalette` instead — so it is an endpoint like any other and the
+    // ramp travels to and from it. Treating it as nothing is what made a
+    // cover the extractor rejects (a monochrome sleeve clears every bucket
+    // and returns null) cut the whole UI to the Settings palette, and then
+    // cut a second time on the next track, because a null `from` left the
+    // next ramp with nowhere to start.
+    const to = enabled ? target ?? basePalette : null;
     const from = shownRef.current;
-    // Nothing to ramp between: the first palette of the session, or a drop
-    // back to no override at all. The latter is not a second color set — the
-    // consumer substitutes the user's own palette — so there is nothing here
-    // to fade toward, and it follows a deliberate toggle where an instant
-    // answer is the right one.
-    if (!from || !target || from.id === target.id) {
-      setShown(target);
+    if (from === to) return;
+    const toAlbum = enabled && target !== null;
+    const fromAlbum = lastWasAlbumRef.current;
+    lastWasAlbumRef.current = toAlbum;
+    // Nothing to ramp between: the first palette of the session, the toggle
+    // being switched off, or the user's own palette being edited in Settings
+    // while nothing is tinting — all deliberate, where an instant answer is
+    // the right one.
+    if (!from || !to || from.id === to.id || (!toAlbum && !fromAlbum)) {
+      setShown(to);
       return;
     }
     let raf = 0;
@@ -138,12 +157,12 @@ export function useAlbumPalette(
       if (t >= 1) {
         // Land on the target object itself, not a mix at t=1, so the id and
         // every value downstream match what a cut would have produced.
-        setShown(target);
+        setShown(to);
         return;
       }
       if (now - lastEmit >= 1000 / FADE_HZ) {
         lastEmit = now;
-        setShown(mixPalettes(from, target, t * t * (3 - 2 * t)));
+        setShown(mixPalettes(from, to, t * t * (3 - 2 * t)));
       }
       raf = requestAnimationFrame(step);
     };
@@ -152,7 +171,12 @@ export function useAlbumPalette(
     // A track change mid-fade re-runs this, and `from` is read fresh from the
     // ref, so the new ramp starts at the blend currently on screen rather
     // than snapping back to the previous track's colors first.
-  }, [target, setShown]);
+  }, [target, enabled, basePalette, setShown]);
 
-  return shown;
+  // Null means "no override" to every caller — the visualizer, the notch
+  // bridge and the accent vars all substitute the same `basePalette` we just
+  // ramped onto, so handing it back would say "override" for a color that is
+  // already theirs. The ramp away from album art is still reported, one mix
+  // at a time, right up until it lands.
+  return shown === basePalette ? null : shown;
 }
