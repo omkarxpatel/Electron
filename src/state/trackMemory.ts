@@ -5,6 +5,7 @@ import {
   foldMeasurement,
   MIN_COMMIT_SECONDS,
   type TrackProfile,
+  withLearnVersion,
 } from '../audio/trackProfile';
 
 /**
@@ -14,18 +15,6 @@ import {
  */
 
 const STORAGE_KEY = 'av.trackMemory.v1';
-
-/**
- * No cap on entries. There was one, at 1000, evicting the least recently
- * heard; but the DJ is meant to learn whole libraries, and a cap made it
- * forget the first playlist it was given while it learned the second.
- *
- * Measured, not assumed: Electron's localStorage accepted a 40 million
- * character value in a fresh profile, and an entry is ~141 characters, so the
- * quota sits somewhere past 250,000 tracks. The cost that does grow is that
- * the whole store is re-serialised on every track change and parsed at
- * startup, which is why check:enhancer still asserts the size of an entry.
- */
 
 function load(): Record<string, TrackProfile> {
   try {
@@ -44,6 +33,17 @@ export interface TrackMemoryStats {
   bytes: number;
 }
 
+/**
+ * No cap on entries. There was one, at 1000, evicting the least recently
+ * heard; but the DJ is meant to learn whole libraries, and a cap made it
+ * forget the first playlist it was given while it learned the second.
+ *
+ * Measured, not assumed: Electron's localStorage accepted a 40 million
+ * character value in a fresh profile, and an entry is ~141 characters, so the
+ * quota sits somewhere past 250,000 tracks. The cost that does grow is that
+ * the whole store is re-serialised on every track change and parsed at
+ * startup, which is why check:enhancer still asserts the size of an entry.
+ */
 export function useTrackMemory(enabled: boolean) {
   // The store is read on every track change and written at most once per
   // track, so it never needs to drive a render. A ref keeps it out of the
@@ -105,6 +105,26 @@ export function useTrackMemory(enabled: boolean) {
     [],
   );
 
+  /**
+   * Record that a learning run covered this track. False, and nothing
+   * stored, when the track has no record: a marker with no measurements
+   * behind it would make the planner skip a track it never learned.
+   */
+  const markLearned = useCallback((trackId: string, version: number): boolean => {
+    const store = storeRef.current;
+    const prev = store?.[trackId];
+    if (!store || !prev) return false;
+    store[trackId] = withLearnVersion(prev, version);
+    const serialized = encodeStore(store);
+    try {
+      localStorage.setItem(STORAGE_KEY, serialized);
+    } catch {
+      // Same as commit: a lost marker only means the track is learned again.
+    }
+    setStats({ tracks: Object.keys(store).length, bytes: serialized.length });
+    return true;
+  }, []);
+
   const clear = useCallback((): void => {
     storeRef.current = {};
     try {
@@ -115,7 +135,7 @@ export function useTrackMemory(enabled: boolean) {
     setStats({ tracks: 0, bytes: 0 });
   }, []);
 
-  return { recall, commit, clear, stats };
+  return { recall, commit, markLearned, clear, stats };
 }
 
 function measure(store: Record<string, TrackProfile>): TrackMemoryStats {

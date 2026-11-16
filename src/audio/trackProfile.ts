@@ -57,6 +57,11 @@ export interface TrackProfile {
    *  Like the key, not averaged — the clearest reading wins. */
   bpm: number | null;
   bpmConfidence: number;
+  /** Version of the overnight learning run that last covered this track, or
+   *  0 if no run ever has. Separate from `seconds`: a normal play also adds
+   *  seconds, and must not make a track look as if a run had heard its intro,
+   *  middle and outro. A fold carries it forward unchanged. */
+  learnVersion: number;
 }
 
 /**
@@ -104,7 +109,7 @@ export function foldMeasurement(
   const shape = meanZero(bands10);
   const clean = lufs !== null && Number.isFinite(lufs) ? lufs : null;
   if (!prev) {
-    return { shape10: shape, seconds, updated: now, lufs: clean, key, keyConfidence, bpm, bpmConfidence };
+    return { shape10: shape, seconds, updated: now, lufs: clean, key, keyConfidence, bpm, bpmConfidence, learnVersion: 0 };
   }
   const priorWeight = Math.min(prev.seconds, MAX_PRIOR_SECONDS);
   const total = priorWeight + seconds;
@@ -118,6 +123,7 @@ export function foldMeasurement(
     shape10: meanZero(merged),
     seconds: prev.seconds + seconds,
     updated: now,
+    learnVersion: prev.learnVersion,
     // Averaged in the same proportion as the shape. A partial play measures
     // a real but unrepresentative slice of the track, so one is not allowed
     // to redefine a figure several full plays agreed on.
@@ -137,6 +143,11 @@ export function foldMeasurement(
       ? { bpm, bpmConfidence }
       : { bpm: prev.bpm, bpmConfidence: prev.bpmConfidence }),
   };
+}
+
+/** A copy of `p` marked as covered by a learning run of `version`. */
+export function withLearnVersion(p: TrackProfile, version: number): TrackProfile {
+  return { ...p, learnVersion: version };
 }
 
 /* ── Storage format ──────────────────────────────────────────────────────
@@ -171,6 +182,9 @@ interface StoredProfile {
   b?: number;
   /** bpm confidence at 0.01, omitted with the bpm. */
   bc?: number;
+  /** learnVersion, omitted when 0 so the tracks no run has touched cost
+   *  nothing. */
+  r?: number;
 }
 
 const MS_PER_MINUTE = 60_000;
@@ -190,6 +204,7 @@ export function encodeProfile(p: TrackProfile): StoredProfile {
     out.b = Math.round(p.bpm * 10) / 10;
     out.bc = Math.round(p.bpmConfidence * 100) / 100;
   }
+  if (Number.isInteger(p.learnVersion) && p.learnVersion > 0) out.r = p.learnVersion;
   return out;
 }
 
@@ -219,6 +234,7 @@ export function decodeProfile(value: unknown): TrackProfile | null {
     keyConfidence: keyOk && typeof v.kc === 'number' && Number.isFinite(v.kc) ? v.kc : 0,
     bpm: bpmOk ? (v.b as number) : null,
     bpmConfidence: bpmOk && typeof v.bc === 'number' && Number.isFinite(v.bc) ? v.bc : 0,
+    learnVersion: typeof v.r === 'number' && Number.isInteger(v.r) && v.r > 0 ? v.r : 0,
   };
 }
 

@@ -104,6 +104,7 @@ async function loadModules() {
       'src/audio/mixCompatibility.ts',
       'src/dj/commentary.ts',
       'src/dj/intent.ts',
+      'src/dj/learnPlan.ts',
       '--outDir', out,
       // Pinned so the output tree is predictable. Without it tsc derives a
       // root from the common prefix of the inputs, so adding the first file
@@ -124,11 +125,12 @@ async function loadModules() {
   // These live under src/dj, so tsc mirrors the tree rather than flattening.
   const commentary = await import(pathToFileURL(join(out, 'dj/commentary.js')).href);
   const intent = await import(pathToFileURL(join(out, 'dj/intent.js')).href);
+  const plan = await import(pathToFileURL(join(out, 'dj/learnPlan.js')).href);
   const loudness = await import(pathToFileURL(join(out, 'audio/loudness.js')).href);
-  return { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, cleanup: () => rmSync(out, { recursive: true, force: true }) };
+  return { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, plan, cleanup: () => rmSync(out, { recursive: true, force: true }) };
 }
 
-const { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, cleanup } = await loadModules();
+const { biquad, profiles, loudness, track, key, tempo, mix, commentary, intent, plan, cleanup } = await loadModules();
 const { buildBandCoefs, responseCurveDb, buildCurveSolver, solveBandGains, logSpacedFrequencies } =
   biquad;
 const { ENHANCE_PROFILES, ISO_10 } = profiles;
@@ -433,7 +435,7 @@ console.log('\nTrack memory');
   const target = meanZero(changed);
   const gapAfter = (plays) => {
     // A huge prior, i.e. a track played many times already.
-    let p = { shape10: meanZero(curve), seconds: 100000, updated: 1, lufs: null, keyConfidence: 0, key: null, bpm: null, bpmConfidence: 0 };
+    let p = { shape10: meanZero(curve), seconds: 100000, updated: 1, lufs: null, keyConfidence: 0, key: null, bpm: null, bpmConfidence: 0, learnVersion: 0 };
     for (let i = 0; i < plays; i++) p = foldMeasurement(p, changed, 180, i + 2);
     return p.shape10.reduce((m, v, i) => Math.max(m, Math.abs(v - target[i])), 0);
   };
@@ -485,7 +487,7 @@ console.log('\nTrack memory');
     const id = `t${String(i).padStart(21, '0')}`;
     // Fully populated: a real entry carries loudness and a key, and a
     // budget measured on bare shapes would understate it by a tenth.
-    big[id] = foldMeasurement(
+    big[id] = track.withLearnVersion(foldMeasurement(
       null,
       curve.map((v) => v + (i % 7) * 0.3),
       180 + i,
@@ -501,7 +503,7 @@ console.log('\nTrack memory');
       // quietly buying the assertion its margin.
       90 + (i % 50) + (i % 10) / 10,
       0.4 + (i % 50) / 100,
-    );
+    ), 1);
   }
   const serialized = encodeStore(big);
   const perTrack = serialized.length / SAMPLE_TRACKS;
@@ -521,6 +523,12 @@ console.log('\nTrack memory');
     Object.keys(decodeStore(JSON.stringify({ ...JSON.parse(serialized), bad: { s: [1] } }))).length
       === SAMPLE_TRACKS,
   );
+
+  const marked = track.withLearnVersion(track.foldMeasurement(null, curve, 180, 1000), 1);
+  check('the run marker survives the round trip', track.decodeProfile(track.encodeProfile(marked)).learnVersion === 1);
+  check('an unmarked track stores no marker', track.encodeProfile(track.foldMeasurement(null, curve, 180, 1000)).r === undefined);
+  check('a normal play keeps the marker', track.foldMeasurement(marked, curve, 60, 2000).learnVersion === 1);
+  check('old stored entries decode unmarked', track.decodeProfile({ s: Array(10).fill(0), n: 5, u: 1 }).learnVersion === 0);
 
   // Loudness is the one stored value that IS a level. It is measured
   // upstream of everything the app does, so it describes the track rather
@@ -1381,6 +1389,31 @@ console.log('\nChat intent');
       return v >= 0 && v <= 1;
     }),
   );
+}
+
+console.log('\nOvernight learner: plan');
+{
+  const w = plan.sectionWindows(240_000);
+  check('a 4-minute song gets three slices', w.length === 3 &&
+    w[0].startMs === 0 && w[0].listenMs === 15_000 && w[0].mode === 'key-tempo' &&
+    w[1].startMs === 96_000 && w[1].listenMs === 30_000 && w[1].mode === 'all' &&
+    w[2].startMs === 225_000 && w[2].listenMs === 15_000 && w[2].mode === 'key-tempo', JSON.stringify(w));
+  check('a middle that would overlap the outro is centred', plan.sectionWindows(70_000)[1].startMs === 20_000);
+  check('a song under 60 s is heard whole', (() => { const s = plan.sectionWindows(45_000); return s.length === 1 && s[0].name === 'whole' && s[0].listenMs === 45_000 && s[0].mode === 'all'; })());
+  const prof = (o) => ({ shape10: Array(10).fill(0), seconds: 60, updated: 0, lufs: null, key: null, keyConfidence: 0, bpm: null, bpmConfidence: 0, learnVersion: 0, ...o });
+  check('a run marker at the current version means learned', plan.isLearned(prof({ learnVersion: 1 })) && !plan.isLearned(prof({})) && !plan.isLearned(null));
+  check('priority: missing data, then weak tempo, then the rest',
+    plan.learnPriority(null) === 0 && plan.learnPriority(prof({ key: 3, bpm: null })) === 0 &&
+    plan.learnPriority(prof({ key: 3, bpm: 120, bpmConfidence: 0.4 })) === 1 &&
+    plan.learnPriority(prof({ key: 3, bpm: 120, bpmConfidence: 0.7 })) === 2);
+  const c = (id, o = {}) => ({ id, uri: `spotify:track:${id}`, name: id, artists: 'x', durationMs: 200_000, isLocal: false, ...o });
+  const recall = (id) => ({ good: prof({ key: 1, bpm: 120, bpmConfidence: 0.9 }), weak: prof({ key: 1, bpm: 120, bpmConfidence: 0.3 }), done: prof({ learnVersion: 1 }) })[id] ?? null;
+  const p = plan.planRun([c('good'), c('weak'), c('new'), c('new'), c('done'), c('loc', { isLocal: true }), c('ep', { uri: 'spotify:episode:ep' }), c('tiny', { durationMs: 15_000 })], recall);
+  check('the queue is deduplicated, filtered and ordered', p.queue.map((q) => q.id).join() === 'new,weak,good', p.queue.map((q) => q.id).join());
+  check('every skip says why', JSON.stringify(p.skipped.map((s) => [s.candidate.id, s.reason])) ===
+    JSON.stringify([['new', 'duplicate'], ['done', 'already-learned'], ['loc', 'local-file'], ['ep', 'not-a-track'], ['tiny', 'too-short']]));
+  check('queue items carry their slices', p.queue[0].windows.length === 3);
+  check('300 songs is about six and a quarter hours', plan.estimateRunMs(300) === 22_500_000);
 }
 
 cleanup();
