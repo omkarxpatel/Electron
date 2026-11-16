@@ -7430,90 +7430,204 @@
    DJ view — what should follow what is playing
    ──────────────────────────────────────────────────────────────────────── */
 
+/* ── DJ view ──────────────────────────────────────────────────────────
+   Built to read as a deck readout, not a list of cards. Two things carry
+   it: the Camelot chip, which is the only decoration in here that is also
+   the data, and the ladder down the left of each row, which shows how
+   close a pick sits to the playing key. A sorted list claims one track
+   beats the one below it and never says why; the ladder says why without
+   a sentence. Everything around those two is kept flat on purpose. */
+
 .dj-wrap {
+  /* One rule weight and one raised surface, both reused everywhere below.
+     The accent comes from the album art, so nothing here pins a hue. */
+  --dj-rule: rgba(255, 255, 255, 0.08);
+  --dj-surface: rgba(255, 255, 255, 0.04);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   height: 100%;
   min-height: 0;
+  /* The panel is as wide as the window; a row set across all of it leaves
+     the track at one end and its key at the other, with nothing in
+     between to carry the eye. */
+  max-width: 980px;
   overflow-y: auto;
-  padding-bottom: 8px;
+  padding-bottom: 10px;
 }
 
-.dj-header {
+/* The track being mixed out of. Deliberately not a card: another bordered
+   box would make it one more row, and this is the thing every suggestion
+   below is measured against. A hairline is enough to separate it. */
+.dj-deck {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 2px 13px;
+  border-bottom: 1px solid var(--dj-rule);
+}
+
+.dj-deck-track {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 3px;
+  min-width: 0;
 }
 
-.dj-now {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.dj-now-label {
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  opacity: 0.55;
-}
-
-.dj-now-track {
-  font-size: 14px;
+.dj-deck-name {
+  font-size: 17px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dj-now-facts {
-  font-size: 11px;
+.dj-deck-artist {
+  font-size: 12px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dj-deck-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* The tempo is set as display type rather than a label with a number in
+   it: at a glance it is the second thing a DJ reads after the key. */
+.dj-deck-bpm {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.dj-deck-unit {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  opacity: 0.5;
+}
+
+.dj-deck-key {
+  font-size: 11.5px;
+  opacity: 0.6;
+}
+
+/* The wheel position, at both sizes. Hollow and dashed when the app has
+   not measured a key, so a gap in what it has heard looks like a gap
+   rather than a bad match. */
+.dj-key {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--accent-border);
+  border-radius: 50%;
+  background: var(--accent-soft-bg);
   color: var(--accent-bright);
-  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.dj-key[data-size='deck'] {
+  width: 48px;
+  height: 48px;
+  font-size: 15px;
+}
+
+.dj-key[data-size='row'] {
+  width: 30px;
+  height: 30px;
+  font-size: 11px;
+}
+
+.dj-key[data-known='false'] {
+  border-style: dashed;
+  background: transparent;
+  color: inherit;
+  opacity: 0.35;
+}
+
+.dj-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .dj-source,
 .dj-request-input {
   width: 100%;
-  padding: 7px 9px;
-  border: 1px solid var(--accent-border);
-  border-radius: 7px;
-  background: var(--accent-soft-bg);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--dj-rule);
+  border-radius: 9px;
+  background: var(--dj-surface);
   color: inherit;
   font-size: 12px;
   font-family: inherit;
+  transition: border-color 120ms ease, background 120ms ease;
 }
 
-.dj-source:focus,
-.dj-request-input:focus {
+.dj-source:hover,
+.dj-request-input:hover {
+  border-color: var(--accent-border);
+}
+
+.dj-source:focus-visible,
+.dj-request-input:focus-visible {
   outline: none;
   border-color: var(--accent);
+  background: var(--accent-soft-bg);
 }
 
-.dj-request {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.dj-request-input::placeholder {
+  opacity: 0.45;
 }
 
-.dj-speak-toggle {
-  display: flex;
+.dj-speak {
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   flex-shrink: 0;
-  font-size: 11px;
-  opacity: 0.8;
+  height: 35px;
+  padding: 0 12px;
+  border: 1px solid var(--dj-rule);
+  border-radius: 9px;
+  background: var(--dj-surface);
+  color: rgba(255, 255, 255, 0.6);
+  font: inherit;
+  font-size: 11.5px;
   cursor: pointer;
-  user-select: none;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.dj-speak[aria-pressed='true'] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft-bg);
+  color: var(--accent-bright);
+}
+
+.dj-speak:hover {
+  border-color: var(--accent-border);
 }
 
 /* What the app understood, echoed back. A misread request is otherwise
    invisible — the list just quietly ranks on something else. */
 .dj-intent {
-  font-size: 11px;
-  opacity: 0.8;
+  font-size: 11.5px;
+  opacity: 0.75;
 }
 
 .dj-intent[data-understood='false'] {
@@ -7523,16 +7637,34 @@
 
 /* Coverage is shown always, not only when it is poor. Only tracks the app
    has heard can be ranked at all, so this is the honest explanation for a
-   thin list. */
+   thin list — and the bar makes "a third of this playlist" something you
+   see before you read it. */
 .dj-coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dj-coverage-bar {
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 var(--heard, 0%),
+    rgba(255, 255, 255, 0.1) var(--heard, 0%) 100%
+  );
+}
+
+.dj-coverage-text {
   font-size: 11px;
-  opacity: 0.7;
+  opacity: 0.65;
   font-variant-numeric: tabular-nums;
 }
 
-.dj-coverage strong {
+.dj-coverage-text strong {
   color: var(--accent-bright);
   font-weight: 600;
+  opacity: 0.95;
 }
 
 .dj-list {
@@ -7541,7 +7673,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .dj-row {
@@ -7551,24 +7683,56 @@
   flex-wrap: wrap;
 }
 
-.dj-row-main {
+/* Four rungs, lit from the bottom: how close this key sits to the one
+   playing. A clash keeps one lit rung rather than going dark, because the
+   track is still a suggestion — it is the last one you would reach for,
+   not an error. */
+.dj-ladder {
   display: flex;
+  flex-direction: column-reverse;
+  gap: 1.5px;
+  flex-shrink: 0;
+}
+
+/* Sized to stand beside the artwork rather than beneath the text: at five
+   pixels a rung it read as specks of dust next to the thumbnail. */
+.dj-rung {
+  width: 4px;
+  height: 8px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dj-rung[data-lit='true'] {
+  background: var(--accent);
+}
+
+.dj-row[data-relation='clash'] .dj-rung[data-lit='true'] {
+  opacity: 0.45;
+}
+
+.dj-row-main {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   flex: 1 1 auto;
   min-width: 0;
-  padding: 5px 6px;
+  padding: 7px 8px;
   border: none;
-  border-radius: 7px;
+  border-radius: 9px;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
   font: inherit;
+  transition: background 120ms ease;
 }
 
-.dj-row-main:hover {
+.dj-row-main:hover,
+.dj-row-main:focus-visible {
   background: var(--accent-soft-bg);
+  outline: none;
 }
 
 .dj-row-text {
@@ -7578,31 +7742,53 @@
   min-width: 0;
 }
 
-.dj-row-reason {
-  font-size: 10.5px;
-  color: var(--accent-bright);
-  opacity: 0.8;
+/* The judgement, in the terms it was made in: how far round the wheel,
+   and how far the tempo has to move. Right-aligned so the two numbers
+   line up down the list and a run of easy mixes is visible as a column. */
+.dj-row-fit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
   font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: right;
+}
+
+.dj-fit-key {
+  font-size: 11px;
+  color: var(--accent-bright);
+  opacity: 0.9;
+}
+
+.dj-row[data-relation='unknown'] .dj-fit-key,
+.dj-row[data-relation='clash'] .dj-fit-key {
+  color: inherit;
+  opacity: 0.5;
+}
+
+.dj-fit-tempo {
+  font-size: 10.5px;
+  opacity: 0.55;
 }
 
 .dj-queue-btn {
   flex-shrink: 0;
-  padding: 5px 10px;
-  border: 1px solid var(--accent-border);
-  border-radius: 6px;
-  background: var(--accent-bg);
+  padding: 6px 12px;
+  border: 1px solid var(--dj-rule);
+  border-radius: 9px;
+  background: var(--dj-surface);
   color: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   font-family: inherit;
   cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
 }
 
 .dj-queue-btn:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: var(--accent-border);
   background: var(--accent-soft-bg);
+  color: var(--accent-bright);
 }
 
 .dj-queue-btn:disabled {
@@ -7612,29 +7798,67 @@
 
 .dj-row-error {
   flex-basis: 100%;
-  padding-left: 6px;
+  padding-left: 14px;
   font-size: 10.5px;
   opacity: 0.8;
 }
 
 /* The commentary, shown as well as spoken. When the voice cannot play this
-   is the whole of it rather than a caption. */
+   is the whole of it rather than a caption, so it is set as something to
+   read: a quote mark, generous leading, and the accent edge tying it to
+   the pick it is about. */
 .dj-said {
   margin-top: auto;
-  padding: 9px 10px;
-  border: 1px solid var(--accent-border);
-  border-radius: 8px;
-  background: var(--accent-soft-bg);
+  padding: 11px 13px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 9px 9px 0;
+  background: var(--dj-surface);
 }
 
 .dj-said-text {
   margin: 0;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
 .dj-said-note {
-  margin: 5px 0 0;
+  margin: 6px 0 0;
   font-size: 10.5px;
   opacity: 0.7;
+}
+
+@media (max-width: 760px) {
+  .dj-controls {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .dj-source {
+    grid-column: 1 / -1;
+  }
+
+  /* Narrow, the fit drops under the artist rather than out of the view:
+     hiding it leaves a row that says a track is next and never why, which
+     is the thing this panel exists to answer. */
+  .dj-row-main {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .dj-row-fit {
+    grid-column: 3;
+    grid-row: 2;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dj-source,
+  .dj-request-input,
+  .dj-speak,
+  .dj-row-main,
+  .dj-queue-btn {
+    transition: none;
+  }
 }
