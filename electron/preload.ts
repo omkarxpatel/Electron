@@ -131,6 +131,17 @@ const api = {
   },
 
   /**
+   * Overnight learner: hold the Mac awake and the renderer's timers at full
+   * rate while a run is measuring. See the learner section in electron/main.ts.
+   *
+   * Returns `unknown`; the shape is declared once in src/types/api.d.ts.
+   */
+  learner: {
+    setKeepAwake: (on: boolean): Promise<unknown> =>
+      ipcRenderer.invoke('learner:set-keep-awake', on),
+  },
+
+  /**
    * Menu-bar bridge. The tray lives in main but has no Spotify session of its
    * own, so the renderer pushes now-playing up and receives transport
    * commands back down. This is what makes the tray work while the window is

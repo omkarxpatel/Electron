@@ -95,6 +95,14 @@ export interface ElectronApi {
     render(text: string, voice?: string): Promise<SpeechResult>;
   };
   /**
+   * Overnight learner. `setKeepAwake(true)` blocks idle sleep and stops
+   * Chromium throttling this window's timers; `false` undoes both. Resolves to
+   * whether the power-save blocker is held afterwards.
+   */
+  learner: {
+    setKeepAwake(on: boolean): Promise<boolean>;
+  };
+  /**
    * Menu-bar bridge — see electron/main.ts's tray section. The renderer owns
    * the Spotify session, so it pushes now-playing up for the tray's labels
    * and handles the transport commands the tray sends back.

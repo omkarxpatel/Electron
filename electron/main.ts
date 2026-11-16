@@ -9,6 +9,7 @@ import {
   session,
   desktopCapturer,
   Tray,
+  powerSaveBlocker,
 } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -741,6 +742,31 @@ ipcMain.handle('spotify-folders:read', () => readSpotifyRootlist());
 ipcMain.handle('speech:render', (_event, text: unknown, voice: unknown) =>
   renderSpeech(text, voice),
 );
+
+// ── Learning run: stay awake, stay at full rate ─────────────────────────────
+// Two things end an overnight run silently. macOS idle sleep suspends the app
+// at about 2 a.m. and the run just stops. And a hidden window gets its timers
+// throttled, so the 10 Hz measuring setInterval fires far slower while the
+// code still counts ticks x 0.1 s: the "seconds heard" it records would lie.
+// One blocker id at module scope: starting twice must not leak a second
+// blocker, and stopping with none held must be a no-op.
+let learnerBlockerId: number | null = null;
+
+ipcMain.handle('learner:set-keep-awake', (event, on: unknown) => {
+  if (on === true) {
+    if (learnerBlockerId === null || !powerSaveBlocker.isStarted(learnerBlockerId)) {
+      learnerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    }
+    event.sender.setBackgroundThrottling(false);
+  } else {
+    if (learnerBlockerId !== null) {
+      powerSaveBlocker.stop(learnerBlockerId);
+      learnerBlockerId = null;
+    }
+    event.sender.setBackgroundThrottling(true);
+  }
+  return learnerBlockerId !== null && powerSaveBlocker.isStarted(learnerBlockerId);
+});
 
 ipcMain.handle('shell:open-external', async (_event, url: string) => {
   if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {
