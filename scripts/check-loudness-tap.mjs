@@ -171,7 +171,7 @@ async function measureThroughWorklet(seconds, dbfs, rate, connectOutput, playthr
  * but it builds a two-node graph that always reaches the destination. The
  * app's graph is longer and its destination connection is conditional:
  *
- *     limiter ─┬─→ duckGain → masterGain ─→ destination        (Live only)
+ *     limiter ─┬─→ duckGain → masterGain ─→ learnMuteGain ─→ destination  (Live only)
  *              │                       └─→ silentSink (gain 0) → destination
  *              ├─→ splitter ─→ analyserL / analyserR  (leaves; output meter)
  *              └─→ visualTap ─→ analyser               (leaf; visuals)
@@ -194,7 +194,7 @@ async function measureThroughWorklet(seconds, dbfs, rate, connectOutput, playthr
  * the 128 midpoint, which is 0 for a graph that was never pulled, plus float
  * peaks for the comparisons the byte data is too coarse for.
  */
-async function measureAppGraph(seconds, dbfs, rate, playthrough, compensationDb = 0) {
+async function measureAppGraph(seconds, dbfs, rate, playthrough, compensationDb = 0, learnMuteGainValue = 1) {
   const ctx = new OfflineAudioContext({
     numberOfChannels: 2,
     length: Math.round(seconds * rate),
@@ -226,6 +226,8 @@ async function measureAppGraph(seconds, dbfs, rate, playthrough, compensationDb 
   const analyserR = ctx.createAnalyser();
   const duckGain = ctx.createGain();
   const masterGain = ctx.createGain();
+  const learnMuteGain = ctx.createGain();
+  learnMuteGain.gain.value = learnMuteGainValue;
   const measureTap = ctx.createGain();
   const visualTap = ctx.createGain();
   measureTap.gain.value = Math.pow(10, compensationDb / 20);
@@ -263,7 +265,11 @@ async function measureAppGraph(seconds, dbfs, rate, playthrough, compensationDb 
   silentSink.gain.value = 0;
   masterGain.connect(silentSink);
   silentSink.connect(ctx.destination);
-  if (playthrough) masterGain.connect(ctx.destination);
+  // Mirrors useAudioEngine: the learning mute sits after masterGain and
+  // after every tap, and the playthrough switch connects IT to the
+  // destination. silentSink stays on masterGain so the graph is still pulled.
+  masterGain.connect(learnMuteGain);
+  if (playthrough) learnMuteGain.connect(ctx.destination);
 
   src.start();
   const rendered = await ctx.startRendering();
@@ -490,6 +496,26 @@ window.__run = async () => {
       'or the output meter: it still reads what goes out',
       Math.abs(dbOf(slid.leafPeakF / liveOn.leafPeakF) + SLIDER_DB) <= 0.1,
       dbOf(slid.leafPeakF / liveOn.leafPeakF).toFixed(2) + ' dB at the meter',
+    );
+
+    // ── Learning mute ──────────────────────────────────────────────────
+    // An overnight learning run plays songs silently while the app measures
+    // them. The silence must sit AFTER every measurement tap and must not be
+    // the user's master level, or the run would either measure silence or
+    // leave their volume at zero in the morning.
+    const learnOn = await measureAppGraph(seconds, dbfs, rate, true, 0, 1);
+    const learnOff = await measureAppGraph(seconds, dbfs, rate, true, 0, 0);
+    check(
+      'the learning mute never reaches the measurement',
+      Number.isFinite(learnOn.lufs) && Number.isFinite(learnOff.lufs)
+        && Math.abs(learnOn.lufs - learnOff.lufs) <= 0.01,
+      Number(learnOff.lufs).toFixed(3) + ' LUFS muted vs ' + Number(learnOn.lufs).toFixed(3) + ' unmuted',
+    );
+    const learnOffDb = 20 * Math.log10(Math.max(learnOff.outputPeak, 1e-12));
+    check(
+      'and with the learning mute on, nothing reaches the destination',
+      learnOffDb < -120,
+      learnOffDb.toFixed(1) + ' dBFS at the destination (unmuted peak ' + learnOn.outputPeak.toFixed(4) + ')',
     );
   } catch (e) {
     check('probe ran without throwing', false, String((e && e.stack) || e));

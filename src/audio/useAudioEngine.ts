@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EQState } from '../state/eq';
 import { frequenciesFor, qFor } from '../state/eq';
 import type { EnhancerState } from '../state/enhancer';
@@ -46,6 +46,9 @@ interface AudioEngineState {
    *  callback, not from a render. */
   duckGainRef: { current: GainNode | null };
   voiceGainRef: { current: GainNode | null };
+  /** Mutes the app's own output for a learning run, after every measurement
+   *  tap. Never touches masterGain, the user's volume. */
+  setLearnMuted: (muted: boolean) => void;
   error: string | null;
   status: 'Idle' | 'Connecting' | 'Listening' | 'Error';
 }
@@ -146,6 +149,10 @@ export function useAudioEngine(
   const trebleShelfRef = useRef<BiquadFilterNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
+  /** Silences a learning run. After masterGain and every measurement tap, and
+   *  not masterGain itself, which is the user's volume and which a crash
+   *  mid-run would leave at zero. */
+  const learnMuteGainRef = useRef<GainNode | null>(null);
   /** Gain-0 tap to ctx.destination. Exists only to keep the graph in the
    *  pulled set when Live is off — see where it is built. */
   const silentSinkRef = useRef<GainNode | null>(null);
@@ -304,6 +311,9 @@ export function useAudioEngine(
 
         const masterGain = ctx.createGain();
         masterGain.gain.value = 1;
+
+        const learnMuteGain = ctx.createGain();
+        learnMuteGain.gain.value = 1;
 
         /* Keeps the graph being processed when Live is off.
          *
@@ -566,6 +576,9 @@ export function useAudioEngine(
         // See `silentSink` above for why it is a node and not a gain value.
         masterGain.connect(silentSink);
         silentSink.connect(ctx.destination);
+        // Permanent. The playthrough effect connects this node, not masterGain,
+        // to the destination.
+        masterGain.connect(learnMuteGain);
         splitter.connect(analyserLNode, 0, 0);
         splitter.connect(analyserRNode, 1, 0);
 
@@ -584,6 +597,7 @@ export function useAudioEngine(
         abProcessedRef.current = abProcessed;
         abRawRef.current = abRaw;
         masterGainRef.current = masterGain;
+        learnMuteGainRef.current = learnMuteGain;
         silentSinkRef.current = silentSink;
         duckGainRef.current = duckGain;
         voiceGainRef.current = voiceGain;
@@ -651,6 +665,7 @@ export function useAudioEngine(
       // for that job, but the analyser was never wired to the destination, so
       // it threw on every teardown into a catch that hid it.
       masterGainRef.current?.disconnect();
+      learnMuteGainRef.current?.disconnect();
       silentSinkRef.current?.disconnect();
       duckGainRef.current?.disconnect();
       voiceGainRef.current?.disconnect();
@@ -682,6 +697,7 @@ export function useAudioEngine(
       abProcessedRef.current = null;
       abRawRef.current = null;
       masterGainRef.current = null;
+      learnMuteGainRef.current = null;
       silentSinkRef.current = null;
       duckGainRef.current = null;
       voiceGainRef.current = null;
@@ -1025,21 +1041,30 @@ export function useAudioEngine(
 
   useEffect(() => {
     const ctx = ctxRef.current;
-    const masterGain = masterGainRef.current;
-    if (!ctx || !masterGain) return;
+    const learnMuteGain = learnMuteGainRef.current;
+    if (!ctx || !learnMuteGain) return;
 
     if (playthrough && !destinationConnectedRef.current) {
-      masterGain.connect(ctx.destination);
+      learnMuteGain.connect(ctx.destination);
       destinationConnectedRef.current = true;
     } else if (!playthrough && destinationConnectedRef.current) {
       try {
-        masterGain.disconnect(ctx.destination);
+        learnMuteGain.disconnect(ctx.destination);
       } catch {
         // ignore
       }
       destinationConnectedRef.current = false;
     }
   }, [playthrough, analyser]);
+
+  // Ramped, not stepped, so a mute never clicks. The node is rebuilt with the
+  // graph and starts open; App re-applies the stored flag when that happens.
+  const setLearnMuted = useCallback((muted: boolean) => {
+    const ctx = ctxRef.current;
+    const node = learnMuteGainRef.current;
+    if (!ctx || !node) return;
+    node.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.05);
+  }, []);
 
   return {
     analyser,
@@ -1056,6 +1081,7 @@ export function useAudioEngine(
     onsetTapRef,
     duckGainRef,
     voiceGainRef,
+    setLearnMuted,
     error,
     status,
   };

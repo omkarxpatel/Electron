@@ -36,6 +36,7 @@ import { useEQ } from './state/eq';
 import { useEnhancer } from './state/enhancer';
 import { useEffectsRack } from './state/effects';
 import { PALETTES, buildCustomPalette } from './visualizers/palettes';
+import { readLearnMuteFlag } from './state/learnMute';
 import { useAlbumPalette } from './visualizers/useAlbumPalette';
 import { pickMediumImage } from './shared/image';
 import { hexToRgba } from './shared/color';
@@ -191,7 +192,7 @@ function AppContent() {
 
   const {
     analyser, analyserL, analyserR, visualAnalyserL, visualAnalyserR, preEqAnalyserL, preEqAnalyserR,
-    chromaAnalyser, limiter, loudnessTapRef, onsetTapRef, duckGainRef, voiceGainRef,
+    chromaAnalyser, limiter, loudnessTapRef, onsetTapRef, duckGainRef, voiceGainRef, setLearnMuted,
   } =
     useAudioEngine(
     audioSource.stream,
@@ -216,6 +217,13 @@ function AppContent() {
     audioOutput.outputDeviceId,
     playthrough && !!audioSource.stream,
   );
+  // An app that died mid-learning-run comes back muted: the run wrote the
+  // flag before it muted, so a crash cannot leave music playing out loud at
+  // night. Re-runs when the graph is rebuilt, because a new graph's mute node
+  // starts open.
+  useEffect(() => {
+    if (analyser) setLearnMuted(readLearnMuteFlag());
+  }, [analyser, setLearnMuted]);
   const library = useLibrary();
   const albumImageUrl = useMemo(
     () => pickMediumImage(playback.playback?.item?.album?.images) ?? null,
