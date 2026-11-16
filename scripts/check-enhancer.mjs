@@ -1471,29 +1471,85 @@ console.log('\nOvernight learner: run');
   const two = plan.planRun([c('a'), c('b')], () => null);
   let badUnmute = 0;
   let badState = 0;
+  let badMuted = 0;
+  const seen = { marked: 0, endingUnmute: 0, takeoverUnmute: 0, deviceUnmute: 0, steps: 0, settling: 0, lateSection: 0 };
   for (let r = 0; r < 500; r++) {
     let state = { kind: 'idle' };
     let now = 0;
+    let muted = false;
     for (let i = 0; i < 60; i++) {
+      // A finished run would absorb every later event, so start another.
+      if (state.kind === 'done') { state = { kind: 'idle' }; muted = false; }
       now += 1 + Math.floor(rnd() * 400_000);
+      // Half the draws advance the run the way the hook would, otherwise the
+      // deep states (later sections, settling, commit) are almost never reached.
+      const progress = state.kind === 'running'
+        ? { starting: { kind: 'confirmed' }, listening: { kind: 'section-elapsed' }, settling: { kind: 'committed' } }[state.step]
+        : null;
+      if (state.kind === 'running') {
+        seen.steps++;
+        if (state.step === 'settling') seen.settling++;
+        if (state.section === 2) seen.lateSection++;
+      }
       const events = [
         { kind: 'start', plan: rnd() < 0.5 ? one : two }, { kind: 'confirmed' }, { kind: 'confirm-timeout' },
         { kind: 'section-elapsed' }, { kind: 'committed' }, { kind: 'input-lost', now }, { kind: 'input-back' },
         { kind: 'silence' }, { kind: 'takeover' }, { kind: 'device-lost' }, { kind: 'resume' }, { kind: 'stop' },
         { kind: 'signed-out' }, { kind: 'tick', now }, { kind: 'spotify-paused' }, { kind: 'pause-failed' },
       ];
-      const e = events[Math.floor(rnd() * events.length)];
+      const e = progress && rnd() < 0.5 ? progress : events[Math.floor(rnd() * events.length)];
       const before = state;
       const res = machine.learnStep(state, e);
       if (!res.state || typeof res.state.kind !== 'string') badState++;
       const unmutes = res.effects.some((x) => x.kind === 'mute' && !x.on);
       const handedBack = e.kind === 'stop' && before.kind === 'paused' && (before.reason === 'takeover' || before.reason === 'device-lost');
       if (unmutes && !(e.kind === 'spotify-paused' || handedBack)) badUnmute++;
+      if (res.effects.some((x) => x.kind === 'mark-learned')) seen.marked++;
+      if (unmutes && e.kind === 'spotify-paused' && before.kind === 'ending') seen.endingUnmute++;
+      if (unmutes && handedBack && before.reason === 'takeover') seen.takeoverUnmute++;
+      if (unmutes && handedBack && before.reason === 'device-lost') seen.deviceUnmute++;
+      // Walk the effect stream: audio only moves while muted, and an unmute
+      // always lands the run in done.
+      for (const x of res.effects) {
+        if (x.kind === 'mute') {
+          if (!x.on && res.state.kind !== 'done') badMuted++;
+          muted = x.on;
+        }
+        if ((x.kind === 'play' || x.kind === 'seek') && !muted) badMuted++;
+      }
       state = res.state;
     }
   }
   check('fuzz: an unmute always follows a pause report or a hand-back', badUnmute === 0, `${badUnmute} bad`);
   check('fuzz: every step returns a state with a kind', badState === 0, `${badState} bad`);
+  check('fuzz: playback only moves while muted, and every unmute ends the run', badMuted === 0, `${badMuted} bad`);
+  check('fuzz: it reaches commits and all three unmute paths',
+    seen.marked > 0 && seen.endingUnmute > 0 && seen.takeoverUnmute > 0 && seen.deviceUnmute > 0 && seen.settling > 0 && seen.lateSection > 0,
+    JSON.stringify(seen));
+
+  // A takeover that lands while we are paused for another reason must not
+  // leave a later timeout or Stop pausing what is now the person's playback.
+  const heldThenTaken = (first, second) => run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, first, second]);
+  for (const [label, pause, take] of [
+    ['input-lost then takeover', { kind: 'input-lost', now: 0 }, { kind: 'takeover' }],
+    ['silence then takeover', { kind: 'silence' }, { kind: 'takeover' }],
+    ['input-lost then device-lost', { kind: 'input-lost', now: 0 }, { kind: 'device-lost' }],
+  ]) {
+    const base = heldThenTaken(pause, take);
+    const marker = base.effects.length;
+    const ticked = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, pause, take, { kind: 'tick', now: 700_000 }]);
+    check(`${label}: no effects, and the input timeout changes nothing`, base.state.kind === 'paused' && base.state.reason === take.kind &&
+      ticked.state.kind === 'paused' && ticked.effects.length === marker);
+    const stopped = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, pause, take, { kind: 'stop' }]);
+    const tail = stopped.effects.slice(marker);
+    check(`${label}: Stop hands playback back unmuted without pausing it`, stopped.state.kind === 'done' && stopped.state.muted === false &&
+      !tail.some((e) => e.kind === 'pause-spotify') && tail.some((e) => e.kind === 'mute' && !e.on));
+  }
+  check('a retry after a confirm timeout plays the section start rather than seeking', (() => {
+    const r = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'section-elapsed' }, { kind: 'confirm-timeout' }]);
+    const last = r.effects.filter((e) => e.kind === 'play' || e.kind === 'seek').at(-1);
+    return last?.kind === 'play' && last.positionMs === 80_000 && r.state.kind === 'running' && r.state.attempt === 1;
+  })());
 }
 
 cleanup();

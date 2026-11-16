@@ -169,7 +169,9 @@ export function learnStep(state: LearnState, event: LearnEvent): Step {
         }
         case 'confirm-timeout': {
           if (step !== 'starting') return ignore(state);
-          if (attempt === 0) return beginSection(queue, index, section, 1, tally, false);
+          // A retry plays rather than seeks: a seek cannot start a player that
+          // never started, and that is why the first attempt timed out.
+          if (attempt === 0) return beginSection(queue, index, section, 1, tally, true);
           const failed = [...tally.failed, { id: item.id, name: item.name, reason: 'Spotify did not start playback' }];
           return nextSong(queue, index, { ...tally, failed }, [quiet(null)]);
         }
@@ -231,6 +233,14 @@ export function learnStep(state: LearnState, event: LearnEvent): Step {
             return { state: { kind: 'ending', reason: 'input-timeout', tally }, effects: [{ kind: 'pause-spotify' }] };
           }
           return ignore(state);
+        case 'takeover':
+        case 'device-lost':
+          // Someone took over while we were paused for another reason. Left
+          // as it was, a later input timeout or Stop would pause what is now
+          // their playback. No effects: nothing of ours is playing.
+          return reason === 'input-lost' || reason === 'silence'
+            ? { state: { ...state, reason: event.kind }, effects: [] }
+            : ignore(state);
         case 'stop':
           if (reason === 'takeover' || reason === 'device-lost') {
             // A person pressed Stop and the playback is theirs.
