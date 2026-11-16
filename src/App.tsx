@@ -14,6 +14,7 @@ import { UpdateDialog } from './components/UpdateDialog';
 import { VisualizerBanner } from './components/VisualizerBanner';
 import { ImmersiveLyrics } from './components/ImmersiveLyrics';
 import { EqSection } from './components/EqSection';
+import type { MeasureMode } from './dj/learnPlan';
 import type { AiEffectTargets } from './audio/useAiEnhancer';
 import type { DjBridge } from './components/SpotifySection';
 import type { LiveMeasurement } from './components/DjPanel';
@@ -131,6 +132,11 @@ function AppContent() {
     exciter: 0,
     exciterFreq: 90,
   });
+  // Which measurements the enhancer may take, and the loudness a learning
+  // run commits in place of the meter's. Plain refs here; a later task hands
+  // them to the learner's hook.
+  const measureGateRef = useRef<{ mode: MeasureMode }>({ mode: 'all' });
+  const learnLufsRef = useRef<number | null | undefined>(undefined);
   // One instance, shared by the enhancer (which writes it) and Settings
   // (which reports its size and clears it) — a second would hold its own
   // copy of the store and the two would diverge on the first commit.
@@ -458,6 +464,8 @@ function AppContent() {
               trackMemory={trackMemory}
               loudnessTapRef={loudnessTapRef}
               onsetTapRef={onsetTapRef}
+              measureGateRef={measureGateRef}
+              learnLufsRef={learnLufsRef}
               eq={eq}
               enhancer={enhancer}
               effects={effects}

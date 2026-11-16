@@ -12,6 +12,7 @@ import { buildCurveSolver, solveBandGains } from './biquadResponse';
 import type { TrackProfile } from './trackProfile';
 import { accumulateChroma, estimateKey, PITCH_CLASSES } from './musicalKey';
 import { estimateTempo } from './tempo';
+import type { MeasureMode } from '../dj/learnPlan';
 import type { OnsetTap } from './onsetTap';
 
 /**
@@ -200,6 +201,10 @@ interface Params {
     bpm: number | null,
     bpmConfidence: number,
   ) => void;
+  /** Lets a learning run say which measurements this tick may feed. Read
+   *  every tick through a ref. Absent, or mode 'all', is the ordinary
+   *  listening path, unchanged. */
+  measureGateRef?: { current: { mode: MeasureMode } };
   /** Ref the AI writes its effect targets into, read by the audio engine.
    *  Same arrangement as deltaRef: a ref rather than state so the 10 Hz loop
    *  doesn't re-render anything. */
@@ -277,6 +282,7 @@ export function useAiEnhancer({
   trackId,
   recalled,
   onTrackMeasured,
+  measureGateRef,
   effectsRef,
   deltaRef,
   baselineRef,
@@ -314,6 +320,8 @@ export function useAiEnhancer({
   recalledRef.current = recalled;
   const onTrackMeasuredRef = useRef<typeof onTrackMeasured>(onTrackMeasured);
   onTrackMeasuredRef.current = onTrackMeasured;
+  const measureGateRefRef = useRef(measureGateRef);
+  measureGateRefRef.current = measureGateRef;
 
   /* Resize the delta buffer whenever band count changes. We mutate in place
    * rather than reassign so the audio engine (which captured the ref by
@@ -544,7 +552,15 @@ export function useAiEnhancer({
       // meaningful, and the enhancer would sit idle through the start of
       // every listening session.
       const emaAlpha = Math.max(isLive ? EMA_ALPHA_LIVE : EMA_ALPHA_STEADY, 1 / (emaTicks + 1));
-      if (signalPresent) {
+      // A learning run plays an intro and an outro only for key and tempo.
+      // Folding their spectrum into bandDbEma would let the outro's 15 s
+      // dominate Steady's 20 s EMA and store an end-of-song shape as the
+      // track's tone; counting their seconds in measuredTicks would claim
+      // more of the song was heard than the middle supplied. Loudness has
+      // the same problem (intro/outro bias level matching quiet), which is
+      // why EqSection commits the run's own LUFS instead of the meter's.
+      const gateMode: MeasureMode = measureGateRefRef.current?.current.mode ?? 'all';
+      if (signalPresent && gateMode === 'all') {
         emaTicks++;
         measuredTicks++;
         for (let i = 0; i < 10; i++) {
@@ -556,7 +572,7 @@ export function useAiEnhancer({
           seededFromRecall = false;
         }
       }
-      if (chromaAnalyser && chromaBins && chromaLinear && signalPresent && ++chromaTick >= 5) {
+      if (chromaAnalyser && chromaBins && chromaLinear && signalPresent && gateMode !== 'none' && ++chromaTick >= 5) {
         chromaTick = 0;
         chromaAnalyser.getFloatFrequencyData(chromaBins);
         // dB to linear magnitude: chroma sums energy, and summing decibels

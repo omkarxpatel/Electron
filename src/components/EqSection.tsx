@@ -8,6 +8,7 @@ import type { OnsetTap } from '../audio/onsetTap';
 import { frequenciesFor, type UseEQReturn } from '../state/eq';
 import type { UseEnhancerReturn } from '../state/enhancer';
 import type { UseEffectsRackReturn } from '../state/effects';
+import type { MeasureMode } from '../dj/learnPlan';
 import type { PaletteId } from '../state/settings';
 import type { Palette } from '../visualizers/palettes';
 
@@ -55,6 +56,11 @@ interface Props {
   baselineRef: { current: number[] };
   /** Shared AI effect targets — written here, read by the audio engine. */
   aiEffectsRef: { current: AiEffectTargets };
+  /** Handed to the enhancer: which measurements a learning run lets through. */
+  measureGateRef: { current: { mode: MeasureMode } };
+  /** A learning run's own integrated LUFS for the track being committed.
+   *  undefined means ordinary listening: read the meter. */
+  learnLufsRef: { current: number | null | undefined };
   /** What the app has learned about each track it has played. Lets the
    *  enhancer start a known track already corrected instead of spending its
    *  first 20 s measuring something it has measured before. Owned by App so
@@ -106,6 +112,8 @@ export function EqSection({
   trackMemory,
   loudnessTapRef,
   onsetTapRef,
+  measureGateRef,
+  learnLufsRef,
   onMeasurement,
   active,
   playthrough,
@@ -164,6 +172,7 @@ export function EqSection({
     driveEffects: eq.state.aiEffects,
     trackId,
     recalled,
+    measureGateRef,
     // The enhancer knows about track boundaries; loudness is measured
     // elsewhere. Joining them here keeps the enhancer about spectrum and
     // means the meter is read and restarted at exactly the same instant the
@@ -179,7 +188,11 @@ export function EqSection({
         bpmConfidence: number,
       ) => {
         const tap = loudnessTapRef.current;
-        const lufs = tap ? tap.meter.integratedLufs() : null;
+        // A learning run measures loudness over its middle slice only; the
+        // meter would also have heard the intro and outro.
+        const lufs = learnLufsRef.current !== undefined
+          ? learnLufsRef.current
+          : tap ? tap.meter.integratedLufs() : null;
         trackMemory.commit(
           id,
           bands10,
@@ -192,7 +205,7 @@ export function EqSection({
         );
         tap?.reset();
       },
-      [loudnessTapRef, trackMemory],
+      [loudnessTapRef, trackMemory, learnLufsRef],
     ),
     effectsRef: aiEffectsRef,
     deltaRef: aiDeltaRef,
