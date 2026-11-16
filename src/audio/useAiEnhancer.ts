@@ -392,6 +392,11 @@ export function useAiEnhancer({
     /** Latest live key estimate, refreshed with the chroma. */
     let liveKey: { camelot: string; label: string; code: number; confidence: number } | null = null;
     let liveTempo: { bpm: number; confidence: number } | null = null;
+    /** Clearest tempo reading of this play, which is what gets stored. The
+     *  live estimate covers only the last 14 s, and at a track change that
+     *  window is the outro: a fade or a beatless tail stored a null, or a
+     *  low-confidence guess, for a track whose beat was clear for minutes. */
+    let bestTempo: { bpm: number; confidence: number } | null = null;
     const prevSpectrum = new Float32Array(binsM.length);
     const onsetTimes: number[] = [];
     let currentMode: MaterialClass = 'dense';
@@ -493,13 +498,14 @@ export function useAiEnhancer({
             measuredTicks * DT,
             k ? k.tonic + (k.mode === 'minor' ? PITCH_CLASSES : 0) : null,
             k ? k.confidence : 0,
-            liveTempo ? liveTempo.bpm : null,
-            liveTempo ? liveTempo.confidence : 0,
+            bestTempo ? bestTempo.bpm : null,
+            bestTempo ? bestTempo.confidence : 0,
           );
         }
         chroma.fill(0);
         liveKey = null;
         liveTempo = null;
+        bestTempo = null;
         // The envelope is a rolling 14 s window; without this the first
         // estimate on a new track is mostly the previous one's beat.
         onsetTapRef?.current?.reset();
@@ -573,6 +579,7 @@ export function useAiEnhancer({
         const tap = onsetTapRef?.current ?? null;
         const env = tap ? tap.envelope() : null;
         liveTempo = tap && env ? estimateTempo(env, tap.envelopeHz) : null;
+        if (liveTempo && (!bestTempo || liveTempo.confidence > bestTempo.confidence)) bestTempo = liveTempo;
       }
 
       for (let i = 0; i < 10; i++) {

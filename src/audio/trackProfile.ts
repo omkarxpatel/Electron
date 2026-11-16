@@ -222,25 +222,6 @@ export function decodeProfile(value: unknown): TrackProfile | null {
   };
 }
 
-/**
- * Drop the least recently used entries until `max` remain.
- *
- * Returns a new record; the input is untouched. Eviction is by `updated`
- * rather than insertion order because the point is to keep what is actually
- * being listened to.
- */
-export function evictOldest(
-  store: Record<string, TrackProfile>,
-  max: number,
-): Record<string, TrackProfile> {
-  const ids = Object.keys(store);
-  if (ids.length <= max) return store;
-  ids.sort((a, b) => store[b].updated - store[a].updated);
-  const kept: Record<string, TrackProfile> = {};
-  for (let i = 0; i < max; i++) kept[ids[i]] = store[ids[i]];
-  return kept;
-}
-
 /** Serialize a whole store to what goes in localStorage. */
 export function encodeStore(store: Record<string, TrackProfile>): string {
   const out: Record<string, StoredProfile> = {};

@@ -388,7 +388,7 @@ console.log('\nBS.1770 loudness');
 
 console.log('\nTrack memory');
 {
-  const { foldMeasurement, meanZero, decodeProfile, encodeProfile, encodeStore, decodeStore, evictOldest, MAX_PRIOR_SECONDS } = track;
+  const { foldMeasurement, meanZero, decodeProfile, encodeProfile, encodeStore, decodeStore, MAX_PRIOR_SECONDS } = track;
 
   // Only shape is stored. A curve and the same curve 12 dB louder describe
   // the same track, and absolute dBFS at the pre-EQ tap moves with the input
@@ -472,14 +472,15 @@ console.log('\nTrack memory');
   // its size is a real cost the user is shown in Settings. Assert the budget
   // rather than trusting the encoding to stay terse.
   //
-  // Measured at the cap with realistic entries: ~138 KB, ~141 B per track.
+  // There is no cap on entries any more, so what this bounds is the cost of
+  // each one, measured over a sample of 1000 realistic entries: ~141 B each.
   // The 150 KB bound below is therefore about 8% of headroom — deliberately
   // tight. Another stored field will trip it, which is the point: the store
   // is written synchronously on the main thread once per track, so growth
   // here is a decision, not a detail.
-  const MAX_TRACKS = 1000;
+  const SAMPLE_TRACKS = 1000;
   const big = {};
-  for (let i = 0; i < MAX_TRACKS; i++) {
+  for (let i = 0; i < SAMPLE_TRACKS; i++) {
     // Realistic ids: Spotify's are 22 base62 characters.
     const id = `t${String(i).padStart(21, '0')}`;
     // Fully populated: a real entry carries loudness and a key, and a
@@ -503,28 +504,24 @@ console.log('\nTrack memory');
     );
   }
   const serialized = encodeStore(big);
-  const perTrack = serialized.length / MAX_TRACKS;
+  const perTrack = serialized.length / SAMPLE_TRACKS;
   check(
-    'the full store stays small',
+    'each stored track stays small',
     serialized.length < 150 * 1024,
-    `${MAX_TRACKS} tracks = ${(serialized.length / 1024).toFixed(0)} KB (${perTrack.toFixed(0)} B each)`,
+    `${SAMPLE_TRACKS} tracks = ${(serialized.length / 1024).toFixed(0)} KB (${perTrack.toFixed(0)} B each)`,
   );
   const reread = decodeStore(serialized);
   check(
     'a full store reloads intact',
-    Object.keys(reread).length === MAX_TRACKS,
-    `${Object.keys(reread).length} of ${MAX_TRACKS}`,
+    Object.keys(reread).length === SAMPLE_TRACKS,
+    `${Object.keys(reread).length} of ${SAMPLE_TRACKS}`,
   );
   check(
     'one corrupt entry does not lose the rest',
     Object.keys(decodeStore(JSON.stringify({ ...JSON.parse(serialized), bad: { s: [1] } }))).length
-      === MAX_TRACKS,
+      === SAMPLE_TRACKS,
   );
 
-  // Eviction keeps what is actually being listened to, not what arrived first.
-  const store = {};
-  for (let i = 0; i < 10; i++) store[`t${i}`] = { shape10: meanZero(curve), seconds: 60, updated: i, lufs: null, key: null, keyConfidence: 0, bpm: null, bpmConfidence: 0 };
-  const kept = evictOldest(store, 3);
   // Loudness is the one stored value that IS a level. It is measured
   // upstream of everything the app does, so it describes the track rather
   // than our processing — that is what makes it comparable between sessions
@@ -593,12 +590,6 @@ console.log('\nTrack memory');
   check(
     'an absurd stored tempo is rejected',
     decodeProfile({ s: Array(10).fill(0), n: 5, u: 1, b: 9000 }).bpm === null,
-  );
-
-  check(
-    'eviction keeps the most recently heard',
-    Object.keys(kept).sort().join(',') === 't7,t8,t9',
-    Object.keys(kept).sort().join(','),
   );
 }
 

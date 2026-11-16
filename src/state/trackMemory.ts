@@ -2,7 +2,6 @@ import { useCallback, useRef, useState } from 'react';
 import {
   decodeStore,
   encodeStore,
-  evictOldest,
   foldMeasurement,
   MIN_COMMIT_SECONDS,
   type TrackProfile,
@@ -17,21 +16,16 @@ import {
 const STORAGE_KEY = 'av.trackMemory.v1';
 
 /**
- * Entries kept, least-recently-heard evicted.
+ * No cap on entries. There was one, at 1000, evicting the least recently
+ * heard; but the DJ is meant to learn whole libraries, and a cap made it
+ * forget the first playlist it was given while it learned the second.
  *
- * At the measured ~141 bytes per track (check:enhancer asserts the budget)
- * this is about 138 KB — a few percent of the localStorage budget, and more
- * distinct tracks than a listening rotation reaches. The cap exists so the
- * store has a known ceiling rather than growing with play history forever.
- *
- * The figure was "~100 bytes / ~100 KB" until it was re-measured: that
- * described the store before the loudness meter and the key/tempo fields
- * existed, and check:enhancer's generator was using integer BPMs, which are
- * two characters shorter than the 0.1 precision actually written. Both were
- * understating it. The assertion's headroom over the real figure is now
- * about 8%, so adding a field here will trip it on purpose.
+ * Measured, not assumed: Electron's localStorage accepted a 40 million
+ * character value in a fresh profile, and an entry is ~141 characters, so the
+ * quota sits somewhere past 250,000 tracks. The cost that does grow is that
+ * the whole store is re-serialised on every track change and parsed at
+ * startup, which is why check:enhancer still asserts the size of an entry.
  */
-export const MAX_TRACKS = 1000;
 
 function load(): Record<string, TrackProfile> {
   try {
@@ -98,9 +92,7 @@ export function useTrackMemory(enabled: boolean) {
       bpm,
       bpmConfidence,
     );
-    const kept = evictOldest(store, MAX_TRACKS);
-    storeRef.current = kept;
-    const serialized = encodeStore(kept);
+    const serialized = encodeStore(store);
     try {
       localStorage.setItem(STORAGE_KEY, serialized);
     } catch {
@@ -108,7 +100,7 @@ export function useTrackMemory(enabled: boolean) {
       // enhancer back to measuring from scratch, which is how it worked
       // before this existed — not worth interrupting playback over.
     }
-    setStats({ tracks: Object.keys(kept).length, bytes: serialized.length });
+    setStats({ tracks: Object.keys(store).length, bytes: serialized.length });
     },
     [],
   );
