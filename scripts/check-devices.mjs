@@ -119,11 +119,20 @@ function fakeTrack() {
   return t;
 }
 
+/** Reject this many of the next requests even though the device IS listed.
+ *  macOS after an idle spell: the device never left, but re-opening it fails
+ *  for a few seconds while CoreAudio catches up. */
+let gumFailures = 0;
+
 md.getUserMedia = async (constraints) => {
   const id = constraints?.audio?.deviceId?.exact;
   gumCalls.push(id);
   if (!listing.some((d) => d.kind === 'audioinput' && d.deviceId === id)) {
     throw new DOMException('Requested device not found', 'NotFoundError');
+  }
+  if (gumFailures > 0) {
+    gumFailures -= 1;
+    throw new DOMException('Could not start audio source', 'NotReadableError');
   }
   const track = fakeTrack();
   return {
@@ -148,6 +157,7 @@ function reset() {
   enumerateDelays = [];
   enumerateCalls = 0;
   gumCalls.length = 0;
+  gumFailures = 0;
   localStorage.clear();
 }
 
@@ -335,6 +345,65 @@ window.__run = async () => {
     await settle();
     check('a track that dies in place with its device present is still recovered',
       gumCalls.length === before + 1 && gumCalls.at(-1) === MIC.deviceId, JSON.stringify(gumCalls));
+
+    /* Each case below starts on a fresh hook. The attempt counter only
+     * resets after ten healthy seconds, so a case that inherited it from the
+     * one above would be waiting out the previous test's backoff and proving
+     * nothing about its own. */
+    const freshSource = async () => {
+      unmount();
+      reset();
+      listing = [MIC, SPEAKERS];
+      mount(h(SourceProbe));
+      await settle();
+      await src.useDevice(MIC.deviceId);
+      await settle();
+    };
+
+    /* The request itself failing while the device is still listed. This is
+     * what macOS does after an idle spell, and it was the dead end: a
+     * rejected getUserMedia swaps no stream, so the watchdog effect never
+     * re-ran, the three attempts went in a burst over about a second, and
+     * the user was told to pick the device again by hand. */
+    await freshSource();
+    gumFailures = 2;
+    const stalled = liveTrack();
+    stalled.readyState = 'ended';
+    stalled.dispatchEvent(new Event('ended'));
+    await sleep(600);
+    check('a failed re-acquire does not give up', !/could not be reconnected/.test(src.error ?? ''),
+      src.error);
+    check('and says it is reconnecting while it works', /reconnecting/i.test(src.error ?? ''), src.error);
+
+    // Two failures then a success: attempts land at 0 ms, 1 s and 3 s.
+    await sleep(4200);
+    check('it keeps trying until the device answers',
+      gumCalls.length === 4 && liveTrack()?.readyState === 'live',
+      (gumCalls.length - 1) + ' recovery attempts, track ' + liveTrack()?.readyState);
+    check('and the error clears once it is back', src.error === null, src.error);
+
+    // Backing off matters as much as persisting: the old code spent its whole
+    // budget in about a second, which is less time than the device needs.
+    await freshSource();
+    gumFailures = 99;
+    const wedged = liveTrack();
+    wedged.readyState = 'ended';
+    wedged.dispatchEvent(new Event('ended'));
+    await sleep(1500);
+    const burst = gumCalls.length - 1;
+    check('a wedged device is retried on a backoff, not in a loop', burst >= 1 && burst <= 2,
+      burst + ' attempts in 1.5 s');
+
+    /* Coming back to the app spends an attempt out of turn, because by then
+     * the next one is seconds away and this is exactly when someone is
+     * sitting looking at the error waiting for it to clear. */
+    const beforeFocus = gumCalls.length;
+    gumFailures = 0;
+    window.dispatchEvent(new Event('focus'));
+    await sleep(300);
+    check('returning to the app retries straight away',
+      gumCalls.length > beforeFocus && liveTrack()?.readyState === 'live',
+      (gumCalls.length - beforeFocus) + ' attempts on focus, track ' + liveTrack()?.readyState);
     unmount();
 
     // ── OutputDeviceSelector ─────────────────────────────────────────────

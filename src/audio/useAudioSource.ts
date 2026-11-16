@@ -49,15 +49,29 @@ function remember(mode: SourceMode, deviceId: string | null): void {
 /** How long a track may sit `muted` before we treat it as dead. Short
  *  stalls are self-healing and fire `unmute` well inside this window. */
 const MUTE_GRACE_MS = 1500;
-/** Consecutive auto-recoveries before we stop and hand it back to the user.
- *  Without a cap, a permanently-stalled device would re-acquire on a loop. */
-const MAX_RECOVERIES = 3;
+/** How long to wait before each re-acquire, by attempt number. The first is
+ *  immediate because most stalls clear at once; the rest back off so a device
+ *  that is genuinely wedged isn't hammered. */
+const RECOVERY_BACKOFF_MS = [0, 1_000, 3_000, 8_000];
+/** The steady rate once the backoff is spent. Recovery never gives up now:
+ *  three strikes and a "pick the device again" dead end was the single most
+ *  irritating thing the app did, and it was reached by failures the user
+ *  could do nothing about — macOS stops delivering on a capture track after
+ *  the app has sat idle, and the request to re-open it can fail for a few
+ *  seconds afterwards while CoreAudio catches up. Waiting is the fix; the
+ *  user was being asked to do it by hand. */
+const RECOVERY_RETRY_MS = 20_000;
 /** A track that stays healthy this long has recovered for real, so the
  *  consecutive-attempt counter resets. */
 const HEALTHY_RESET_MS = 10_000;
 /** Shown when the input device has left the list, as opposed to one that is
  *  present but not responding. The promise in the second sentence is kept by
  *  useDeviceReturn, which re-acquires the same device when it reappears. */
+/** Shown while re-acquiring. It names the manual escape hatch without
+ *  demanding it: picking the device again is now a way to skip the wait,
+ *  not the only way out. */
+const INPUT_RECONNECTING_MESSAGE =
+  'Audio input stopped responding — reconnecting. Pick the device again from the source menu to retry now.';
 const INPUT_GONE_MESSAGE =
   'The audio input device was disconnected. It will reconnect on its own when the device is back.';
 
@@ -159,8 +173,12 @@ export function useAudioSource() {
     }
   }, [swap]);
 
+  /** Returns whether the stream was replaced. The watchdog needs to know: a
+   *  failed request swaps nothing, so nothing re-runs the effect that would
+   *  otherwise notice the track is still dead, and the retry has to come from
+   *  the caller instead. */
   const useDevice = useCallback(
-    async (deviceId: string) => {
+    async (deviceId: string): Promise<boolean> => {
       setState((s) => ({ ...s, busy: true, error: null }));
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -174,9 +192,11 @@ export function useAudioSource() {
         swap(stream);
         remember('device', deviceId);
         setState((s) => ({ ...s, mode: 'device', deviceId, busy: false }));
+        return true;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setState((s) => ({ ...s, busy: false, error: message }));
+        return false;
       }
     },
     [swap],
@@ -214,58 +234,107 @@ export function useAudioSource() {
 
     let muteTimer: number | null = null;
     let healthyTimer: number | null = null;
+    let retryTimer: number | null = null;
     let disposed = false;
+
+    /* Keep trying, on a backoff, for as long as this track stays dead.
+     *
+     * It used to stop after three attempts and tell the user to pick the
+     * device again. Two things made that the wrong answer. A failed
+     * getUserMedia swaps no stream, so this effect never re-ran and the
+     * three attempts were spent in a burst over a couple of seconds —
+     * against a device that typically needs longer than that to come back.
+     * And the thing it then asked for, picking the same device from the
+     * menu, is exactly what this function does: the app had the whole
+     * recovery in hand and handed the work over anyway. */
+    const schedule = () => {
+      if (disposed || retryTimer !== null) return;
+      const attempt = recoveriesRef.current;
+      recoveriesRef.current = attempt + 1;
+      const delay = RECOVERY_BACKOFF_MS[attempt] ?? RECOVERY_RETRY_MS;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void recover();
+      }, delay);
+    };
 
     const recover = async () => {
       if (muteTimer !== null) window.clearTimeout(muteTimer);
       muteTimer = null;
+      if (disposed) return;
       // A device that has left the list has nothing to reconnect to. This
       // used to try anyway: each attempt was an `exact` getUserMedia that
-      // could only reject, it spent the whole MAX_RECOVERIES budget doing so,
-      // and the message it ended on blamed the device for "not responding".
-      // Worse, a rejected attempt never swaps the stream, so this effect never
-      // re-ran and nothing was left to notice the device coming back. Say what
-      // actually happened, keep the budget, and let useDeviceReturn below pick
-      // it up when it reappears. `null` (the list couldn't be read) falls
-      // through to trying, which is what happened before.
+      // could only reject, it spent the whole recovery budget doing so, and
+      // the message it ended on blamed the device for "not responding".
+      // Worse, a rejected attempt never swaps the stream, so this effect
+      // never re-ran and nothing was left to notice the device coming back.
+      // Say what actually happened, stop retrying, and let useDeviceReturn
+      // below pick it up when it reappears. `null` (the list couldn't be
+      // read) falls through to trying, which is what happened before.
       if ((await isDevicePresent('audioinput', deviceId)) === false) {
         if (disposed) return;
         setState((s) => ({ ...s, error: INPUT_GONE_MESSAGE }));
         return;
       }
       if (disposed) return;
-      if (recoveriesRef.current >= MAX_RECOVERIES) {
-        setState((s) => ({
-          ...s,
-          error:
-            'Audio input stopped responding and could not be reconnected. ' +
-            'Pick the device again from the source menu.',
-        }));
-        return;
-      }
-      recoveriesRef.current += 1;
-      void useDevice(deviceId);
+
+      const swapped = await useDevice(deviceId);
+      if (disposed) return;
+      // Swapped: this effect re-runs against the new track and takes over,
+      // including deciding whether that track is healthy. Nothing to do here,
+      // and scheduling a retry as well would run two recoveries at once.
+      if (swapped) return;
+      // Nothing swapped, so useDevice has just written its own failure into
+      // the error slot — "Requested device not found" and the like, which
+      // says nothing a user can act on while we are still working on it.
+      setState((s) => ({ ...s, error: INPUT_RECONNECTING_MESSAGE }));
+      schedule();
     };
 
-    const onEnded = () => void recover();
+    /* Coming back to the app is the one moment worth spending an attempt on
+     * out of turn. The stall is usually the machine having parked the audio
+     * engine while nobody was looking, so the odds are better now than they
+     * were a minute ago — and this is also exactly when someone is looking at
+     * the error and waiting for it to clear. */
+    const onReturn = () => {
+      if (disposed || document.visibilityState !== 'visible') return;
+      const current = streamRef.current?.getAudioTracks()[0];
+      if (current && current.readyState === 'live' && !current.muted) return;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      recoveriesRef.current = 0;
+      schedule();
+    };
+
+    const onEnded = () => schedule();
     const onMute = () => {
       if (muteTimer !== null) return;
       muteTimer = window.setTimeout(() => {
         muteTimer = null;
-        if (track.muted || track.readyState === 'ended') void recover();
+        if (track.muted || track.readyState === 'ended') schedule();
       }, MUTE_GRACE_MS);
     };
     const onUnmute = () => {
       if (muteTimer !== null) window.clearTimeout(muteTimer);
       muteTimer = null;
+      // The track healed itself before the grace window was out, so the
+      // pending attempt would rebuild the graph for nothing.
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       recoveriesRef.current = 0;
     };
 
     track.addEventListener('ended', onEnded);
     track.addEventListener('mute', onMute);
     track.addEventListener('unmute', onUnmute);
+    window.addEventListener('focus', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
 
-    if (track.readyState === 'ended') void recover();
+    if (track.readyState === 'ended') schedule();
     else if (track.muted) onMute();
     else {
       healthyTimer = window.setTimeout(() => {
@@ -278,9 +347,12 @@ export function useAudioSource() {
       disposed = true;
       if (muteTimer !== null) window.clearTimeout(muteTimer);
       if (healthyTimer !== null) window.clearTimeout(healthyTimer);
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       track.removeEventListener('ended', onEnded);
       track.removeEventListener('mute', onMute);
       track.removeEventListener('unmute', onUnmute);
+      window.removeEventListener('focus', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
     };
   }, [state.stream, state.mode, state.deviceId, useDevice]);
 
