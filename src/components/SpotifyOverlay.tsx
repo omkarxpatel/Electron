@@ -34,6 +34,9 @@ interface Props {
   onSelectLikedSongs: () => void;
   likedSelected: boolean;
   onCreatePlaylist: (name: string) => Promise<void>;
+  /** Re-fetch everything we hold from Spotify. Awaited, so the button can
+   *  stay busy until the lists have actually been replaced. */
+  onRefresh: () => Promise<void>;
   searchAll: (query: string, signal?: AbortSignal) => Promise<SearchResults>;
   searchMore: (query: string, type: SearchType, offset: number) => Promise<SearchResults>;
   playTrack: (track: SpotifyTrack, contextUri?: string) => void;
@@ -87,6 +90,7 @@ function SpotifyOverlayImpl({
   albumRequest,
   artistRequest,
   dj,
+  onRefresh,
 }: Props) {
   useRenderCount('SpotifyOverlay');
   const [view, setView] = useState<View>('library');
@@ -96,6 +100,7 @@ function SpotifyOverlayImpl({
   >(null);
   const [albumLoading, setAlbumLoading] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState<number>(0);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   // Bump refreshKey on every open; reset to library view too so the user
   // doesn't reopen straight into a stale drill-in.
@@ -230,6 +235,22 @@ function SpotifyOverlayImpl({
     setView('dj');
   }, []);
 
+  /**
+   * Manual refresh: everything the hook holds, plus a `refreshKey` bump for
+   * the views that only refetch when the panel opens — saved albums, the
+   * queue, stats. Without the bump those keep whatever they fetched on open,
+   * which is the stale half the user is looking at.
+   */
+  const handleRefresh = useCallback(async (): Promise<void> => {
+    setRefreshing(true);
+    setRefreshKey((k) => k + 1);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onRefresh]);
+
   /** Picking Liked Songs loads it into the main track list, so the panel
    *  closes the same way choosing a playlist does. */
   const handleSelectLikedSongs = useCallback((): void => {
@@ -259,6 +280,8 @@ function SpotifyOverlayImpl({
           onOpenQueue={handleOpenQueue}
           onOpenDj={handleOpenDj}
           refreshKey={refreshKey}
+          onRefresh={handleRefresh}
+          refreshing={refreshing}
         />
       )}
       {view === 'album' && selectedAlbum && (

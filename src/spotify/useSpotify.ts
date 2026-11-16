@@ -1079,6 +1079,12 @@ export function useSpotify() {
 
   /* ─── Polling: keep playback state fresh ─── */
 
+  /** Bumped to force the poll loop to restart, which fires a tick straight
+   *  away — see `refreshAll`. Restarting also clears any 429/503 backoff, so
+   *  a manual refresh during rate limiting spends one request to find out
+   *  whether it is over. */
+  const [pollNonce, setPollNonce] = useState(0);
+
   useEffect(() => {
     if (!state.authed) return;
     let cancelled = false;
@@ -1236,7 +1242,7 @@ export function useSpotify() {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [state.authed, isActive]);
+  }, [state.authed, isActive, pollNonce]);
 
   /* ─── Polling: pick up playlist edits made elsewhere ─── */
 
@@ -1355,6 +1361,24 @@ export function useSpotify() {
     };
   }, [state.authed, currentTrackId]);
 
+  /**
+   * Everything the app holds from Spotify, re-fetched on demand.
+   *
+   * The background refreshes are all conditional — the playlist list is only
+   * fetched at sign-in and after an edit we made ourselves, the open
+   * playlist re-pages only when its snapshot_id changes, and playback polls
+   * on a timer. So a change made in another Spotify client, or one Spotify
+   * reports late, can sit on screen with no way to ask for the truth. This
+   * is that way.
+   *
+   * Playlists and tracks run together; `refreshSelectedTracks` no-ops when
+   * nothing is selected or a page load is already in flight.
+   */
+  const refreshAll = useCallback(async (): Promise<void> => {
+    setPollNonce((n) => n + 1);
+    await Promise.all([loadPlaylists(), refreshSelectedTracks()]);
+  }, [loadPlaylists, refreshSelectedTracks]);
+
   return {
     ...state,
     saveClientId,
@@ -1385,6 +1409,7 @@ export function useSpotify() {
     renamePlaylist,
     deletePlaylist,
     moveTrackInPlaylist,
+    refreshAll,
   };
 }
 

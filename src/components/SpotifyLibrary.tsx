@@ -53,6 +53,10 @@ interface Props {
   onOpenDj: () => void;
   /** Bumped when the panel opens — used to refetch saved albums on each open. */
   refreshKey: number;
+  /** Re-fetch everything, including this panel's own saved albums — the
+   *  parent bumps `refreshKey` as part of it. */
+  onRefresh: () => void;
+  refreshing: boolean;
 }
 
 const SEARCH_DEBOUNCE_MS = 280;
@@ -80,6 +84,8 @@ function SpotifyLibraryImpl({
   onOpenQueue,
   onOpenDj,
   refreshKey,
+  onRefresh,
+  refreshing,
 }: Props) {
   const [filter, setFilter] = useState<Filter>('all');
   const [savedAlbums, setSavedAlbums] = useState<SpotifyAlbum[]>([]);
@@ -465,6 +471,17 @@ function SpotifyLibraryImpl({
           title="What should follow this?"
         >
           <span>DJ</span>
+        </button>
+        <button
+          type="button"
+          className="sp-library-queue-btn sp-library-refresh-btn"
+          onClick={onRefresh}
+          disabled={refreshing}
+          data-spinning={refreshing ? 'true' : 'false'}
+          aria-label="Refresh from Spotify"
+          title="Re-fetch playlists, the open playlist, albums, queue and playback"
+        >
+          <IconRefresh />
         </button>
       </div>
 
@@ -1184,6 +1201,15 @@ function IconSearch() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <circle cx="11" cy="11" r="7" />
       <line x1="20" y1="20" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
+
+function IconRefresh() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M20 11a8 8 0 1 0-.6 4" />
+      <polyline points="20 4 20 11 13 11" />
     </svg>
   );
 }

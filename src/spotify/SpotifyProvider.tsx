@@ -104,6 +104,10 @@ export interface LibraryContextValue {
   /** Unfollow, which is how Spotify models deleting your own playlist. */
   deletePlaylist: (playlist: SpotifyPlaylist) => Promise<void>;
   moveTrackInPlaylist: (from: number, to: number) => Promise<void>;
+  /** Re-fetch the playlist list, the open playlist's tracks and playback,
+   *  for changes made in another Spotify client that our conditional
+   *  background refreshes wouldn't pick up. */
+  refreshAll: () => Promise<void>;
 }
 
 const LibraryContext = createContext<LibraryContextValue | null>(null);
@@ -191,6 +195,7 @@ export function SpotifyProvider({ children }: ProviderProps) {
       renamePlaylist: spotify.renamePlaylist,
       deletePlaylist: spotify.deletePlaylist,
       moveTrackInPlaylist: spotify.moveTrackInPlaylist,
+      refreshAll: spotify.refreshAll,
     }),
     [
       spotify.clientId,
@@ -224,6 +229,7 @@ export function SpotifyProvider({ children }: ProviderProps) {
       spotify.renamePlaylist,
       spotify.deletePlaylist,
       spotify.moveTrackInPlaylist,
+      spotify.refreshAll,
     ],
   );
 

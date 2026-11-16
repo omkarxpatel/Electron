@@ -2125,6 +2125,29 @@
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
+/* Icon-only, so it doesn't carry the label padding its siblings need. */
+.sp-library-refresh-btn {
+  padding: 0;
+  width: 36px;
+  justify-content: center;
+}
+
+.sp-library-refresh-btn:disabled {
+  cursor: default;
+  /* Not dimmed: the arrow is spinning, which already says "working", and
+     fading it out reads as "unavailable" instead. */
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
+.sp-library-refresh-btn[data-spinning='true'] svg {
+  animation: sp-refresh-spin 700ms linear infinite;
+}
+
+@keyframes sp-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
 .sp-library-queue-btn:hover {
   background: var(--accent-soft-bg);
   border-color: var(--accent-border);
