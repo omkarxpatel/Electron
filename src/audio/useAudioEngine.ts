@@ -8,6 +8,7 @@ import type { AiEffectTargets } from './useAiEnhancer';
 import { createLoudnessTap, type LoudnessTap } from './loudnessTap';
 import { createOnsetTap, type OnsetTap } from './onsetTap';
 import { buildBandCoefs, logSpacedFrequencies, responseCurveDb } from './biquadResponse';
+import { useDeviceReturn } from './useDeviceReturn';
 
 interface AudioEngineState {
   analyser: AnalyserNode | null;
@@ -50,6 +51,10 @@ interface AudioEngineState {
 }
 
 const PARAM_RAMP = 0.02; // 20 ms smoothing on parameter changes — avoids zipper noise
+
+/** Prefix on the error a failed setSinkId leaves, so the re-apply on device
+ *  return can clear its own message without clearing anyone else's. */
+const SINK_ERROR_PREFIX = 'Could not switch output device: ';
 
 /**
  * Build and manage the audio graph:
@@ -632,13 +637,6 @@ export function useAudioEngine(
 
     return () => {
       cancelled = true;
-      try {
-        if (destinationConnectedRef.current && analyserRef.current && ctxRef.current) {
-          analyserRef.current.disconnect(ctxRef.current.destination);
-        }
-      } catch {
-        // ignore
-      }
       analyserRef.current?.disconnect();
       analyserLRef.current?.disconnect();
       analyserRRef.current?.disconnect();
@@ -648,6 +646,10 @@ export function useAudioEngine(
       visualSplitterRef.current?.disconnect();
       visualAnalyserLRef.current?.disconnect();
       visualAnalyserRRef.current?.disconnect();
+      // Takes masterGain off ctx.destination too, when Live had it there. A
+      // separate `analyser.disconnect(ctx.destination)` used to sit above this
+      // for that job, but the analyser was never wired to the destination, so
+      // it threw on every teardown into a catch that hid it.
       masterGainRef.current?.disconnect();
       silentSinkRef.current?.disconnect();
       duckGainRef.current?.disconnect();
@@ -945,9 +947,32 @@ export function useAudioEngine(
     if (!ctx || typeof ctx.setSinkId !== 'function') return;
     ctx.setSinkId(outputDeviceId ?? '').catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
-      setError(`Could not switch output device: ${message}`);
+      setError(`${SINK_ERROR_PREFIX}${message}`);
     });
   }, [outputDeviceId, analyser]);
+
+  /* The effect above only runs when the selection or the graph changes, and a
+   * device leaving and coming back changes neither — so AirPods reconnecting
+   * left the context pointed at a sink that had been torn down, with nothing
+   * ever applying it again. Re-apply on return only: on a healthy context
+   * setSinkId is an audible glitch, so it must not run for every devicechange
+   * on the machine. See useDeviceReturn. */
+  useDeviceReturn('audiooutput', outputDeviceId, () => {
+    const ctx = ctxRef.current as AudioContextWithSink | null;
+    if (!ctx || typeof ctx.setSinkId !== 'function' || !outputDeviceId) return;
+    ctx
+      .setSinkId(outputDeviceId)
+      .then(() => {
+        // Only clear the error this path could have caused. The slot is
+        // shared, and a failed device open must not be wiped by a sink that
+        // happened to come back.
+        setError((e) => (e?.startsWith(SINK_ERROR_PREFIX) ? null : e));
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`${SINK_ERROR_PREFIX}${message}`);
+      });
+  });
 
   /* ─────────────────────────────────────────────────────────────
      Context liveness.

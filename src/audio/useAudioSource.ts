@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isDevicePresent, useDeviceReturn } from './useDeviceReturn';
 
 /**
  * Selects WHERE the audio comes from. Two paths:
@@ -54,6 +55,11 @@ const MAX_RECOVERIES = 3;
 /** A track that stays healthy this long has recovered for real, so the
  *  consecutive-attempt counter resets. */
 const HEALTHY_RESET_MS = 10_000;
+/** Shown when the input device has left the list, as opposed to one that is
+ *  present but not responding. The promise in the second sentence is kept by
+ *  useDeviceReturn, which re-acquires the same device when it reappears. */
+const INPUT_GONE_MESSAGE =
+  'The audio input device was disconnected. It will reconnect on its own when the device is back.';
 
 interface State {
   stream: MediaStream | null;
@@ -208,10 +214,26 @@ export function useAudioSource() {
 
     let muteTimer: number | null = null;
     let healthyTimer: number | null = null;
+    let disposed = false;
 
-    const recover = () => {
+    const recover = async () => {
       if (muteTimer !== null) window.clearTimeout(muteTimer);
       muteTimer = null;
+      // A device that has left the list has nothing to reconnect to. This
+      // used to try anyway: each attempt was an `exact` getUserMedia that
+      // could only reject, it spent the whole MAX_RECOVERIES budget doing so,
+      // and the message it ended on blamed the device for "not responding".
+      // Worse, a rejected attempt never swaps the stream, so this effect never
+      // re-ran and nothing was left to notice the device coming back. Say what
+      // actually happened, keep the budget, and let useDeviceReturn below pick
+      // it up when it reappears. `null` (the list couldn't be read) falls
+      // through to trying, which is what happened before.
+      if ((await isDevicePresent('audioinput', deviceId)) === false) {
+        if (disposed) return;
+        setState((s) => ({ ...s, error: INPUT_GONE_MESSAGE }));
+        return;
+      }
+      if (disposed) return;
       if (recoveriesRef.current >= MAX_RECOVERIES) {
         setState((s) => ({
           ...s,
@@ -225,12 +247,12 @@ export function useAudioSource() {
       void useDevice(deviceId);
     };
 
-    const onEnded = () => recover();
+    const onEnded = () => void recover();
     const onMute = () => {
       if (muteTimer !== null) return;
       muteTimer = window.setTimeout(() => {
         muteTimer = null;
-        if (track.muted || track.readyState === 'ended') recover();
+        if (track.muted || track.readyState === 'ended') void recover();
       }, MUTE_GRACE_MS);
     };
     const onUnmute = () => {
@@ -243,7 +265,7 @@ export function useAudioSource() {
     track.addEventListener('mute', onMute);
     track.addEventListener('unmute', onUnmute);
 
-    if (track.readyState === 'ended') recover();
+    if (track.readyState === 'ended') void recover();
     else if (track.muted) onMute();
     else {
       healthyTimer = window.setTimeout(() => {
@@ -253,6 +275,7 @@ export function useAudioSource() {
     }
 
     return () => {
+      disposed = true;
       if (muteTimer !== null) window.clearTimeout(muteTimer);
       if (healthyTimer !== null) window.clearTimeout(healthyTimer);
       track.removeEventListener('ended', onEnded);
@@ -260,6 +283,25 @@ export function useAudioSource() {
       track.removeEventListener('unmute', onUnmute);
     };
   }, [state.stream, state.mode, state.deviceId, useDevice]);
+
+  /* The other half of the watchdog: the device leaving and coming back.
+   *
+   * Watched as long as a device is the chosen source, including while its
+   * stream is dead — recovery deliberately leaves `state.deviceId` on the
+   * user's choice rather than clearing it, which is what makes this able to
+   * find it again. Re-acquired only if the track really is dead: a Bluetooth
+   * blip can drop a device from the list and re-add it while capture carries
+   * on, and re-acquiring a live input rebuilds the whole graph for nothing.
+   * The budget starts fresh because the device genuinely came back; failures
+   * against the version of it that left say nothing about this one. */
+  const sourceDeviceId = state.mode === 'device' ? state.deviceId : null;
+  useDeviceReturn('audioinput', sourceDeviceId, () => {
+    if (!sourceDeviceId) return;
+    const track = streamRef.current?.getAudioTracks()[0];
+    if (track && track.readyState === 'live' && !track.muted) return;
+    recoveriesRef.current = 0;
+    void useDevice(sourceDeviceId);
+  });
 
   const disconnect = useCallback(() => {
     swap(null);

@@ -68,9 +68,18 @@ function OutputDeviceSelectorImpl({
   inputDeviceId,
 }: Props) {
   const [allDevices, setAllDevices] = useState<MediaDeviceInfo[]>([]);
+  /** Whether a listing has landed yet. `allDevices` starts empty, and until
+   *  the first enumeration resolves an empty list means "not asked", not
+   *  "gone" — without this the chosen device would flash as disconnected on
+   *  every launch. */
+  const [listed, setListed] = useState(false);
   const [open, setOpen] = useState(false);
   const [permissionNeeded, setPermissionNeeded] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  /** The chosen device's name, from the last time it was in the list. Once it
+   *  disconnects it is no longer enumerated, so this is the only place left
+   *  to read its name from. */
+  const lastSeenRef = useRef<{ id: string; label: string } | null>(null);
 
   const close = useCallback(() => setOpen(false), []);
   useDismissOnOutside(rootRef, open, close);
@@ -81,6 +90,7 @@ function OutputDeviceSelectorImpl({
       const all = await navigator.mediaDevices.enumerateDevices();
       if (cancelled) return;
       setAllDevices(all);
+      setListed(true);
       const outputs = all.filter((d) => d.kind === 'audiooutput');
       setPermissionNeeded(outputs.length > 0 && outputs.every((d) => !d.label));
     }
@@ -131,9 +141,29 @@ function OutputDeviceSelectorImpl({
 
   const note = pinNote(sinkVolume);
   const selected = devices.find((d) => d.deviceId === outputDeviceId);
+  if (selected?.label && outputDeviceId) {
+    lastSeenRef.current = { id: outputDeviceId, label: selected.label };
+  }
+  const lastSeenLabel =
+    lastSeenRef.current && lastSeenRef.current.id === outputDeviceId ? lastSeenRef.current.label : null;
+
+  /* A device is chosen and the list, read with permission, doesn't have it:
+   * it disconnected. This used to fall through to "System default", which is
+   * not what the app was doing — it was still set to the missing device, and
+   * still is, so that it can go back to it on reconnect (see the device-return
+   * re-apply in useAudioEngine). Telling someone whose AirPods just died that
+   * they are on the system default is exactly the wrong thing to show them. */
+  const missing = outputDeviceId !== null && listed && !permissionNeeded && !selected;
+  const missingLabel = `${lastSeenLabel ?? 'Saved output'} — disconnected`;
+
   const buttonLabel = selected
     ? selected.label || `Output (${selected.deviceId.slice(0, 8)})`
-    : 'System default';
+    : outputDeviceId === null
+      ? 'System default'
+      : missing
+        ? missingLabel
+        : // Chosen, but not listed yet. Neutral rather than a claim either way.
+          (lastSeenLabel ?? 'Output');
 
   return (
     <div className="audio-source-selector" ref={rootRef}>
@@ -190,6 +220,21 @@ function OutputDeviceSelectorImpl({
                 System default
                 {defaultBlocked && <span className="source-row-note">{FEEDBACK_NOTE}</span>}
               </button>
+              {/* The chosen device, while it's gone. Shown so the menu agrees
+                  with the button rather than offering no row selected at all,
+                  and disabled because there is nothing to pick — it is
+                  already the choice. */}
+              {missing && (
+                <button
+                  role="option"
+                  aria-selected
+                  disabled
+                  title="Not connected. Audio goes back to this device when it reconnects."
+                  className="source-row is-active is-blocked"
+                >
+                  {missingLabel}
+                </button>
+              )}
               {devices.length === 0 ? (
                 <div className="source-row source-row-empty">No output devices</div>
               ) : (
