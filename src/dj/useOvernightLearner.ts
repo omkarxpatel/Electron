@@ -52,6 +52,17 @@ const RATE_LIMIT_RETRIES = 3;
 /** `request()` throws on a 429 without its Retry-After header, so every
  *  rate limit waits this long. */
 const RATE_LIMIT_WAIT_MS = 5_000;
+/** `request()` has no timeout, so a hung fetch would leave a run starting or
+ *  ending forever, with the Mac held awake. These fire from the moment the
+ *  effect runs, whether or not the call ever answers, and allow for every
+ *  rate-limit retry. */
+const CONFIRM_BACKSTOP_MS = CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_LIMIT_WAIT_MS;
+const PAUSE_BACKSTOP_MS = PAUSE_CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_LIMIT_WAIT_MS;
+/** A 204 from /me/player counts only when it is still a 204 this much later. */
+const NULL_CONFIRM_MS = 1_000;
+/** Past this after a song's estimated end, Spotify stopping or autoplaying
+ *  is the song finishing, not someone taking over. */
+const NATURAL_END_GRACE_MS = 3_000;
 /** A slice that runs to the track's end stops this far short of it. Past the
  *  end Spotify stops or autoplays another song: measured, that is the next
  *  song folded into this one; polled, it reads as someone taking over. */
@@ -133,9 +144,16 @@ function createRunner(
    *  flight can land first, and the play then starts music after the poll
    *  has already seen `is_playing: false` and unmuted. */
   let mutations: Promise<unknown> = Promise.resolve();
-  /** The device of the run's first confirmation. Undefined until then. */
-  let deviceId: string | null | undefined;
-  let confirmedAt: { progressMs: number; atMs: number } | null = null;
+  /** The Computer device the last preflight found, and the one this run
+   *  plays on. Every play, seek and pause names it: left to Spotify's active
+   *  device, a run could start or carry on on a speaker, out loud. */
+  let preflightDevice: string | null = null;
+  let deviceId: string | null = null;
+  let confirmedAt: { trackId: string; progressMs: number; atMs: number } | null = null;
+  /** When this song's attempt began. A record older than that was written by
+   *  an earlier play, so it says nothing about whether this run measured it. */
+  let songStartedAtMs = 0;
+  let nullSinceMs: number | null = null;
   /** The song the run last confirmed, and what the player last reported. A
    *  confirm poll reading either is the player lagging our command, not
    *  someone else's music. */
@@ -170,6 +188,10 @@ function createRunner(
     cancelAll();
     silentSince = null;
     pauseLanded = false;
+    nullSinceMs = null;
+    if (next.kind === 'running' && next.step === 'starting' && next.section === 0 && next.attempt === 0) {
+      songStartedAtMs = Date.now();
+    }
     const alive = aliveFor(step);
     for (const e of effects) run(e, prev, alive);
     watch(alive);
@@ -209,6 +231,10 @@ function createRunner(
         return;
       case 'reset-loudness':
         d.loudnessTapRef.current?.reset();
+        // Until this middle is snapshotted the ref held the previous song's
+        // figure, and a run interrupted after 20 s of it committed this song
+        // with that one. Null commits no loudness rather than the wrong one.
+        d.learnLufsRef.current = null;
         return;
       case 'snapshot-loudness':
         d.learnLufsRef.current = d.loudnessTapRef.current?.meter.integratedLufs() ?? null;
@@ -221,12 +247,16 @@ function createRunner(
       case 'seek':
         mutate(alive, () => seek(e.positionMs, device())).catch((err) => failed(err, alive));
         return;
-      case 'pause-spotify':
+      case 'pause-spotify': {
+        const deadline = Date.now() + PAUSE_BACKSTOP_MS;
+        later(alive, PAUSE_BACKSTOP_MS, () => dispatch({ kind: 'pause-failed' }));
         void mutate(alive, () => pause(device()))
           .catch((err) => failed(err, alive))
-          .then(() => confirmPaused(alive, Date.now() + PAUSE_CONFIRM_TIMEOUT_MS));
+          .then(() => confirmPaused(alive, deadline));
         return;
+      }
       case 'await-confirm':
+        later(alive, CONFIRM_BACKSTOP_MS, () => dispatch({ kind: 'confirm-timeout' }));
         // After the play or seek has answered, or the first poll reads the
         // player as it was before the command.
         void mutations.then(() => {
@@ -249,10 +279,13 @@ function createRunner(
         return;
       }
       case 'mark-learned': {
-        if (d.markLearned(e.trackId, LEARN_VERSION)) return;
-        // No record behind it: the enhancer refused the commit (under 20 s of
-        // the middle heard, AI Enhance or Remember tracks switched off). A
-        // marker would make every later plan skip a song never learned.
+        // Only a record written during this attempt. The enhancer may have
+        // refused the commit (under 20 s of the middle heard, AI Enhance or
+        // Remember tracks switched off), and a record from an earlier play
+        // would still let markLearned succeed. A marker would make every
+        // later plan skip a song this run never measured.
+        const stored = d.peek(e.trackId);
+        if (stored && stored.updated >= songStartedAtMs && d.markLearned(e.trackId, LEARN_VERSION)) return;
         if (state.kind !== 'running' && state.kind !== 'ending') return;
         const name = prev.kind === 'running' ? prev.queue[prev.index].name : e.trackId;
         const t = state.tally;
@@ -271,7 +304,7 @@ function createRunner(
    *  is known to be ours, and the player may still show what was playing
    *  before Start. */
   function foreign(p: SpotifyPlaybackState, trackId: string, before: typeof lastSeen): boolean {
-    if (deviceId === undefined) return false;
+    if (lastConfirmedId === null) return false;
     const dev = p.device?.id ?? null;
     if (dev !== deviceId && dev !== before?.deviceId) return true;
     if (!p.item) return false;
@@ -280,6 +313,16 @@ function createRunner(
 
   function saw(p: SpotifyPlaybackState | null): void {
     if (p) lastSeen = { itemId: p.item?.id ?? null, deviceId: p.device?.id ?? null };
+  }
+
+  /** Whether the player has been absent (204) for two reads at least
+   *  NULL_CONFIRM_MS apart. One 204 is a blip as often as a crash: alone it
+   *  paused a run, or let one unmute on a guess. */
+  function goneFor(p: SpotifyPlaybackState | null): boolean {
+    if (p) { nullSinceMs = null; return false; }
+    const now = Date.now();
+    nullSinceMs ??= now;
+    return now - nullSinceMs >= NULL_CONFIRM_MS;
   }
 
   async function confirmPoll(
@@ -291,6 +334,9 @@ function createRunner(
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
       saw(p);
+      // A client that has gone away pauses the run, rather than failing
+      // every song left as "did not start playback".
+      if (goneFor(p)) { dispatch({ kind: 'device-lost' }); return; }
       const snap = {
         itemId: p?.item?.id ?? null,
         linkedFromId: p?.item?.linked_from?.id ?? null,
@@ -298,9 +344,8 @@ function createRunner(
         progressMs: p?.progress_ms ?? 0,
       };
       if (p && playerMatches(snap, e.trackId, e.fromMs, e.toMs)) {
-        if (deviceId === undefined) deviceId = p.device?.id ?? null;
         lastConfirmedId = e.trackId;
-        confirmedAt = { progressMs: snap.progressMs, atMs: Date.now() };
+        confirmedAt = { trackId: e.trackId, progressMs: snap.progressMs, atMs: Date.now() };
         dispatch({ kind: 'confirmed' });
         return;
       }
@@ -318,8 +363,10 @@ function createRunner(
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
       saw(p);
-      // No session at all (a 204) is nothing playing, as much as a pause is.
-      if (!p || !p.is_playing) {
+      // No session at all (a 204 that stays one) is nothing playing, as much
+      // as a pause is.
+      const gone = goneFor(p);
+      if (p ? !p.is_playing : gone) {
         pauseLanded = true;
         dispatch({ kind: 'spotify-paused' });
         return;
@@ -328,7 +375,8 @@ function createRunner(
       if (!alive()) return;
       if (isSignedOut(err)) { dispatch({ kind: 'signed-out' }); return; }
     }
-    if (Date.now() >= deadline) { dispatch({ kind: 'pause-failed' }); return; }
+    // The backstop timer dispatches pause-failed; this only stops polling.
+    if (Date.now() >= deadline) return;
     later(alive, CONFIRM_POLL_MS, () => void confirmPaused(alive, deadline));
   }
 
@@ -361,9 +409,11 @@ function createRunner(
   function verdict(p: SpotifyPlaybackState | null): 'takeover' | 'device-lost' | null {
     const s = state;
     if (s.kind !== 'running' && s.kind !== 'paused') return null;
-    if (!p) return 'device-lost';
-    const elsewhere =
-      !itemIs(p, s.queue[s.index].id) || (deviceId !== undefined && (p.device?.id ?? null) !== deviceId);
+    if (goneFor(p)) return 'device-lost';
+    if (!p) return null;
+    const item = s.queue[s.index];
+    const otherDevice = (p.device?.id ?? null) !== deviceId;
+    const elsewhere = !itemIs(p, item.id) || otherDevice;
     if (s.kind === 'paused' && s.reason === 'silence') {
       // We paused it. Until Spotify has shown it stopped, playing is our own
       // song winding down, or a pause that never took; calling that a
@@ -373,6 +423,14 @@ function createRunner(
         return null;
       }
       return p.is_playing || elsewhere ? 'takeover' : null;
+    }
+    if (s.kind === 'paused' && s.reason === 'input-lost' && confirmedAt?.trackId === item.id) {
+      // Paused for a lost input, our song plays on to its end. After that,
+      // Spotify stopping or autoplaying is the song finishing; read as a
+      // takeover it would kill the auto-resume and the 10-minute give-up and
+      // hold the Mac awake all night. Only another device is someone else.
+      const endsAtMs = confirmedAt.atMs + (item.durationMs - confirmedAt.progressMs) + NATURAL_END_GRACE_MS;
+      if (Date.now() >= endsAtMs) return otherDevice ? 'takeover' : null;
     }
     return elsewhere || !p.is_playing ? 'takeover' : null;
   }
@@ -425,15 +483,22 @@ function createRunner(
   return {
     dispatch,
     getState: (): LearnState => state,
+    /** Records the device a preflight found, or null when it found none. */
+    offerDevice(id: string | null): void {
+      preflightDevice = id;
+    },
+    /** A no-op unless the last preflight found a Computer device: with none
+     *  to name, the run's calls would go to whatever device is active. */
     start(plan: LearnPlan, fixSettings: boolean): void {
       if (state.kind !== 'idle' && state.kind !== 'done') return;
+      if (!preflightDevice) return;
       const d = depsRef.current;
       restore = fixSettings ? { aiEnhance: d.aiEnhance, rememberTracks: d.rememberTracks } : null;
       if (fixSettings) {
         d.setAiEnhance(true);
         d.setRememberTracks(true);
       }
-      deviceId = undefined;
+      deviceId = preflightDevice;
       confirmedAt = null;
       lastConfirmedId = null;
       lastSeen = null;
@@ -485,13 +550,15 @@ export function useOvernightLearner(deps: LearnerDeps): OvernightLearner {
       const devices = await rateLimited(getDevices, () => true);
       // Only the desktop client plays into BlackHole. A phone or speaker as
       // the active device would play the whole run out loud.
-      const ok = devices.some((x) => x.is_active && !!x.id && !x.is_restricted && x.type === 'Computer');
-      if (!ok) failing.push('spotify-device');
+      const found = devices.find((x) => x.is_active && !!x.id && !x.is_restricted && x.type === 'Computer');
+      runner.offerDevice(found?.id ?? null);
+      if (!found) failing.push('spotify-device');
     } catch {
+      runner.offerDevice(null);
       failing.push('spotify-device');
     }
     return failing;
-  }, []);
+  }, [runner]);
 
   const scannedRef = useRef(new Map<string, { atMs: number; candidates: LearnCandidate[] }>());
   const plan = useCallback(async (playlistIds: string[]): Promise<LearnPlan> => {
