@@ -1475,8 +1475,22 @@ console.log('\nOvernight learner: run');
     return (machine.learnStep(s, { kind: 'resume' }).state !== s) === machine.canResume(reason);
   }));
   check('an empty plan never mutes', (() => { const r = run([{ kind: 'start', plan: { queue: [], skipped: [] } }]); return r.state.kind === 'done' && r.effects.length === 0; })());
-  check('a relinked track still confirms', machine.playerMatches({ itemId: 'm', linkedFromId: 'a', isPlaying: true, progressMs: 500 }, 'a', 0, 15_000));
-  check('a paused player does not confirm', !machine.playerMatches({ itemId: 'a', linkedFromId: null, isPlaying: false, progressMs: 500 }, 'a', 0, 15_000));
+  const asked = { id: 'a', name: 'a', durationMs: 200_000 };
+  check('a relinked track still confirms', machine.playerMatches({ itemId: 'm', linkedFromId: 'a', itemName: null, itemDurationMs: null, isPlaying: true, progressMs: 500 }, asked, 0, 15_000));
+  check('a paused player does not confirm', !machine.playerMatches({ itemId: 'a', linkedFromId: null, itemName: null, itemDurationMs: null, isPlaying: false, progressMs: 500 }, asked, 0, 15_000));
+  // The first real run: Spotify played every song as its market's copy, under
+  // another id, and since February 2026 a development-mode app gets no
+  // linked_from to say so. Every song failed "Spotify did not start playback"
+  // while it played. These ids are that run's.
+  const solas = { id: '78jQYTgFXWFCP43dKBHhaU', name: 'Solas - Piano Version', durationMs: 200_000 };
+  const relinked = (o = {}) => ({
+    itemId: '1IdNIqCq0a6DsBuzk1skrE', linkedFromId: null, itemName: '  solas - PIANO version ', itemDurationMs: 201_500,
+    isPlaying: true, progressMs: 500, ...o,
+  });
+  check('a relinked track with no linked_from confirms by name and length', machine.playerMatches(relinked(), solas, 0, 15_000));
+  check('a relinked read with a different name does not confirm', !machine.playerMatches(relinked({ itemName: 'Solas' }), solas, 0, 15_000));
+  check('a relinked read 5 s longer does not confirm', !machine.playerMatches(relinked({ itemDurationMs: 205_000 }), solas, 0, 15_000));
+  check('a relinked read that is not playing does not confirm', !machine.playerMatches(relinked({ isPlaying: false }), solas, 0, 15_000));
 
   // Fuzz: the one unrecoverable mistake is unmuting while Spotify might still
   // be playing, so every unmute must trace to a pause report that ends a run,
@@ -1585,8 +1599,9 @@ console.log('\nOvernight learner: reading the player');
 {
   // What the hook's polls conclude from GET /me/player. A wrong "paused"
   // unmutes into a song at night; a wrong "takeover" lets Stop do the same.
-  const read = (o = {}) => ({ itemId: 'a', linkedFromId: null, isPlaying: false, progressMs: 1000, deviceId: 'mac', ...o });
+  const read = (o = {}) => ({ itemId: 'a', linkedFromId: null, itemName: null, itemDurationMs: null, isPlaying: false, progressMs: 1000, deviceId: 'mac', ...o });
   const playing = (o = {}) => read({ isPlaying: true, ...o });
+  const A = { id: 'a', name: 'A', durationMs: 200_000 };
   const confirmPause = (reads) => {
     let since = null;
     let verdict = null;
@@ -1608,14 +1623,14 @@ console.log('\nOvernight learner: reading the player');
     for (const [atMs, r] of reads) ({ verdict, nullSinceMs: since } = machine.takeoverVerdict(watch, r, 'mac', atMs, since));
     return verdict;
   };
-  const listening = { kind: 'listening', trackId: 'a' };
+  const listening = { kind: 'listening', track: A, playedId: 'a' };
   check('takeover: one 204 is a blip', afterNulls(listening, [[0, null]]) === null);
   check('takeover: two 204s under a second apart are still a blip', afterNulls(listening, [[0, null], [999, null]]) === null);
   check('takeover: two 204s a second apart are a lost device', afterNulls(listening, [[0, null], [1000, null]]) === 'device-lost');
   check('takeover: a read in between clears the 204 count', afterNulls(listening, [[0, null], [500, playing()], [1000, null]]) === null);
   check('takeover: two 204s are a lost device while paused or confirming too',
-    afterNulls({ kind: 'paused-silence', trackId: 'a', pauseLanded: false }, [[0, null], [1000, null]]) === 'device-lost' &&
-    afterNulls({ kind: 'confirming', trackId: 'a', lastConfirmedId: null, before: null }, [[0, null], [1000, null]]) === 'device-lost');
+    afterNulls({ kind: 'paused-silence', track: A, playedId: 'a', pauseLanded: false }, [[0, null], [1000, null]]) === 'device-lost' &&
+    afterNulls({ kind: 'confirming', track: A, lastConfirmedId: null, before: null }, [[0, null], [1000, null]]) === 'device-lost');
 
   check('listening: our song playing on our device is ours', verdictOf(listening, playing()) === null);
   check('listening: a relinked copy of our song is ours', verdictOf(listening, playing({ itemId: 'm', linkedFromId: 'a' })) === null);
@@ -1623,7 +1638,7 @@ console.log('\nOvernight learner: reading the player');
     verdictOf(listening, read()) === 'takeover' && verdictOf(listening, playing({ itemId: 'z' })) === 'takeover' &&
     verdictOf(listening, playing({ deviceId: 'phone' })) === 'takeover');
 
-  const silent = (pauseLanded) => ({ kind: 'paused-silence', trackId: 'a', pauseLanded });
+  const silent = (pauseLanded) => ({ kind: 'paused-silence', track: A, playedId: 'a', pauseLanded });
   check('paused for silence: before our pause lands, playing is our song winding down',
     verdictOf(silent(false), playing()) === null && verdictOf(silent(false), playing({ itemId: 'z', deviceId: 'phone' })) === null);
   check('paused for silence: once it lands, any playing is a takeover', verdictOf(silent(true), playing()) === 'takeover');
@@ -1632,7 +1647,7 @@ console.log('\nOvernight learner: reading the player');
     verdictOf(silent(true), read({ itemId: 'z' })) === 'takeover' && verdictOf(silent(true), read({ deviceId: 'phone' })) === 'takeover');
 
   // Confirmed 80 s into a 200 s song at t=0: it ends at 120 s, plus 3 s grace.
-  const inputLost = { kind: 'paused-input-lost', trackId: 'a', durationMs: 200_000, confirmedAt: { trackId: 'a', progressMs: 80_000, atMs: 0 } };
+  const inputLost = { kind: 'paused-input-lost', track: A, playedId: 'a', confirmedAt: { trackId: 'a', progressMs: 80_000, atMs: 0 } };
   check('paused for input: before the song ends, our song playing on is ours', verdictOf(inputLost, playing(), 60_000) === null);
   check('paused for input: before the song ends, a pause, another song or device is a takeover',
     verdictOf(inputLost, read(), 60_000) === 'takeover' && verdictOf(inputLost, playing({ itemId: 'z' }), 60_000) === 'takeover' &&
@@ -1646,7 +1661,7 @@ console.log('\nOvernight learner: reading the player');
 
   // Requesting b; the run last confirmed a; the player showed y on the Mac
   // when the command went out.
-  const confirming = (o = {}) => ({ kind: 'confirming', trackId: 'b', lastConfirmedId: 'a', before: { itemId: 'y', deviceId: 'mac' }, ...o });
+  const confirming = (o = {}) => ({ kind: 'confirming', track: { id: 'b', name: 'B', durationMs: 200_000 }, lastConfirmedId: 'a', before: { itemId: 'y', deviceId: 'mac' }, ...o });
   check('confirming: nothing is judged before the run first confirms',
     verdictOf(confirming({ lastConfirmedId: null }), playing({ itemId: 'z', deviceId: 'phone' })) === null);
   check('confirming: another device is a takeover', verdictOf(confirming(), playing({ itemId: 'b', deviceId: 'phone' })) === 'takeover' &&
@@ -1658,6 +1673,22 @@ console.log('\nOvernight learner: reading the player');
     verdictOf(confirming(), playing({ itemId: 'y' })) === null && verdictOf(confirming(), playing({ itemId: 'm', linkedFromId: 'b' })) === null);
   check('confirming: a song that is none of those is a takeover', verdictOf(confirming(), playing({ itemId: 'z' })) === 'takeover');
   check('confirming: a player with no item yet is not judged', verdictOf(confirming(), read({ itemId: null })) === null);
+
+  // A relinked song plays under an id the playlist never names. Once a
+  // confirmation has seen it, that id is the song; before one, its name and
+  // length are. Read as another item, it paused the run as a takeover.
+  const heardAs = { kind: 'listening', track: A, playedId: 'a2' };
+  check('listening: the id the player reported at confirmation is ours', verdictOf(heardAs, playing({ itemId: 'a2' })) === null);
+  check('listening: any other item is still a takeover', verdictOf(heardAs, playing({ itemId: 'z' })) === 'takeover');
+  check('confirming: a relinked copy of the requested song is the player lagging',
+    verdictOf({ kind: 'confirming', track: A, lastConfirmedId: 'p2', before: { itemId: 'p2', deviceId: 'mac' } },
+      read({ itemId: 'a2', itemName: 'a ', itemDurationMs: 201_000 })) === null);
+  check('paused for input: before its first confirmation, a relinked copy of the song is ours',
+    verdictOf({ kind: 'paused-input-lost', track: A, playedId: null, confirmedAt: { trackId: 'p2', progressMs: 0, atMs: 0 } },
+      playing({ itemId: 'a2', itemName: 'A', itemDurationMs: 200_000 }), 1_000) === null);
+  check('paused for input: the song\'s end is judged from the id the player reported',
+    verdictOf({ kind: 'paused-input-lost', track: A, playedId: 'a2', confirmedAt: { trackId: 'a2', progressMs: 80_000, atMs: 0 } },
+      playing({ itemId: 'z' }), 123_000) === null);
 }
 
 cleanup();

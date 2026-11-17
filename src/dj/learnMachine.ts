@@ -32,6 +32,12 @@ export const SECOND_READ_MS = 1_000;
 /** Past this after a song's estimated end, Spotify stopping or autoplaying
  *  is the song finishing, not someone taking over. */
 export const NATURAL_END_GRACE_MS = 3_000;
+/** How far a relinked copy's length may stray from the playlist's and still
+ *  be the song we asked for. Spotify plays a market's own copy under another
+ *  id, and since the February 2026 platform changes a development-mode app no
+ *  longer gets `linked_from` to say so: the first real run failed every song
+ *  "Spotify did not start playback" while each one played. */
+export const RELINK_DURATION_TOLERANCE_MS = 2_000;
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -43,6 +49,9 @@ export interface LearnTally {
   skipped: number;
   failed: Array<{ id: string; name: string; reason: string }>;
 }
+/** A song as confirmation knows it: the playlist's id, which track memory is
+ *  keyed by, and the name and length that still identify a relinked copy. */
+export type RequestedTrack = Pick<LearnQueueItem, 'id' | 'name' | 'durationMs'>;
 export type PauseReason = 'input-lost' | 'silence' | 'takeover' | 'device-lost';
 export type EndReason = 'finished' | 'stopped' | 'signed-out' | 'input-timeout';
 export type LearnState =
@@ -86,7 +95,7 @@ export type LearnEffect =
   | { kind: 'reset-onset' }
   | { kind: 'reset-loudness' }
   | { kind: 'snapshot-loudness' }
-  | { kind: 'await-confirm'; trackId: string; fromMs: number; toMs: number }
+  | { kind: 'await-confirm'; track: RequestedTrack; fromMs: number; toMs: number }
   | { kind: 'wait'; ms: number; then: 'section-elapsed' | 'committed' }
   | { kind: 'mark-learned'; trackId: string };
 export interface Step {
@@ -119,7 +128,12 @@ function beginSection(
       section === 0 || restart
         ? { kind: 'play', uri: item.uri, positionMs: w.startMs }
         : { kind: 'seek', positionMs: w.startMs },
-      { kind: 'await-confirm', trackId: item.id, fromMs: w.startMs, toMs: w.startMs + w.listenMs },
+      {
+        kind: 'await-confirm',
+        track: { id: item.id, name: item.name, durationMs: item.durationMs },
+        fromMs: w.startMs,
+        toMs: w.startMs + w.listenMs,
+      },
     ],
   };
 }
@@ -305,20 +319,33 @@ export function learnStep(state: LearnState, event: LearnEvent): Step {
 export interface PlayerSnapshot {
   itemId: string | null;
   linkedFromId: string | null;
+  itemName: string | null;
+  itemDurationMs: number | null;
   isPlaying: boolean;
   progressMs: number;
 }
 
-/** Spotify relinks a track to a regional copy, so the id it reports can be the
- *  replacement while the id we asked for sits in `linkedFromId`. A second of
- *  slack below the start covers a seek that lands just early. */
-export function playerMatches(p: PlayerSnapshot, trackId: string, fromMs: number, toMs: number): boolean {
+const sameName = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Whether the player's item is the track we asked for. Spotify relinks a
+ *  track to a regional copy, so the id it reports can be the replacement while
+ *  the id we asked for sits in `linkedFromId`, or, for a development-mode app
+ *  since February 2026, nowhere at all; then only the name and length say it
+ *  is ours. */
+function isRequested(p: PlayerSnapshot, track: RequestedTrack): boolean {
   return (
-    (p.itemId === trackId || p.linkedFromId === trackId) &&
-    p.isPlaying &&
-    p.progressMs >= fromMs - 1000 &&
-    p.progressMs < toMs
+    p.itemId === track.id ||
+    p.linkedFromId === track.id ||
+    (p.itemName !== null &&
+      p.itemDurationMs !== null &&
+      sameName(p.itemName, track.name) &&
+      Math.abs(p.itemDurationMs - track.durationMs) <= RELINK_DURATION_TOLERANCE_MS)
   );
+}
+
+/** A second of slack below the start covers a seek that lands just early. */
+export function playerMatches(p: PlayerSnapshot, track: RequestedTrack, fromMs: number, toMs: number): boolean {
+  return isRequested(p, track) && p.isPlaying && p.progressMs >= fromMs - 1000 && p.progressMs < toMs;
 }
 
 // ── Reading the player ───────────────────────────────────────────────────
@@ -358,28 +385,33 @@ export function pauseConfirmVerdict(
   return { verdict: nowMs - since >= SECOND_READ_MS ? 'paused' : 'not-yet', notPlayingSinceMs: since };
 }
 
-/** What a takeover poll is watching, and what it needs to know about it. */
+/** What a takeover poll is watching, and what it needs to know about it.
+ *  `track` is the song as the playlist names it. `playedId` is the id the
+ *  player reported when this song was last confirmed (null before that): a
+ *  relinked song plays under an id the playlist never names, and judged
+ *  against the playlist's id it read as someone else's music. */
 export type TakeoverWatch =
-  /** Running, listening to a confirmed slice of `trackId`. */
-  | { kind: 'listening'; trackId: string }
-  /** Waiting for a play or seek of `trackId` to show. `lastConfirmedId` is
-   *  the song the run last confirmed (null before its first) and `before`
-   *  what the player showed when the command went out. */
+  /** Running, listening to a confirmed slice of `track`. */
+  | { kind: 'listening'; track: RequestedTrack; playedId: string | null }
+  /** Waiting for a play or seek of `track` to show. `lastConfirmedId` is the
+   *  id the player reported for the song the run last confirmed (null before
+   *  its first) and `before` what the player showed when the command went
+   *  out. */
   | {
       kind: 'confirming';
-      trackId: string;
+      track: RequestedTrack;
       lastConfirmedId: string | null;
       before: { itemId: string | null; deviceId: string | null } | null;
     }
   /** Paused for silence. `pauseLanded`: `pauseConfirmVerdict` has said our
    *  pause took. */
-  | { kind: 'paused-silence'; trackId: string; pauseLanded: boolean }
+  | { kind: 'paused-silence'; track: RequestedTrack; playedId: string | null; pauseLanded: boolean }
   /** Paused for a lost input. `confirmedAt` is the run's last confirmation,
-   *  of whichever song. */
+   *  of whichever song, under the id the player reported. */
   | {
       kind: 'paused-input-lost';
-      trackId: string;
-      durationMs: number;
+      track: RequestedTrack;
+      playedId: string | null;
       confirmedAt: { trackId: string; progressMs: number; atMs: number } | null;
     };
 
@@ -400,7 +432,10 @@ export function takeoverVerdict(
   }
   const is = (verdict: TakeoverVerdict) => ({ verdict, nullSinceMs: null });
   const otherDevice = read.deviceId !== deviceId;
-  const elsewhere = otherDevice || !isTrack(read, watch.trackId);
+  // Once confirmed, only the id the player reported is this song, not any
+  // recording that shares its name; before that, the request is all we have.
+  const elsewhere = (w: { track: RequestedTrack; playedId: string | null }): boolean =>
+    otherDevice || !(w.playedId !== null ? isTrack(read, w.playedId) : isRequested(read, w.track));
   switch (watch.kind) {
     case 'confirming': {
       // Left to time out, the retry `play` and every later song's would take
@@ -413,7 +448,7 @@ export function takeoverVerdict(
       if (otherDevice && read.deviceId !== watch.before?.deviceId) return is('takeover');
       if (read.itemId === null) return is(null);
       const ours =
-        isTrack(read, watch.trackId) || isTrack(read, watch.lastConfirmedId) || read.itemId === watch.before?.itemId;
+        isRequested(read, watch.track) || isTrack(read, watch.lastConfirmedId) || read.itemId === watch.before?.itemId;
       return is(ours ? null : 'takeover');
     }
     case 'paused-silence':
@@ -421,20 +456,20 @@ export function takeoverVerdict(
       // song winding down, or a pause that never took; calling that a
       // takeover would let Stop unmute straight into it.
       if (!watch.pauseLanded) return is(null);
-      return is(read.isPlaying || elsewhere ? 'takeover' : null);
+      return is(read.isPlaying || elsewhere(watch) ? 'takeover' : null);
     case 'paused-input-lost': {
       // Our song plays on to its end. After that, Spotify stopping or
       // autoplaying is the song finishing; read as a takeover it would kill
       // the auto-resume and the 10-minute give-up and hold the Mac awake all
       // night. Only another device is someone else.
       const c = watch.confirmedAt;
-      if (c && c.trackId === watch.trackId) {
-        const endsAtMs = c.atMs + (watch.durationMs - c.progressMs) + NATURAL_END_GRACE_MS;
+      if (c && c.trackId === watch.playedId) {
+        const endsAtMs = c.atMs + (watch.track.durationMs - c.progressMs) + NATURAL_END_GRACE_MS;
         if (nowMs >= endsAtMs) return is(otherDevice ? 'takeover' : null);
       }
-      return is(elsewhere || !read.isPlaying ? 'takeover' : null);
+      return is(elsewhere(watch) || !read.isPlaying ? 'takeover' : null);
     }
     case 'listening':
-      return is(elsewhere || !read.isPlaying ? 'takeover' : null);
+      return is(elsewhere(watch) || !read.isPlaying ? 'takeover' : null);
   }
 }

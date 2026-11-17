@@ -144,6 +144,8 @@ function toRead(p: SpotifyPlaybackState | null): PlayerRead | null {
   return {
     itemId: p.item?.id ?? null,
     linkedFromId: p.item?.linked_from?.id ?? null,
+    itemName: p.item?.name ?? null,
+    itemDurationMs: p.item?.duration_ms ?? null,
     isPlaying: p.is_playing === true,
     progressMs: p.progress_ms ?? 0,
     deviceId: p.device?.id ?? null,
@@ -169,16 +171,22 @@ function createRunner(
    *  device, a run could start or carry on on a speaker, out loud. */
   let preflightDevice: string | null = null;
   let deviceId: string | null = null;
+  /** The run's last confirmation, under the id the player reported. */
   let confirmedAt: { trackId: string; progressMs: number; atMs: number } | null = null;
+  /** The id the player reported when this song was last confirmed, null
+   *  until it is. A relinked song plays under an id the playlist never names,
+   *  so every later check on this song compares against this; track memory
+   *  stays keyed by the playlist's id, which is what the DJ recalls by. */
+  let playedId: string | null = null;
   /** When this song's attempt began. A record older than that was written by
    *  an earlier play, so it says nothing about whether this run measured it. */
   let songStartedAtMs = 0;
   let nullSinceMs: number | null = null;
   /** The first of the current run of not-playing reads on our device. */
   let notPlayingSinceMs: number | null = null;
-  /** The song the run last confirmed, and what the player last reported. A
-   *  confirm poll reading either is the player lagging our command, not
-   *  someone else's music. */
+  /** The song the run last confirmed, under the id the player reported, and
+   *  what the player last reported. A confirm poll reading either is the
+   *  player lagging our command, not someone else's music. */
   let lastConfirmedId: string | null = null;
   let lastSeen: { itemId: string | null; deviceId: string | null } | null = null;
   let silentSince: number | null = null;
@@ -214,6 +222,9 @@ function createRunner(
     notPlayingSinceMs = null;
     if (next.kind === 'running' && next.step === 'starting' && next.section === 0 && next.attempt === 0) {
       songStartedAtMs = Date.now();
+      // A new song, or this one restarted from its intro: an id confirmed
+      // before belongs to another song or to a play that is over.
+      playedId = null;
     }
     const alive = aliveFor(step);
     for (const e of effects) run(e, prev, alive);
@@ -349,16 +360,17 @@ function createRunner(
       if (!alive()) return;
       saw(p);
       const read = toRead(p);
-      if (read && playerMatches(read, e.trackId, e.fromMs, e.toMs)) {
-        lastConfirmedId = e.trackId;
-        confirmedAt = { trackId: e.trackId, progressMs: read.progressMs, atMs: Date.now() };
+      if (read && playerMatches(read, e.track, e.fromMs, e.toMs)) {
+        playedId = read.itemId ?? e.track.id;
+        lastConfirmedId = playedId;
+        confirmedAt = { trackId: playedId, progressMs: read.progressMs, atMs: Date.now() };
         dispatch({ kind: 'confirmed' });
         return;
       }
       // Someone else's playback, or a client that has gone away, pauses the
       // run, rather than fighting them for the device or failing every song
       // left as "did not start playback".
-      const v = takeoverFrom({ kind: 'confirming', trackId: e.trackId, lastConfirmedId, before }, read);
+      const v = takeoverFrom({ kind: 'confirming', track: e.track, lastConfirmedId, before }, read);
       if (v) { dispatch({ kind: v }); return; }
     } catch (err) {
       if (!alive()) return;
@@ -416,13 +428,12 @@ function createRunner(
   }
 
   function watchFor(s: LearnState): TakeoverWatch | null {
-    if (s.kind === 'running' && s.step === 'listening') return { kind: 'listening', trackId: s.queue[s.index].id };
-    if (s.kind !== 'paused') return null;
+    if (s.kind !== 'running' && s.kind !== 'paused') return null;
     const item = s.queue[s.index];
-    if (s.reason === 'silence') return { kind: 'paused-silence', trackId: item.id, pauseLanded };
-    if (s.reason === 'input-lost') {
-      return { kind: 'paused-input-lost', trackId: item.id, durationMs: item.durationMs, confirmedAt };
-    }
+    const track = { id: item.id, name: item.name, durationMs: item.durationMs };
+    if (s.kind === 'running') return s.step === 'listening' ? { kind: 'listening', track, playedId } : null;
+    if (s.reason === 'silence') return { kind: 'paused-silence', track, playedId, pauseLanded };
+    if (s.reason === 'input-lost') return { kind: 'paused-input-lost', track, playedId, confirmedAt };
     return null;
   }
 
