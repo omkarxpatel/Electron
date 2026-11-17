@@ -1416,6 +1416,10 @@ console.log('\nOvernight learner: plan');
   check('every skip says why', JSON.stringify(p.skipped.map((s) => [s.candidate.id, s.reason])) ===
     JSON.stringify([['new', 'duplicate'], ['done', 'already-learned'], ['loc', 'local-file'], ['ep', 'not-a-track'], ['tiny', 'too-short']]));
   check('queue items carry their slices', p.queue[0].windows.length === 3);
+  check('a song in two playlists is played inside the first one it was found in', (() => {
+    const q = plan.planRun([c('a', { contextUri: 'spotify:playlist:p1' }), c('a', { contextUri: 'spotify:playlist:p2' })], () => null).queue;
+    return q.length === 1 && q[0].contextUri === 'spotify:playlist:p1';
+  })());
   check('300 songs is about six and a quarter hours', plan.estimateRunMs(300) === 22_500_000);
 }
 
@@ -1454,6 +1458,15 @@ console.log('\nOvernight learner: run');
   const lost = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'input-lost', now: 0 }]);
   check('a lost input pauses without touching Spotify', lost.state.kind === 'paused' && lost.state.reason === 'input-lost' && !lost.effects.some((e) => e.kind === 'pause-spotify'));
   check('the input coming back restarts the song from its intro', run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'input-lost', now: 0 }, { kind: 'input-back' }]).effects.filter((e) => e.kind === 'play').length === 2);
+  // A bare uri can make the desktop client replay the track it is on: in a
+  // real run song 2 answered 204 and the client restarted song 1.
+  const inPlaylist = plan.planRun([c('a', { contextUri: 'spotify:playlist:p1' })], () => null);
+  const plays = run([{ kind: 'start', plan: inPlaylist }, { kind: 'confirm-timeout' }, { kind: 'confirmed' }, { kind: 'input-lost', now: 0 }, { kind: 'input-back' }])
+    .effects.filter((e) => e.kind === 'play');
+  check('every play, first, retried or restarted, carries the song\'s playlist', plays.length === 3 &&
+    plays.every((e) => e.contextUri === 'spotify:playlist:p1' && e.uri === 'spotify:track:a'), JSON.stringify(plays));
+  check('a song with no known playlist plays by its uri alone',
+    run([{ kind: 'start', plan: plan.planRun([c('a', { contextUri: null })], () => null) }]).effects.find((e) => e.kind === 'play')?.contextUri === null);
   check('ten minutes without input ends the run', run([{ kind: 'start', plan: one }, { kind: 'input-lost', now: 0 }, { kind: 'tick', now: 600_000 }]).state.kind === 'ending');
   check('silence pauses Spotify at once', run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'silence' }]).effects.at(-2)?.kind === 'pause-spotify');
   const taken = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'takeover' }]);

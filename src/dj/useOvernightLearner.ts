@@ -66,6 +66,13 @@ const PAUSE_BACKSTOP_MS = PAUSE_CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_L
  *  end Spotify stops or autoplays another song: measured, that is the next
  *  song folded into this one; polled, it reads as someone taking over. */
 const TRACK_END_MARGIN_MS = 1_000;
+/** A song's numbers reach track memory on the enhancer's tick after the
+ *  measuring id changes, and a real run saw that land after
+ *  `COMMIT_SETTLE_MS`: one look found no new record and failed "nothing was
+ *  measured" on a song whose record the run had written. The marker looks
+ *  again this often, for up to this long. */
+const MARK_RECHECK_MS = 250;
+const MARK_GIVE_UP_MS = 3_000;
 const PLAYLIST_PAGE = 100;
 /** The sheet re-plans on every selection change. Without this each change
  *  rescans every page of every ticked playlist. */
@@ -161,6 +168,9 @@ function createRunner(
 ) {
   let state: LearnState = { kind: 'idle' };
   let step = 0;
+  /** Bumped by every Start. A song's marker outlives the steps of its run,
+   *  and without this a late failure would land on the next run's tally. */
+  let runId = 0;
   const timers = new Set<number>();
   /** Spotify mutations, one at a time. A pause sent while a play is still in
    *  flight can land first, and the play then starts music after the poll
@@ -220,6 +230,11 @@ function createRunner(
     pauseLanded = false;
     nullSinceMs = null;
     notPlayingSinceMs = null;
+    // A commit's `mark-learned` belongs to the song before, and runs after the
+    // next song's start is taken just below. Read against that, a record
+    // written on time looked older than its song, so every song but a run's
+    // last would have failed "nothing was measured".
+    const prevSongStartedAtMs = songStartedAtMs;
     if (next.kind === 'running' && next.step === 'starting' && next.section === 0 && next.attempt === 0) {
       songStartedAtMs = Date.now();
       // A new song, or this one restarted from its intro: an id confirmed
@@ -227,7 +242,7 @@ function createRunner(
       playedId = null;
     }
     const alive = aliveFor(step);
-    for (const e of effects) run(e, prev, alive);
+    for (const e of effects) run(e, prev, alive, prevSongStartedAtMs);
     watch(alive);
     if (next.kind === 'done') finish(alive);
     publish(state);
@@ -243,7 +258,7 @@ function createRunner(
     if (alive() && isSignedOut(err)) dispatch({ kind: 'signed-out' });
   }
 
-  function run(e: LearnEffect, prev: LearnState, alive: Alive): void {
+  function run(e: LearnEffect, prev: LearnState, alive: Alive, prevSongStartedAtMs: number): void {
     const d = depsRef.current;
     const device = (): string | undefined => deviceId ?? undefined;
     switch (e.kind) {
@@ -275,8 +290,14 @@ function createRunner(
         return;
       case 'play':
         // Any failure but signed-out falls through to the confirm poll,
-        // which times out into the machine's retry.
-        mutate(alive, () => play([e.uri], undefined, undefined, device(), e.positionMs)).catch((err) => failed(err, alive));
+        // which times out into the machine's retry. Inside the song's
+        // playlist, with the song as the offset: a bare uri got a 204 while
+        // the desktop client restarted the track it was already on.
+        mutate(alive, () =>
+          e.contextUri
+            ? play(undefined, e.contextUri, e.uri, device(), e.positionMs)
+            : play([e.uri], undefined, undefined, device(), e.positionMs),
+        ).catch((err) => failed(err, alive));
         return;
       case 'seek':
         mutate(alive, () => seek(e.positionMs, device())).catch((err) => failed(err, alive));
@@ -312,24 +333,43 @@ function createRunner(
         later(alive, ms, () => dispatch({ kind: e.then }));
         return;
       }
-      case 'mark-learned': {
-        // Only a record written during this attempt. The enhancer may have
-        // refused the commit (under 20 s of the middle heard, AI Enhance or
-        // Remember tracks switched off), and a record from an earlier play
-        // would still let markLearned succeed. A marker would make every
-        // later plan skip a song this run never measured.
-        const stored = d.peek(e.trackId);
-        if (stored && stored.updated >= songStartedAtMs && d.markLearned(e.trackId, LEARN_VERSION)) return;
-        if (state.kind !== 'running' && state.kind !== 'ending') return;
-        const name = prev.kind === 'running' ? prev.queue[prev.index].name : e.trackId;
-        const t = state.tally;
-        state = {
-          ...state,
-          tally: { ...t, learned: t.learned - 1, failed: [...t.failed, { id: e.trackId, name, reason: 'nothing was measured' }] },
-        };
+      case 'mark-learned':
+        markWhenStored(e.trackId, prev.kind === 'running' ? prev.queue[prev.index].name : e.trackId, prevSongStartedAtMs);
+        return;
+    }
+  }
+
+  /** Marks a song learned once track memory holds a record written since
+   *  `sinceMs`, its attempt's start. Not tied to a step, because the run has
+   *  usually moved on by the time the record lands, and it never dispatches.
+   *
+   *  Only a record written during this attempt. The enhancer may have refused
+   *  the commit (under 20 s of the middle heard, AI Enhance or Remember tracks
+   *  switched off), and a record from an earlier play would still let
+   *  markLearned succeed. A marker would make every later plan skip a song
+   *  this run never measured. */
+  function markWhenStored(trackId: string, name: string, sinceMs: number): void {
+    const forRun = runId;
+    const giveUpAtMs = Date.now() + MARK_GIVE_UP_MS;
+    const look = (): void => {
+      const d = depsRef.current;
+      const stored = d.peek(trackId);
+      if (stored && stored.updated >= sinceMs && d.markLearned(trackId, LEARN_VERSION)) return;
+      if (Date.now() < giveUpAtMs) {
+        window.setTimeout(look, MARK_RECHECK_MS);
         return;
       }
-    }
+      // The machine counted the song learned when it committed. This undoes
+      // that once, on the tally of the run that played it.
+      if (forRun !== runId || state.kind === 'idle') return;
+      const t = state.tally;
+      state = {
+        ...state,
+        tally: { ...t, learned: t.learned - 1, failed: [...t.failed, { id: trackId, name, reason: 'nothing was measured' }] },
+      };
+      publish(state);
+    };
+    look();
   }
 
   function saw(p: SpotifyPlaybackState | null): void {
@@ -511,6 +551,7 @@ function createRunner(
         d.setRememberTracks(true);
       }
       deviceId = preflightDevice;
+      runId++;
       confirmedAt = null;
       lastConfirmedId = null;
       lastSeen = null;
@@ -604,6 +645,10 @@ export function useOvernightLearner(deps: LearnerDeps): OvernightLearner {
             artists: (t.artists ?? []).map((a) => a.name).join(', '),
             durationMs: t.duration_ms,
             isLocal: entry.is_local,
+            // Playlists are scanned in selection order and the plan keeps a
+            // song's first copy, so this is the first selected playlist the
+            // song was found in.
+            contextUri: `spotify:playlist:${playlistId}`,
           });
         }
         if (items.length < PLAYLIST_PAGE || offset + PLAYLIST_PAGE >= (page.total ?? 0)) break;

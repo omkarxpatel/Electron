@@ -51,6 +51,11 @@ export interface LearnCandidate {
   artists: string;
   durationMs: number;
   isLocal: boolean;
+  /** `spotify:playlist:<id>` of the first selected playlist the song was found
+   *  in, which a run plays it inside; null when unknown. A bare uri can make
+   *  the desktop client replay the track it is on: in a real run, song 2 got a
+   *  204 and the client restarted song 1, and every song after it failed. */
+  contextUri: string | null;
 }
 export interface LearnQueueItem extends LearnCandidate {
   windows: SectionWindow[];

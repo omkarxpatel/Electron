@@ -88,7 +88,9 @@ export type LearnEvent =
 export type LearnEffect =
   | { kind: 'mute'; on: boolean }
   | { kind: 'keep-awake'; on: boolean }
-  | { kind: 'play'; uri: string; positionMs: number }
+  /** `contextUri`: the song's playlist, which the play names with `uri` as
+   *  its offset. Null plays the bare uri. */
+  | { kind: 'play'; uri: string; contextUri: string | null; positionMs: number }
   | { kind: 'seek'; positionMs: number }
   | { kind: 'pause-spotify' }
   | { kind: 'measure'; trackId: string | null; mode: MeasureMode }
@@ -126,7 +128,7 @@ function beginSection(
     effects: [
       quiet(item.id),
       section === 0 || restart
-        ? { kind: 'play', uri: item.uri, positionMs: w.startMs }
+        ? { kind: 'play', uri: item.uri, contextUri: item.contextUri, positionMs: w.startMs }
         : { kind: 'seek', positionMs: w.startMs },
       {
         kind: 'await-confirm',
