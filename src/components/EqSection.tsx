@@ -61,6 +61,11 @@ interface Props {
   /** A learning run's own integrated LUFS for the track being committed.
    *  undefined means ordinary listening: read the meter. */
   learnLufsRef: { current: number | null | undefined };
+  /** The track a learning run says is playing, null between its slices.
+   *  undefined means ordinary listening: use Spotify's playing id. A run
+   *  cannot leave this to polling, which lags a seek or a song change by up
+   *  to a poll and would fold one song's audio into the other's record. */
+  measuringTrackIdOverride?: string | null;
   /** What the app has learned about each track it has played. Lets the
    *  enhancer start a known track already corrected instead of spending its
    *  first 20 s measuring something it has measured before. Owned by App so
@@ -114,6 +119,7 @@ export function EqSection({
   onsetTapRef,
   measureGateRef,
   learnLufsRef,
+  measuringTrackIdOverride,
   onMeasurement,
   active,
   playthrough,
@@ -142,7 +148,8 @@ export function EqSection({
   const onMeasurementRef = useRef(onMeasurement);
   onMeasurementRef.current = onMeasurement;
   const flashClearTimersRef = useRef<number[]>([]);
-  const trackId = useCurrentlyPlayingId();
+  const playingId = useCurrentlyPlayingId();
+  const trackId = measuringTrackIdOverride !== undefined ? measuringTrackIdOverride : playingId;
   // Looked up per render rather than per tick — the enhancer reads it through
   // a ref, and it only matters on the tick where trackId changes.
   const recalled = trackMemory.recall(trackId);

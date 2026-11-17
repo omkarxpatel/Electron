@@ -311,6 +311,13 @@ export function useEQ() {
     setState((s) => ({ ...s, aiEnhance: !s.aiEnhance }));
   }, []);
 
+  /** Set rather than toggled: a learning run switches it on and later puts
+   *  back what it found, and a toggle can only say "the other way", which is
+   *  wrong as soon as anything else has moved it. */
+  const setAiEnhance = useCallback((on: boolean) => {
+    setState((s) => (s.aiEnhance === on ? s : { ...s, aiEnhance: on }));
+  }, []);
+
   /** Picking a profile also arms the enhancer — choosing a voicing while it's
    *  switched off would otherwise look like it did nothing. */
   const setAiProfile = useCallback((id: EnhanceProfileId) => {
@@ -454,6 +461,7 @@ export function useEQ() {
     toggleBypass,
     toggleBandLock,
     toggleAiEnhance,
+    setAiEnhance,
     setAiProfile,
     setAiAdapt,
     toggleAiEffects,

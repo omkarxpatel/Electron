@@ -10,6 +10,7 @@ import type { SpotifyTrack } from '../spotify/types';
 import { onOverlayNav } from '../spotify/navigation';
 import type { TrackProfile } from '../audio/trackProfile';
 import type { LiveMeasurement } from './DjPanel';
+import type { OvernightLearner } from '../dj/useOvernightLearner';
 
 /** Passed through to SpotifyOverlay's DJ view untouched. Declared here so
  *  App and the overlay agree on one shape rather than two. */
@@ -20,6 +21,7 @@ export interface DjBridge {
   audible: boolean;
   duckGainRef: { current: GainNode | null };
   voiceGainRef: { current: GainNode | null };
+  learner: OvernightLearner;
 }
 
 /**

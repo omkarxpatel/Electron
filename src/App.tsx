@@ -19,6 +19,7 @@ import type { AiEffectTargets } from './audio/useAiEnhancer';
 import type { DjBridge } from './components/SpotifySection';
 import type { LiveMeasurement } from './components/DjPanel';
 import { useTrackMemory } from './state/trackMemory';
+import { useOvernightLearner } from './dj/useOvernightLearner';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
 import { useAudioSource } from './audio/useAudioSource';
@@ -134,8 +135,8 @@ function AppContent() {
     exciterFreq: 90,
   });
   // Which measurements the enhancer may take, and the loudness a learning
-  // run commits in place of the meter's. Plain refs here; a later task hands
-  // them to the learner's hook.
+  // run commits in place of the meter's. Created here because the enhancer
+  // (through EqSection) reads them and the learner's hook writes them.
   const measureGateRef = useRef<{ mode: MeasureMode }>({ mode: 'all' });
   const learnLufsRef = useRef<number | null | undefined>(undefined);
   // One instance, shared by the enhancer (which writes it) and Settings
@@ -248,6 +249,24 @@ function AppContent() {
   // about someone listening with the window in the background.
   const audioActive = playthrough && !!audioSource.stream;
 
+  // One instance: it owns the run, the mute and the keep-awake hold, and a
+  // second would drive Spotify against the first.
+  const learner = useOvernightLearner({
+    markLearned: trackMemory.markLearned,
+    recall: trackMemory.recall,
+    setLearnMuted,
+    measureGateRef,
+    learnLufsRef,
+    onsetTapRef,
+    loudnessTapRef,
+    inputLive: !!audioSource.stream,
+    live: audioActive,
+    aiEnhance: eq.state.aiEnhance,
+    setAiEnhance: eq.setAiEnhance,
+    rememberTracks: settings.rememberTracks,
+    setRememberTracks: (on) => update('rememberTracks', on),
+  });
+
   /**
    * What the overlay's DJ view needs, gathered in one object.
    *
@@ -268,8 +287,9 @@ function AppContent() {
       audible: audioActive,
       duckGainRef,
       voiceGainRef,
+      learner,
     }),
-    [playback.playback?.item, liveMeasurement, trackMemory.recall, audioActive, duckGainRef, voiceGainRef],
+    [playback.playback?.item, liveMeasurement, trackMemory.recall, audioActive, duckGainRef, voiceGainRef, learner],
   );
   useEffect(() => {
     window.api.update.setActivity(audioActive);
@@ -474,6 +494,7 @@ function AppContent() {
               onsetTapRef={onsetTapRef}
               measureGateRef={measureGateRef}
               learnLufsRef={learnLufsRef}
+              measuringTrackIdOverride={learner.measuring ? learner.measuring.trackId : undefined}
               eq={eq}
               enhancer={enhancer}
               effects={effects}
