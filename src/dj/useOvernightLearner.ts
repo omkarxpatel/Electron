@@ -57,12 +57,16 @@ const RATE_LIMIT_WAIT_MS = 5_000;
  *  song folded into this one; polled, it reads as someone taking over. */
 const TRACK_END_MARGIN_MS = 1_000;
 const PLAYLIST_PAGE = 100;
+/** The sheet re-plans on every selection change. Without this each change
+ *  rescans every page of every ticked playlist. */
+const PLAYLIST_CACHE_MS = 600_000;
 
 // ── Types ────────────────────────────────────────────────────────────────
 
 export interface LearnerDeps {
   markLearned(trackId: string, version: number): boolean;
-  recall(trackId: string | null): TrackProfile | null;
+  /** Stored profile regardless of the Remember tracks switch (planning only). */
+  peek(trackId: string | null): TrackProfile | null;
   setLearnMuted(muted: boolean): void;
   measureGateRef: { current: { mode: MeasureMode } };
   learnLufsRef: { current: number | null | undefined };
@@ -132,6 +136,11 @@ function createRunner(
   /** The device of the run's first confirmation. Undefined until then. */
   let deviceId: string | null | undefined;
   let confirmedAt: { progressMs: number; atMs: number } | null = null;
+  /** The song the run last confirmed, and what the player last reported. A
+   *  confirm poll reading either is the player lagging our command, not
+   *  someone else's music. */
+  let lastConfirmedId: string | null = null;
+  let lastSeen: { itemId: string | null; deviceId: string | null } | null = null;
   let silentSince: number | null = null;
   /** Paused for silence: whether Spotify has shown our pause took. */
   let pauseLanded = false;
@@ -223,7 +232,7 @@ function createRunner(
         void mutations.then(() => {
           if (!alive()) return;
           later(alive, CONFIRM_TIMEOUT_MS, () => dispatch({ kind: 'confirm-timeout' }));
-          void confirmPoll(e, alive);
+          void confirmPoll(e, lastSeen, alive);
         });
         return;
       case 'wait': {
@@ -256,10 +265,32 @@ function createRunner(
     }
   }
 
-  async function confirmPoll(e: Extract<LearnEffect, { kind: 'await-confirm' }>, alive: Alive): Promise<void> {
+  /** Someone else's playback during a confirm window. Left to time out, the
+   *  retry `play` and every later song's would take the device back from
+   *  them. Not judged before the run's first confirmation: until then nothing
+   *  is known to be ours, and the player may still show what was playing
+   *  before Start. */
+  function foreign(p: SpotifyPlaybackState, trackId: string, before: typeof lastSeen): boolean {
+    if (deviceId === undefined) return false;
+    const dev = p.device?.id ?? null;
+    if (dev !== deviceId && dev !== before?.deviceId) return true;
+    if (!p.item) return false;
+    return !itemIs(p, trackId) && !(lastConfirmedId !== null && itemIs(p, lastConfirmedId)) && p.item.id !== before?.itemId;
+  }
+
+  function saw(p: SpotifyPlaybackState | null): void {
+    if (p) lastSeen = { itemId: p.item?.id ?? null, deviceId: p.device?.id ?? null };
+  }
+
+  async function confirmPoll(
+    e: Extract<LearnEffect, { kind: 'await-confirm' }>,
+    before: typeof lastSeen,
+    alive: Alive,
+  ): Promise<void> {
     try {
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
+      saw(p);
       const snap = {
         itemId: p?.item?.id ?? null,
         linkedFromId: p?.item?.linked_from?.id ?? null,
@@ -268,15 +299,17 @@ function createRunner(
       };
       if (p && playerMatches(snap, e.trackId, e.fromMs, e.toMs)) {
         if (deviceId === undefined) deviceId = p.device?.id ?? null;
+        lastConfirmedId = e.trackId;
         confirmedAt = { progressMs: snap.progressMs, atMs: Date.now() };
         dispatch({ kind: 'confirmed' });
         return;
       }
+      if (p && foreign(p, e.trackId, before)) { dispatch({ kind: 'takeover' }); return; }
     } catch (err) {
       if (!alive()) return;
       if (isSignedOut(err)) { dispatch({ kind: 'signed-out' }); return; }
     }
-    later(alive, CONFIRM_POLL_MS, () => void confirmPoll(e, alive));
+    later(alive, CONFIRM_POLL_MS, () => void confirmPoll(e, before, alive));
   }
 
   async function confirmPaused(alive: Alive, deadline: number): Promise<void> {
@@ -284,6 +317,7 @@ function createRunner(
     try {
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
+      saw(p);
       // No session at all (a 204) is nothing playing, as much as a pause is.
       if (!p || !p.is_playing) {
         pauseLanded = true;
@@ -303,7 +337,12 @@ function createRunner(
   function watch(alive: Alive): void {
     if (state.kind === 'running' && state.step === 'listening') {
       later(alive, TAKEOVER_POLL_MS, () => void pollPlayer(alive));
-      later(alive, SILENCE_CHECK_MS, () => checkSilence(alive));
+      // Only on an 'all' slice (the middle, or a whole short song). An intro
+      // can open on lead-in silence and an outro can be an album's silent
+      // tail; 8 s of either would park the whole night on one song.
+      if (state.queue[state.index].windows[state.section].mode === 'all') {
+        later(alive, SILENCE_CHECK_MS, () => checkSilence(alive));
+      }
     } else if (state.kind === 'paused') {
       // A takeover while paused for something else must be seen, or a later
       // input give-up or Stop pauses what is now someone's own playback.
@@ -342,6 +381,7 @@ function createRunner(
     try {
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
+      saw(p);
       const v = verdict(p);
       if (v) { dispatch({ kind: v }); return; }
     } catch (err) {
@@ -395,6 +435,8 @@ function createRunner(
       }
       deviceId = undefined;
       confirmedAt = null;
+      lastConfirmedId = null;
+      lastSeen = null;
       state = { kind: 'idle' }; // `done` ignores `start`
       dispatch({ kind: 'start', plan });
     },
@@ -451,16 +493,23 @@ export function useOvernightLearner(deps: LearnerDeps): OvernightLearner {
     return failing;
   }, []);
 
+  const scannedRef = useRef(new Map<string, { atMs: number; candidates: LearnCandidate[] }>());
   const plan = useCallback(async (playlistIds: string[]): Promise<LearnPlan> => {
     const candidates: LearnCandidate[] = [];
     for (const playlistId of playlistIds) {
+      const cached = scannedRef.current.get(playlistId);
+      if (cached && Date.now() - cached.atMs < PLAYLIST_CACHE_MS) {
+        candidates.push(...cached.candidates);
+        continue;
+      }
+      const scanned: LearnCandidate[] = [];
       for (let offset = 0; ; offset += PLAYLIST_PAGE) {
         const page = await rateLimited(() => getPlaylistTracks(playlistId, PLAYLIST_PAGE, offset), () => true);
         const items = page.items ?? [];
         for (const entry of items) {
           const t = entryTrack(entry);
           if (!t) continue; // unavailable entry: nothing to play or to name
-          candidates.push({
+          scanned.push({
             id: t.id ?? '',
             uri: t.uri ?? '',
             name: t.name,
@@ -471,8 +520,10 @@ export function useOvernightLearner(deps: LearnerDeps): OvernightLearner {
         }
         if (items.length < PLAYLIST_PAGE || offset + PLAYLIST_PAGE >= (page.total ?? 0)) break;
       }
+      scannedRef.current.set(playlistId, { atMs: Date.now(), candidates: scanned });
+      candidates.push(...scanned);
     }
-    return planRun(candidates, (id) => depsRef.current.recall(id));
+    return planRun(candidates, (id) => depsRef.current.peek(id));
   }, []);
 
   const active = state.kind === 'running' || state.kind === 'paused' || state.kind === 'ending';

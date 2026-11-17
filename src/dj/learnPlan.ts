@@ -22,10 +22,13 @@ export const INTRO_MS = 15_000;
 export const MIDDLE_MS = 30_000;
 export const OUTRO_MS = 15_000;
 export const MIDDLE_AT_FRACTION = 0.4;
-/** `MIN_COMMIT_SECONDS` restated in ms. Below it a measurement is refused,
- *  so a song this short could be played and never learned. Not imported:
- *  see the header. */
-export const MIN_LEARNABLE_MS = 20_000;
+/** `MIN_COMMIT_SECONDS` in ms plus 2 s. Below the commit minimum a
+ *  measurement is refused, so a song that short could be played and never
+ *  learned. The 2 s is because a slice that reaches the end of the track
+ *  stops 1 s short of it, after a confirmation that lands partway in: a
+ *  20-21.5 s song would commit under 20 s and fail "nothing was measured"
+ *  every night. Not imported: see the header. */
+export const MIN_LEARNABLE_MS = 22_000;
 export const TRUSTED_TEMPO_CONFIDENCE = 0.6;
 /** Planning figure for a run's length: the slices plus seeking and settling. */
 export const ESTIMATE_MS_PER_SONG = 75_000;

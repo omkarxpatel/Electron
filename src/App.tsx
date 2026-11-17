@@ -253,7 +253,7 @@ function AppContent() {
   // second would drive Spotify against the first.
   const learner = useOvernightLearner({
     markLearned: trackMemory.markLearned,
-    recall: trackMemory.recall,
+    peek: trackMemory.peek,
     setLearnMuted,
     measureGateRef,
     learnLufsRef,
@@ -291,9 +291,13 @@ function AppContent() {
     }),
     [playback.playback?.item, liveMeasurement, trackMemory.recall, audioActive, duckGainRef, voiceGainRef, learner],
   );
+  // A run counts as activity even while its input is lost and nothing is
+  // audible: a silent update restarting the app mid-run would end the night.
+  const learnerActive =
+    learner.state.kind === 'running' || learner.state.kind === 'paused' || learner.state.kind === 'ending';
   useEffect(() => {
-    window.api.update.setActivity(audioActive);
-  }, [audioActive]);
+    window.api.update.setActivity(audioActive || learnerActive);
+  }, [audioActive, learnerActive]);
 
   // Reflect Live state in the window title so a glance at the macOS title bar
   // (or Cmd+Tab preview) tells the user whether audio is currently being

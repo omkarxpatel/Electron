@@ -1433,7 +1433,7 @@ console.log('\nOvernight learner: run');
     }
     return { state, effects };
   };
-  check('the learnable minimum matches the commit minimum', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000);
+  check('the learnable minimum is the commit minimum plus a 2 s margin', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000 + 2000);
   const happy = run([{ kind: 'start', plan: one }, ...[0, 1, 2].flatMap(() => [{ kind: 'confirmed' }, { kind: 'section-elapsed' }]), { kind: 'committed' }, { kind: 'spotify-paused' }]);
   check('a full song ends learned and unmuted', happy.state.kind === 'done' && happy.state.reason === 'finished' && happy.state.tally.learned === 1 && happy.state.muted === false);
   check('muting starts the run and keeps the Mac awake', JSON.stringify(happy.effects.slice(0, 2)) === JSON.stringify([{ kind: 'keep-awake', on: true }, { kind: 'mute', on: true }]));

@@ -61,6 +61,17 @@ export function useTrackMemory(enabled: boolean) {
   }, []);
 
   /**
+   * The stored profile whatever the switch says. Reading is not remembering:
+   * this never writes. The learner plans with it, because a plan made while
+   * Remember tracks is off would otherwise see no run markers and queue every
+   * song it has already learned.
+   */
+  const peek = useCallback((trackId: string | null): TrackProfile | null => {
+    if (!trackId) return null;
+    return storeRef.current?.[trackId] ?? null;
+  }, []);
+
+  /**
    * Fold a finished measurement in and persist. Called once per track, on
    * the change away from it.
    */
@@ -137,7 +148,7 @@ export function useTrackMemory(enabled: boolean) {
     setStats({ tracks: 0, bytes: 0 });
   }, []);
 
-  return { recall, commit, markLearned, clear, stats };
+  return { recall, peek, commit, markLearned, clear, stats };
 }
 
 function measure(store: Record<string, TrackProfile>): TrackMemoryStats {
