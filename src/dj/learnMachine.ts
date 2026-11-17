@@ -23,6 +23,15 @@ export const CONFIRM_TIMEOUT_MS = 10_000;
  *  before the next song's audio can overwrite what was just heard. */
 export const COMMIT_SETTLE_MS = 400;
 export const INPUT_GIVE_UP_MS = 600_000;
+/** A 204 from /me/player, or a player reading not-playing, decides something
+ *  only when a read at least this much later says the same. One read is a
+ *  blip as often as it is true: alone, a 204 paused a run, a stale
+ *  `is_playing: false` right after a play let a run unmute into it, and a
+ *  last song's pause racing its natural end read as paused. */
+export const SECOND_READ_MS = 1_000;
+/** Past this after a song's estimated end, Spotify stopping or autoplaying
+ *  is the song finishing, not someone taking over. */
+export const NATURAL_END_GRACE_MS = 3_000;
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -242,8 +251,12 @@ export function learnStep(state: LearnState, event: LearnEvent): Step {
             ? { state: { ...state, reason: event.kind }, effects: [] }
             : ignore(state);
         case 'stop':
-          if (reason === 'takeover' || reason === 'device-lost') {
-            // A person pressed Stop and the playback is theirs.
+          // After a takeover, a person pressed Stop and the playback is
+          // theirs. Not after a lost device: the desktop client can leave
+          // Connect and carry on playing its buffer into a sink pinned at
+          // 100%, so that Stop pauses and waits for Spotify like any other,
+          // and the app stays muted if Spotify never says it stopped.
+          if (reason === 'takeover') {
             return {
               state: { kind: 'done', reason: 'stopped', tally, muted: false },
               effects: [quiet(null), { kind: 'keep-awake', on: false }, { kind: 'mute', on: false }],
@@ -299,4 +312,122 @@ export function playerMatches(p: PlayerSnapshot, trackId: string, fromMs: number
     p.progressMs >= fromMs - 1000 &&
     p.progressMs < toMs
   );
+}
+
+// ── Reading the player ───────────────────────────────────────────────────
+//
+// What the hook's polls conclude from GET /me/player. They live here, beside
+// the reducer, so the rules that decide when a run may unmute are checked by
+// check:enhancer rather than living untested in the executor.
+
+/** One GET /me/player answer, reduced to what these rules read. A 204, no
+ *  player session at all, is passed as `null`. */
+export interface PlayerRead extends PlayerSnapshot {
+  deviceId: string | null;
+}
+
+export type PauseVerdict = 'paused' | 'not-yet' | 'gone-keep-waiting';
+
+const isTrack = (r: PlayerRead, trackId: string): boolean => r.itemId === trackId || r.linkedFromId === trackId;
+
+/** Whether our pause has landed. `notPlayingSinceMs` is the first of the
+ *  current unbroken run of not-playing reads on the run's device; the caller
+ *  keeps it between reads.
+ *
+ *  A 204 never counts as paused: it is the desktop client leaving Connect,
+ *  which is exactly when local playback can carry on from its buffer into a
+ *  sink pinned at 100%. The caller keeps polling, and its backstop ends the
+ *  run muted. A different device never counts either: it says nothing about
+ *  ours. */
+export function pauseConfirmVerdict(
+  read: PlayerRead | null,
+  deviceId: string | null,
+  nowMs: number,
+  notPlayingSinceMs: number | null,
+): { verdict: PauseVerdict; notPlayingSinceMs: number | null } {
+  if (!read) return { verdict: 'gone-keep-waiting', notPlayingSinceMs: null };
+  if (read.isPlaying || read.deviceId !== deviceId) return { verdict: 'not-yet', notPlayingSinceMs: null };
+  const since = notPlayingSinceMs ?? nowMs;
+  return { verdict: nowMs - since >= SECOND_READ_MS ? 'paused' : 'not-yet', notPlayingSinceMs: since };
+}
+
+/** What a takeover poll is watching, and what it needs to know about it. */
+export type TakeoverWatch =
+  /** Running, listening to a confirmed slice of `trackId`. */
+  | { kind: 'listening'; trackId: string }
+  /** Waiting for a play or seek of `trackId` to show. `lastConfirmedId` is
+   *  the song the run last confirmed (null before its first) and `before`
+   *  what the player showed when the command went out. */
+  | {
+      kind: 'confirming';
+      trackId: string;
+      lastConfirmedId: string | null;
+      before: { itemId: string | null; deviceId: string | null } | null;
+    }
+  /** Paused for silence. `pauseLanded`: `pauseConfirmVerdict` has said our
+   *  pause took. */
+  | { kind: 'paused-silence'; trackId: string; pauseLanded: boolean }
+  /** Paused for a lost input. `confirmedAt` is the run's last confirmation,
+   *  of whichever song. */
+  | {
+      kind: 'paused-input-lost';
+      trackId: string;
+      durationMs: number;
+      confirmedAt: { trackId: string; progressMs: number; atMs: number } | null;
+    };
+
+export type TakeoverVerdict = 'takeover' | 'device-lost' | null;
+
+/** Whether someone else has the player. `nullSinceMs` is the first of the
+ *  current unbroken run of 204s; the caller keeps it between reads. */
+export function takeoverVerdict(
+  watch: TakeoverWatch,
+  read: PlayerRead | null,
+  deviceId: string | null,
+  nowMs: number,
+  nullSinceMs: number | null,
+): { verdict: TakeoverVerdict; nullSinceMs: number | null } {
+  if (!read) {
+    const since = nullSinceMs ?? nowMs;
+    return { verdict: nowMs - since >= SECOND_READ_MS ? 'device-lost' : null, nullSinceMs: since };
+  }
+  const is = (verdict: TakeoverVerdict) => ({ verdict, nullSinceMs: null });
+  const otherDevice = read.deviceId !== deviceId;
+  const elsewhere = otherDevice || !isTrack(read, watch.trackId);
+  switch (watch.kind) {
+    case 'confirming': {
+      // Left to time out, the retry `play` and every later song's would take
+      // the device back from them. Not judged before the run's first
+      // confirmation: until then nothing is known to be ours, and the player
+      // may still show what was playing before Start. What the player showed
+      // when the command went out, or the song just confirmed, is the player
+      // lagging our command.
+      if (watch.lastConfirmedId === null) return is(null);
+      if (otherDevice && read.deviceId !== watch.before?.deviceId) return is('takeover');
+      if (read.itemId === null) return is(null);
+      const ours =
+        isTrack(read, watch.trackId) || isTrack(read, watch.lastConfirmedId) || read.itemId === watch.before?.itemId;
+      return is(ours ? null : 'takeover');
+    }
+    case 'paused-silence':
+      // We paused it. Until Spotify has shown it stopped, playing is our own
+      // song winding down, or a pause that never took; calling that a
+      // takeover would let Stop unmute straight into it.
+      if (!watch.pauseLanded) return is(null);
+      return is(read.isPlaying || elsewhere ? 'takeover' : null);
+    case 'paused-input-lost': {
+      // Our song plays on to its end. After that, Spotify stopping or
+      // autoplaying is the song finishing; read as a takeover it would kill
+      // the auto-resume and the 10-minute give-up and hold the Mac awake all
+      // night. Only another device is someone else.
+      const c = watch.confirmedAt;
+      if (c && c.trackId === watch.trackId) {
+        const endsAtMs = c.atMs + (watch.durationMs - c.progressMs) + NATURAL_END_GRACE_MS;
+        if (nowMs >= endsAtMs) return is(otherDevice ? 'takeover' : null);
+      }
+      return is(elsewhere || !read.isPlaying ? 'takeover' : null);
+    }
+    case 'listening':
+      return is(elsewhere || !read.isPlaying ? 'takeover' : null);
+  }
 }

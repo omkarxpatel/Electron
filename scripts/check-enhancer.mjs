@@ -1455,12 +1455,24 @@ console.log('\nOvernight learner: run');
   const taken = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'takeover' }]);
   check('a takeover never pauses or unmutes', taken.state.kind === 'paused' && !taken.effects.some((e) => e.kind === 'pause-spotify' || (e.kind === 'mute' && !e.on)));
   check('stopping after a takeover hands playback back unmuted', (() => { const r = run([{ kind: 'start', plan: one }, { kind: 'takeover' }, { kind: 'stop' }]); return r.state.kind === 'done' && r.state.muted === false && !r.effects.some((e) => e.kind === 'pause-spotify'); })());
+  // A gone device is not someone else's playback: the desktop client can
+  // leave Connect and carry on playing from its buffer into a sink at 100%.
+  const goneStop = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'device-lost' }, { kind: 'stop' }]);
+  check('stopping after the device is lost pauses Spotify first and stays muted', goneStop.state.kind === 'ending' &&
+    JSON.stringify(goneStop.effects.slice(-2)) === JSON.stringify([{ kind: 'measure', trackId: null, mode: 'none' }, { kind: 'pause-spotify' }]) &&
+    !goneStop.effects.some((e) => e.kind === 'mute' && !e.on));
+  check('a lost device that never confirms the pause leaves the app muted', (() => {
+    const r = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'device-lost' }, { kind: 'stop' }, { kind: 'pause-failed' }]);
+    return r.state.kind === 'done' && r.state.muted === true && !r.effects.some((e) => e.kind === 'mute' && !e.on);
+  })());
   check('an empty plan never mutes', (() => { const r = run([{ kind: 'start', plan: { queue: [], skipped: [] } }]); return r.state.kind === 'done' && r.effects.length === 0; })());
   check('a relinked track still confirms', machine.playerMatches({ itemId: 'm', linkedFromId: 'a', isPlaying: true, progressMs: 500 }, 'a', 0, 15_000));
   check('a paused player does not confirm', !machine.playerMatches({ itemId: 'a', linkedFromId: null, isPlaying: false, progressMs: 500 }, 'a', 0, 15_000));
 
   // Fuzz: the one unrecoverable mistake is unmuting while Spotify might still
-  // be playing, so every unmute must trace to a pause report or a person's Stop.
+  // be playing, so every unmute must trace to a pause report that ends a run,
+  // or a person's Stop on playback that was taken over. Stop after a lost
+  // device is neither: nothing says the desktop client stopped playing.
   const mulberry32 = (seed) => () => {
     seed = (seed + 0x6d2b79f5) | 0;
     let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
@@ -1472,7 +1484,7 @@ console.log('\nOvernight learner: run');
   let badUnmute = 0;
   let badState = 0;
   let badMuted = 0;
-  const seen = { marked: 0, endingUnmute: 0, takeoverUnmute: 0, deviceUnmute: 0, steps: 0, settling: 0, lateSection: 0 };
+  const seen = { marked: 0, endingUnmute: 0, takeoverUnmute: 0, deviceStop: 0, steps: 0, settling: 0, lateSection: 0 };
   for (let r = 0; r < 500; r++) {
     let state = { kind: 'idle' };
     let now = 0;
@@ -1502,12 +1514,13 @@ console.log('\nOvernight learner: run');
       const res = machine.learnStep(state, e);
       if (!res.state || typeof res.state.kind !== 'string') badState++;
       const unmutes = res.effects.some((x) => x.kind === 'mute' && !x.on);
-      const handedBack = e.kind === 'stop' && before.kind === 'paused' && (before.reason === 'takeover' || before.reason === 'device-lost');
-      if (unmutes && !(e.kind === 'spotify-paused' || handedBack)) badUnmute++;
+      const reportedPaused = e.kind === 'spotify-paused' && before.kind === 'ending';
+      const handedBack = e.kind === 'stop' && before.kind === 'paused' && before.reason === 'takeover';
+      if (unmutes && !(reportedPaused || handedBack)) badUnmute++;
       if (res.effects.some((x) => x.kind === 'mark-learned')) seen.marked++;
-      if (unmutes && e.kind === 'spotify-paused' && before.kind === 'ending') seen.endingUnmute++;
-      if (unmutes && handedBack && before.reason === 'takeover') seen.takeoverUnmute++;
-      if (unmutes && handedBack && before.reason === 'device-lost') seen.deviceUnmute++;
+      if (unmutes && reportedPaused) seen.endingUnmute++;
+      if (unmutes && handedBack) seen.takeoverUnmute++;
+      if (e.kind === 'stop' && before.kind === 'paused' && before.reason === 'device-lost') seen.deviceStop++;
       // Walk the effect stream: audio only moves while muted, and an unmute
       // always lands the run in done.
       for (const x of res.effects) {
@@ -1520,11 +1533,13 @@ console.log('\nOvernight learner: run');
       state = res.state;
     }
   }
-  check('fuzz: an unmute always follows a pause report or a hand-back', badUnmute === 0, `${badUnmute} bad`);
+  check('fuzz: an unmute only follows a pause report while ending, or Stop after a takeover', badUnmute === 0, `${badUnmute} bad`);
   check('fuzz: every step returns a state with a kind', badState === 0, `${badState} bad`);
   check('fuzz: playback only moves while muted, and every unmute ends the run', badMuted === 0, `${badMuted} bad`);
-  check('fuzz: it reaches commits and all three unmute paths',
-    seen.marked > 0 && seen.endingUnmute > 0 && seen.takeoverUnmute > 0 && seen.deviceUnmute > 0 && seen.settling > 0 && seen.lateSection > 0,
+  // deviceStop: the invariant above is only worth something if the fuzz
+  // actually presses Stop after a lost device.
+  check('fuzz: it reaches commits, both unmute paths, and Stop after a lost device',
+    seen.marked > 0 && seen.endingUnmute > 0 && seen.takeoverUnmute > 0 && seen.deviceStop > 0 && seen.settling > 0 && seen.lateSection > 0,
     JSON.stringify(seen));
 
   // A takeover that lands while we are paused for another reason must not
@@ -1542,14 +1557,98 @@ console.log('\nOvernight learner: run');
       ticked.state.kind === 'paused' && ticked.effects.length === marker);
     const stopped = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, pause, take, { kind: 'stop' }]);
     const tail = stopped.effects.slice(marker);
-    check(`${label}: Stop hands playback back unmuted without pausing it`, stopped.state.kind === 'done' && stopped.state.muted === false &&
-      !tail.some((e) => e.kind === 'pause-spotify') && tail.some((e) => e.kind === 'mute' && !e.on));
+    if (take.kind === 'takeover') {
+      check(`${label}: Stop hands playback back unmuted without pausing it`, stopped.state.kind === 'done' && stopped.state.muted === false &&
+        !tail.some((e) => e.kind === 'pause-spotify') && tail.some((e) => e.kind === 'mute' && !e.on));
+    } else {
+      check(`${label}: Stop pauses Spotify and waits muted for it to report paused`, stopped.state.kind === 'ending' &&
+        tail.some((e) => e.kind === 'pause-spotify') && !tail.some((e) => e.kind === 'mute' && !e.on));
+    }
   }
   check('a retry after a confirm timeout plays the section start rather than seeking', (() => {
     const r = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'section-elapsed' }, { kind: 'confirm-timeout' }]);
     const last = r.effects.filter((e) => e.kind === 'play' || e.kind === 'seek').at(-1);
     return last?.kind === 'play' && last.positionMs === 80_000 && r.state.kind === 'running' && r.state.attempt === 1;
   })());
+}
+
+console.log('\nOvernight learner: reading the player');
+{
+  // What the hook's polls conclude from GET /me/player. A wrong "paused"
+  // unmutes into a song at night; a wrong "takeover" lets Stop do the same.
+  const read = (o = {}) => ({ itemId: 'a', linkedFromId: null, isPlaying: false, progressMs: 1000, deviceId: 'mac', ...o });
+  const playing = (o = {}) => read({ isPlaying: true, ...o });
+  const confirmPause = (reads) => {
+    let since = null;
+    let verdict = null;
+    for (const [atMs, r] of reads) ({ verdict, notPlayingSinceMs: since } = machine.pauseConfirmVerdict(r, 'mac', atMs, since));
+    return verdict;
+  };
+  check('pause: a 204 never confirms, however long it lasts', confirmPause([[0, null], [1000, null], [60_000, null]]) === 'gone-keep-waiting');
+  check('pause: one not-playing read does not confirm', confirmPause([[0, read()]]) === 'not-yet');
+  check('pause: two not-playing reads under a second apart do not confirm', confirmPause([[0, read()], [999, read()]]) === 'not-yet');
+  check('pause: two not-playing reads a second apart confirm', confirmPause([[0, read()], [1000, read()]]) === 'paused');
+  check('pause: a playing read in between starts the count again', confirmPause([[0, read()], [500, playing()], [1000, read()]]) === 'not-yet');
+  check('pause: a 204 in between starts the count again', confirmPause([[0, read()], [500, null], [1000, read()]]) === 'not-yet');
+  check('pause: a different device never confirms', confirmPause([[0, read({ deviceId: 'phone' })], [5000, read({ deviceId: 'phone' })]]) === 'not-yet');
+
+  const verdictOf = (watch, r, atMs = 0) => machine.takeoverVerdict(watch, r, 'mac', atMs, null).verdict;
+  const afterNulls = (watch, reads) => {
+    let since = null;
+    let verdict = null;
+    for (const [atMs, r] of reads) ({ verdict, nullSinceMs: since } = machine.takeoverVerdict(watch, r, 'mac', atMs, since));
+    return verdict;
+  };
+  const listening = { kind: 'listening', trackId: 'a' };
+  check('takeover: one 204 is a blip', afterNulls(listening, [[0, null]]) === null);
+  check('takeover: two 204s under a second apart are still a blip', afterNulls(listening, [[0, null], [999, null]]) === null);
+  check('takeover: two 204s a second apart are a lost device', afterNulls(listening, [[0, null], [1000, null]]) === 'device-lost');
+  check('takeover: a read in between clears the 204 count', afterNulls(listening, [[0, null], [500, playing()], [1000, null]]) === null);
+  check('takeover: two 204s are a lost device while paused or confirming too',
+    afterNulls({ kind: 'paused-silence', trackId: 'a', pauseLanded: false }, [[0, null], [1000, null]]) === 'device-lost' &&
+    afterNulls({ kind: 'confirming', trackId: 'a', lastConfirmedId: null, before: null }, [[0, null], [1000, null]]) === 'device-lost');
+
+  check('listening: our song playing on our device is ours', verdictOf(listening, playing()) === null);
+  check('listening: a relinked copy of our song is ours', verdictOf(listening, playing({ itemId: 'm', linkedFromId: 'a' })) === null);
+  check('listening: a pause, another song or another device is a takeover',
+    verdictOf(listening, read()) === 'takeover' && verdictOf(listening, playing({ itemId: 'z' })) === 'takeover' &&
+    verdictOf(listening, playing({ deviceId: 'phone' })) === 'takeover');
+
+  const silent = (pauseLanded) => ({ kind: 'paused-silence', trackId: 'a', pauseLanded });
+  check('paused for silence: before our pause lands, playing is our song winding down',
+    verdictOf(silent(false), playing()) === null && verdictOf(silent(false), playing({ itemId: 'z', deviceId: 'phone' })) === null);
+  check('paused for silence: once it lands, any playing is a takeover', verdictOf(silent(true), playing()) === 'takeover');
+  check('paused for silence: once it lands, our song staying paused is nothing', verdictOf(silent(true), read()) === null);
+  check('paused for silence: once it lands, another song or device is a takeover',
+    verdictOf(silent(true), read({ itemId: 'z' })) === 'takeover' && verdictOf(silent(true), read({ deviceId: 'phone' })) === 'takeover');
+
+  // Confirmed 80 s into a 200 s song at t=0: it ends at 120 s, plus 3 s grace.
+  const inputLost = { kind: 'paused-input-lost', trackId: 'a', durationMs: 200_000, confirmedAt: { trackId: 'a', progressMs: 80_000, atMs: 0 } };
+  check('paused for input: before the song ends, our song playing on is ours', verdictOf(inputLost, playing(), 60_000) === null);
+  check('paused for input: before the song ends, a pause, another song or device is a takeover',
+    verdictOf(inputLost, read(), 60_000) === 'takeover' && verdictOf(inputLost, playing({ itemId: 'z' }), 60_000) === 'takeover' &&
+    verdictOf(inputLost, playing({ deviceId: 'phone' }), 60_000) === 'takeover' && verdictOf(inputLost, read(), 122_999) === 'takeover');
+  check('paused for input: after the song ends, stopping or autoplay is the song finishing',
+    verdictOf(inputLost, read(), 123_000) === null && verdictOf(inputLost, playing({ itemId: 'z' }), 123_000) === null);
+  check('paused for input: after the song ends, only another device is a takeover', verdictOf(inputLost, playing({ deviceId: 'phone' }), 123_000) === 'takeover');
+  check('paused for input: with no confirmation of this song, its end is never assumed',
+    verdictOf({ ...inputLost, confirmedAt: { trackId: 'b', progressMs: 0, atMs: 0 } }, read(), 500_000) === 'takeover' &&
+    verdictOf({ ...inputLost, confirmedAt: null }, read(), 500_000) === 'takeover');
+
+  // Requesting b; the run last confirmed a; the player showed y on the Mac
+  // when the command went out.
+  const confirming = (o = {}) => ({ kind: 'confirming', trackId: 'b', lastConfirmedId: 'a', before: { itemId: 'y', deviceId: 'mac' }, ...o });
+  check('confirming: nothing is judged before the run first confirms',
+    verdictOf(confirming({ lastConfirmedId: null }), playing({ itemId: 'z', deviceId: 'phone' })) === null);
+  check('confirming: another device is a takeover', verdictOf(confirming(), playing({ itemId: 'b', deviceId: 'phone' })) === 'takeover' &&
+    verdictOf(confirming({ before: null }), playing({ itemId: 'b', deviceId: 'phone' })) === 'takeover');
+  check('confirming: the device shown before our command is the player lagging',
+    verdictOf(confirming({ before: { itemId: 'y', deviceId: 'phone' } }), playing({ itemId: 'y', deviceId: 'phone' })) === null);
+  check('confirming: the requested, previous or before song is the player lagging',
+    verdictOf(confirming(), read({ itemId: 'b' })) === null && verdictOf(confirming(), playing({ itemId: 'a' })) === null &&
+    verdictOf(confirming(), playing({ itemId: 'y' })) === null && verdictOf(confirming(), playing({ itemId: 'm', linkedFromId: 'b' })) === null);
+  check('confirming: a song that is none of those is a takeover', verdictOf(confirming(), playing({ itemId: 'z' })) === 'takeover');
+  check('confirming: a player with no item yet is not judged', verdictOf(confirming(), read({ itemId: null })) === null);
 }
 
 cleanup();

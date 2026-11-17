@@ -31,10 +31,14 @@ import {
   COMMIT_SETTLE_MS,
   CONFIRM_TIMEOUT_MS,
   learnStep,
+  pauseConfirmVerdict,
   playerMatches,
+  takeoverVerdict,
   type LearnEffect,
   type LearnEvent,
   type LearnState,
+  type PlayerRead,
+  type TakeoverWatch,
 } from './learnMachine';
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -58,11 +62,6 @@ const RATE_LIMIT_WAIT_MS = 5_000;
  *  rate-limit retry. */
 const CONFIRM_BACKSTOP_MS = CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_LIMIT_WAIT_MS;
 const PAUSE_BACKSTOP_MS = PAUSE_CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_LIMIT_WAIT_MS;
-/** A 204 from /me/player counts only when it is still a 204 this much later. */
-const NULL_CONFIRM_MS = 1_000;
-/** Past this after a song's estimated end, Spotify stopping or autoplaying
- *  is the song finishing, not someone taking over. */
-const NATURAL_END_GRACE_MS = 3_000;
 /** A slice that runs to the track's end stops this far short of it. Past the
  *  end Spotify stops or autoplays another song: measured, that is the next
  *  song folded into this one; polled, it reads as someone taking over. */
@@ -127,8 +126,16 @@ async function rateLimited<T>(call: () => Promise<T>, alive: Alive): Promise<T> 
   }
 }
 
-const itemIs = (p: SpotifyPlaybackState, trackId: string): boolean =>
-  p.item?.id === trackId || p.item?.linked_from?.id === trackId;
+function toRead(p: SpotifyPlaybackState | null): PlayerRead | null {
+  if (!p) return null;
+  return {
+    itemId: p.item?.id ?? null,
+    linkedFromId: p.item?.linked_from?.id ?? null,
+    isPlaying: p.is_playing === true,
+    progressMs: p.progress_ms ?? 0,
+    deviceId: p.device?.id ?? null,
+  };
+}
 
 // ── Runner ───────────────────────────────────────────────────────────────
 
@@ -154,6 +161,8 @@ function createRunner(
    *  an earlier play, so it says nothing about whether this run measured it. */
   let songStartedAtMs = 0;
   let nullSinceMs: number | null = null;
+  /** The first of the current run of not-playing reads on our device. */
+  let notPlayingSinceMs: number | null = null;
   /** The song the run last confirmed, and what the player last reported. A
    *  confirm poll reading either is the player lagging our command, not
    *  someone else's music. */
@@ -189,6 +198,7 @@ function createRunner(
     silentSince = null;
     pauseLanded = false;
     nullSinceMs = null;
+    notPlayingSinceMs = null;
     if (next.kind === 'running' && next.step === 'starting' && next.section === 0 && next.attempt === 0) {
       songStartedAtMs = Date.now();
     }
@@ -298,31 +308,22 @@ function createRunner(
     }
   }
 
-  /** Someone else's playback during a confirm window. Left to time out, the
-   *  retry `play` and every later song's would take the device back from
-   *  them. Not judged before the run's first confirmation: until then nothing
-   *  is known to be ours, and the player may still show what was playing
-   *  before Start. */
-  function foreign(p: SpotifyPlaybackState, trackId: string, before: typeof lastSeen): boolean {
-    if (lastConfirmedId === null) return false;
-    const dev = p.device?.id ?? null;
-    if (dev !== deviceId && dev !== before?.deviceId) return true;
-    if (!p.item) return false;
-    return !itemIs(p, trackId) && !(lastConfirmedId !== null && itemIs(p, lastConfirmedId)) && p.item.id !== before?.itemId;
-  }
-
   function saw(p: SpotifyPlaybackState | null): void {
     if (p) lastSeen = { itemId: p.item?.id ?? null, deviceId: p.device?.id ?? null };
   }
 
-  /** Whether the player has been absent (204) for two reads at least
-   *  NULL_CONFIRM_MS apart. One 204 is a blip as often as a crash: alone it
-   *  paused a run, or let one unmute on a guess. */
-  function goneFor(p: SpotifyPlaybackState | null): boolean {
-    if (p) { nullSinceMs = null; return false; }
-    const now = Date.now();
-    nullSinceMs ??= now;
-    return now - nullSinceMs >= NULL_CONFIRM_MS;
+  /** Feeds a read to the takeover rule, keeping its 204 count. */
+  function takeoverFrom(watch: TakeoverWatch, read: PlayerRead | null): 'takeover' | 'device-lost' | null {
+    const t = takeoverVerdict(watch, read, deviceId, Date.now(), nullSinceMs);
+    nullSinceMs = t.nullSinceMs;
+    return t.verdict;
+  }
+
+  /** Feeds a read to the pause rule, keeping its not-playing count. */
+  function pausedFrom(read: PlayerRead | null): boolean {
+    const v = pauseConfirmVerdict(read, deviceId, Date.now(), notPlayingSinceMs);
+    notPlayingSinceMs = v.notPlayingSinceMs;
+    return v.verdict === 'paused';
   }
 
   async function confirmPoll(
@@ -334,22 +335,18 @@ function createRunner(
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
       saw(p);
-      // A client that has gone away pauses the run, rather than failing
-      // every song left as "did not start playback".
-      if (goneFor(p)) { dispatch({ kind: 'device-lost' }); return; }
-      const snap = {
-        itemId: p?.item?.id ?? null,
-        linkedFromId: p?.item?.linked_from?.id ?? null,
-        isPlaying: p?.is_playing === true,
-        progressMs: p?.progress_ms ?? 0,
-      };
-      if (p && playerMatches(snap, e.trackId, e.fromMs, e.toMs)) {
+      const read = toRead(p);
+      if (read && playerMatches(read, e.trackId, e.fromMs, e.toMs)) {
         lastConfirmedId = e.trackId;
-        confirmedAt = { trackId: e.trackId, progressMs: snap.progressMs, atMs: Date.now() };
+        confirmedAt = { trackId: e.trackId, progressMs: read.progressMs, atMs: Date.now() };
         dispatch({ kind: 'confirmed' });
         return;
       }
-      if (p && foreign(p, e.trackId, before)) { dispatch({ kind: 'takeover' }); return; }
+      // Someone else's playback, or a client that has gone away, pauses the
+      // run, rather than fighting them for the device or failing every song
+      // left as "did not start playback".
+      const v = takeoverFrom({ kind: 'confirming', trackId: e.trackId, lastConfirmedId, before }, read);
+      if (v) { dispatch({ kind: v }); return; }
     } catch (err) {
       if (!alive()) return;
       if (isSignedOut(err)) { dispatch({ kind: 'signed-out' }); return; }
@@ -363,10 +360,8 @@ function createRunner(
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
       saw(p);
-      // No session at all (a 204 that stays one) is nothing playing, as much
-      // as a pause is.
-      const gone = goneFor(p);
-      if (p ? !p.is_playing : gone) {
+      // A 204 is never paused: the backstop ends the run muted instead.
+      if (pausedFrom(toRead(p))) {
         pauseLanded = true;
         dispatch({ kind: 'spotify-paused' });
         return;
@@ -393,7 +388,8 @@ function createRunner(
       }
     } else if (state.kind === 'paused') {
       // A takeover while paused for something else must be seen, or a later
-      // input give-up or Stop pauses what is now someone's own playback.
+      // input give-up or Stop pauses what is now someone's own playback. The
+      // same poll sends a silence pause again until it is seen to land.
       if (state.reason === 'input-lost' || state.reason === 'silence') {
         later(alive, TAKEOVER_POLL_MS, () => void pollPlayer(alive));
       }
@@ -406,33 +402,15 @@ function createRunner(
     if (alive()) later(alive, PAUSED_TICK_MS, () => tick(alive));
   }
 
-  function verdict(p: SpotifyPlaybackState | null): 'takeover' | 'device-lost' | null {
-    const s = state;
-    if (s.kind !== 'running' && s.kind !== 'paused') return null;
-    if (goneFor(p)) return 'device-lost';
-    if (!p) return null;
+  function watchFor(s: LearnState): TakeoverWatch | null {
+    if (s.kind === 'running' && s.step === 'listening') return { kind: 'listening', trackId: s.queue[s.index].id };
+    if (s.kind !== 'paused') return null;
     const item = s.queue[s.index];
-    const otherDevice = (p.device?.id ?? null) !== deviceId;
-    const elsewhere = !itemIs(p, item.id) || otherDevice;
-    if (s.kind === 'paused' && s.reason === 'silence') {
-      // We paused it. Until Spotify has shown it stopped, playing is our own
-      // song winding down, or a pause that never took; calling that a
-      // takeover would let Stop unmute straight into it.
-      if (!pauseLanded) {
-        if (!p.is_playing) pauseLanded = true;
-        return null;
-      }
-      return p.is_playing || elsewhere ? 'takeover' : null;
+    if (s.reason === 'silence') return { kind: 'paused-silence', trackId: item.id, pauseLanded };
+    if (s.reason === 'input-lost') {
+      return { kind: 'paused-input-lost', trackId: item.id, durationMs: item.durationMs, confirmedAt };
     }
-    if (s.kind === 'paused' && s.reason === 'input-lost' && confirmedAt?.trackId === item.id) {
-      // Paused for a lost input, our song plays on to its end. After that,
-      // Spotify stopping or autoplaying is the song finishing; read as a
-      // takeover it would kill the auto-resume and the 10-minute give-up and
-      // hold the Mac awake all night. Only another device is someone else.
-      const endsAtMs = confirmedAt.atMs + (item.durationMs - confirmedAt.progressMs) + NATURAL_END_GRACE_MS;
-      if (Date.now() >= endsAtMs) return otherDevice ? 'takeover' : null;
-    }
-    return elsewhere || !p.is_playing ? 'takeover' : null;
+    return null;
   }
 
   async function pollPlayer(alive: Alive): Promise<void> {
@@ -440,7 +418,17 @@ function createRunner(
       const p = await rateLimited(getPlaybackState, alive);
       if (!alive()) return;
       saw(p);
-      const v = verdict(p);
+      const read = toRead(p);
+      if (state.kind === 'paused' && state.reason === 'silence' && !pauseLanded) {
+        if (pausedFrom(read)) pauseLanded = true;
+        // Silence fired because the sound may be going to a speaker. A pause
+        // that failed was never sent again, and the run sat paused with
+        // Spotify still playing out of it. No events: the machine has
+        // already paused the run, and this only makes it true.
+        else mutate(alive, () => pause(deviceId ?? undefined)).catch((err) => failed(err, alive));
+      }
+      const watch = watchFor(state);
+      const v = watch ? takeoverFrom(watch, read) : null;
       if (v) { dispatch({ kind: v }); return; }
     } catch (err) {
       if (!alive()) return;
