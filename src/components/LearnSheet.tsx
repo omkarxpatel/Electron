@@ -82,17 +82,31 @@ export function LearnSheet({ learner, playlists, onClose }: Props) {
     return out;
   }, [folders.folders, folders.assignments, playlists]);
 
+  // Only the newest preflight may write: a slow earlier one landing late
+  // would put a problem back on screen that the user has already fixed.
+  const preflightRequest = useRef(0);
+  const [checking, setChecking] = useState(false);
   const refreshPreflight = useCallback(async (): Promise<PreflightItem[]> => {
-    const found = await learner.preflight();
-    setItems(found);
-    return found;
+    const request = ++preflightRequest.current;
+    setChecking(true);
+    try {
+      const found = await learner.preflight();
+      if (request === preflightRequest.current) setItems(found);
+      return found;
+    } finally {
+      if (request === preflightRequest.current) setChecking(false);
+    }
   }, [learner]);
 
+  // Looked at on open, on coming back to the window, and on "Check again".
+  // Without the last two, a user who did what the list asked (started a song
+  // in Spotify) faces a Start that stays disabled until they reopen the sheet.
   useEffect(() => {
     void refreshPreflight();
-    // Opening the sheet is the one moment to look; Start looks again.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const onFocus = () => void refreshPreflight();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshPreflight]);
 
   // Persist and re-plan on every change, debounced: each plan rescans pages.
   useEffect(() => {
@@ -161,6 +175,7 @@ export function LearnSheet({ learner, playlists, onClose }: Props) {
                   ref={(el) => {
                     if (el) el.indeterminate = count > 0 && count < f.ids.length;
                   }}
+                  disabled={starting}
                   onChange={() => toggleMany(f.ids)}
                 />
                 <span>
@@ -171,7 +186,7 @@ export function LearnSheet({ learner, playlists, onClose }: Props) {
           })}
           {playlists.map((p) => (
             <label key={p.id} className="learn-row">
-              <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} />
+              <input type="checkbox" checked={selected.includes(p.id)} disabled={starting} onChange={() => toggle(p.id)} />
               <span>{p.name}</span>
             </label>
           ))}
@@ -190,15 +205,27 @@ export function LearnSheet({ learner, playlists, onClose }: Props) {
         </div>
 
         {items.length > 0 && (
-          <ul className="learn-preflight">
-            {[...blocking, ...fixable].map((i) => (
-              <li key={i}>{PREFLIGHT_COPY[i]}</li>
-            ))}
-          </ul>
+          <>
+            <ul className="learn-preflight">
+              {[...blocking, ...fixable].map((i) => (
+                <li key={i}>{PREFLIGHT_COPY[i]}</li>
+              ))}
+            </ul>
+            <div className="learn-sheet-actions">
+              <button type="button" className="learn-btn" disabled={checking} onClick={() => void refreshPreflight()}>
+                {checking ? 'Checking…' : 'Check again'}
+              </button>
+            </div>
+          </>
         )}
         {fixable.length > 0 && (
           <label className="learn-row">
-            <input type="checkbox" checked={fixSettings} onChange={(e) => setFixSettings(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={fixSettings}
+              disabled={starting}
+              onChange={(e) => setFixSettings(e.target.checked)}
+            />
             <span>Turn on AI Enhance and Remember tracks for this run</span>
           </label>
         )}
