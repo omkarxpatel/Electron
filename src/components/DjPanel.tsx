@@ -11,6 +11,9 @@ import { useDjSuggestions, hitScanCap, type DjSource } from '../dj/useDjSuggesti
 import { useDjVoice } from '../dj/useDjVoice';
 import { smallestImage } from '../shared/image';
 import { useTrackMenu } from '../spotify/useTrackMenu';
+import type { OvernightLearner } from '../dj/useOvernightLearner';
+import { LearnSheet } from './LearnSheet';
+import { LearnStatus } from './LearnStatus';
 
 /** How many suggestions are worth looking at. Past a handful this stops being
  *  a recommendation and starts being the playlist again, in a new order. */
@@ -43,6 +46,7 @@ interface Props {
   audible: boolean;
   duckGainRef: { current: GainNode | null };
   voiceGainRef: { current: GainNode | null };
+  learner: OvernightLearner;
 }
 
 /**
@@ -122,6 +126,7 @@ export function DjPanel({
   audible,
   duckGainRef,
   voiceGainRef,
+  learner,
 }: Props) {
   // Suggestions are computed, not a list you can edit — no source to remove
   // from. The row keeps its own Queue button; the menu adds the rest.
@@ -132,6 +137,9 @@ export function DjPanel({
   const [speakEnabled, setSpeakEnabled] = useState<boolean>(true);
   const [queued, setQueued] = useState<Record<string, 'pending' | 'done' | string>>({});
   const [spoken, setSpoken] = useState<string | null>(null);
+  const [learnOpen, setLearnOpen] = useState(false);
+  const learnBusy =
+    learner.state.kind === 'running' || learner.state.kind === 'paused' || learner.state.kind === 'ending';
 
   const voice = useDjVoice({ enabled: speakEnabled, audible, duckGainRef, voiceGainRef });
 
@@ -292,7 +300,19 @@ export function DjPanel({
           <IconSpeak muted={!speakEnabled} />
           Speak it
         </button>
+        <button
+          type="button"
+          className="dj-speak"
+          onClick={() => setLearnOpen(true)}
+          disabled={learnBusy}
+          title="Silently play slices of the songs in playlists you tick, so the DJ learns them"
+        >
+          Learn playlists
+        </button>
       </div>
+
+      <LearnStatus learner={learner} />
+      {learnOpen && <LearnSheet learner={learner} playlists={playlists} onClose={() => setLearnOpen(false)} />}
 
       {request.trim() !== '' && state.kind === 'ready' && (
         <div className="dj-intent" data-understood={state.intent.empty ? 'false' : 'true'}>

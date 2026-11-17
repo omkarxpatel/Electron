@@ -22,6 +22,7 @@ import type {
 import { useTrackMenu } from '../spotify/useTrackMenu';
 import { formatDuration } from '../shared/format';
 import type { TrackProfile } from '../audio/trackProfile';
+import type { OvernightLearner } from '../dj/useOvernightLearner';
 import { pickMediumImage, smallestImage } from '../shared/image';
 
 type View = 'library' | 'album' | 'artist' | 'queue' | 'stats' | 'dj';
@@ -66,6 +67,7 @@ interface Props {
     audible: boolean;
     duckGainRef: { current: GainNode | null };
     voiceGainRef: { current: GainNode | null };
+    learner: OvernightLearner;
   };
 }
 
@@ -324,6 +326,7 @@ function SpotifyOverlayImpl({
           audible={dj.audible}
           duckGainRef={dj.duckGainRef}
           voiceGainRef={dj.voiceGainRef}
+          learner={dj.learner}
         />
       )}
       {view === 'queue' && (

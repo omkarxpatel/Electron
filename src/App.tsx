@@ -37,7 +37,8 @@ import { useEQ } from './state/eq';
 import { useEnhancer } from './state/enhancer';
 import { useEffectsRack } from './state/effects';
 import { PALETTES, buildCustomPalette } from './visualizers/palettes';
-import { readLearnMuteFlag } from './state/learnMute';
+import { readLearnMuteFlag, writeLearnMuteFlag } from './state/learnMute';
+import { LearnMutedBanner } from './components/LearnMutedBanner';
 import { useAlbumPalette } from './visualizers/useAlbumPalette';
 import { pickMediumImage } from './shared/image';
 import { hexToRgba } from './shared/color';
@@ -295,6 +296,19 @@ function AppContent() {
   // audible: a silent update restarting the app mid-run would end the night.
   const learnerActive =
     learner.state.kind === 'running' || learner.state.kind === 'paused' || learner.state.kind === 'ending';
+  // The flag lives in localStorage, which React cannot watch, so it is
+  // re-read whenever the run changes state.
+  const [learnMuteFlag, setLearnMuteFlag] = useState(readLearnMuteFlag);
+  useEffect(() => {
+    setLearnMuteFlag(readLearnMuteFlag());
+  }, [learner.state.kind]);
+  // Unmute first, clear the flag second: the other order opens a window
+  // where a crash leaves the app audible with nothing on disk saying so.
+  const unmuteAfterLearning = useCallback(() => {
+    setLearnMuted(false);
+    writeLearnMuteFlag(false);
+    setLearnMuteFlag(false);
+  }, [setLearnMuted]);
   useEffect(() => {
     window.api.update.setActivity(audioActive || learnerActive);
   }, [audioActive, learnerActive]);
@@ -453,6 +467,7 @@ function AppContent() {
     >
       <AlbumBackdrop url={settings.albumArtBackdrop ? albumImageUrl : null} />
       <UpdateBanner />
+      <LearnMutedBanner visible={learnMuteFlag && !learnerActive} onUnmute={unmuteAfterLearning} />
       <UpdatedNotice />
       <UpdateDialog />
       <ChromeBar
