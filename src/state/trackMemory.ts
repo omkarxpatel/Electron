@@ -39,7 +39,7 @@ export interface TrackMemoryStats {
  * forget the first playlist it was given while it learned the second.
  *
  * Measured, not assumed: Electron's localStorage accepted a 40 million
- * character value in a fresh profile, and an entry is ~141 characters, so the
+ * character value in a fresh profile, and an entry is ~147 characters, so the
  * quota sits somewhere past 250,000 tracks. The cost that does grow is that
  * the whole store is re-serialised on every track change and parsed at
  * startup, which is why check:enhancer still asserts the size of an entry.

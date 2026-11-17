@@ -163,7 +163,11 @@ export function LearnSheet({ learner, playlists, onClose }: Props) {
         <p className="learn-note">
           Plays short slices of each song silently through Spotify so the DJ can rank them. Nothing plays out loud.
         </p>
-        <p className="learn-note">Turn crossfade off in Spotify first. A crossfade blends the next song into each slice.</p>
+        <p className="learn-note">
+          Turn crossfade off in Spotify first. A crossfade blends the next song into the end of each one, which the run
+          listens to.
+        </p>
+        <p className="learn-note">Each learned song plays on your Spotify account, so it shows up in your listening history.</p>
 
         <div className="learn-list">
           {folderRows.map((f) => {

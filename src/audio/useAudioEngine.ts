@@ -55,6 +55,9 @@ interface AudioEngineState {
 }
 
 const PARAM_RAMP = 0.02; // 20 ms smoothing on parameter changes — avoids zipper noise
+/** Time constant of the learning mute's ramp: within 1% of its target in
+ *  about a quarter of a second. Stepped, the gain would click. */
+const LEARN_MUTE_TAU_S = 0.05;
 
 /** Prefix on the error a failed setSinkId leaves, so the re-apply on device
  *  return can clear its own message without clearing anyone else's. */
@@ -1066,7 +1069,7 @@ export function useAudioEngine(
     const ctx = ctxRef.current;
     const node = learnMuteGainRef.current;
     if (!ctx || !node) return;
-    node.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.05);
+    node.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, LEARN_MUTE_TAU_S);
   }, []);
 
   return {
