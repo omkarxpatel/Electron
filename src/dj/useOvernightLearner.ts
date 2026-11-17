@@ -171,6 +171,9 @@ function createRunner(
   /** Bumped by every Start. A song's marker outlives the steps of its run,
    *  and without this a late failure would land on the next run's tally. */
   let runId = 0;
+  /** Marks still waiting on their record. `finish` holds its cleanup until
+   *  this is zero. */
+  let pendingMarks = 0;
   const timers = new Set<number>();
   /** Spotify mutations, one at a time. A pause sent while a play is still in
    *  flight can land first, and the play then starts music after the poll
@@ -351,14 +354,19 @@ function createRunner(
   function markWhenStored(trackId: string, name: string, sinceMs: number): void {
     const forRun = runId;
     const giveUpAtMs = Date.now() + MARK_GIVE_UP_MS;
+    pendingMarks++;
     const look = (): void => {
       const d = depsRef.current;
       const stored = d.peek(trackId);
-      if (stored && stored.updated >= sinceMs && d.markLearned(trackId, LEARN_VERSION)) return;
+      if (stored && stored.updated >= sinceMs && d.markLearned(trackId, LEARN_VERSION)) {
+        pendingMarks--;
+        return;
+      }
       if (Date.now() < giveUpAtMs) {
         window.setTimeout(look, MARK_RECHECK_MS);
         return;
       }
+      pendingMarks--;
       // The machine counted the song learned when it committed. This undoes
       // that once, on the tally of the run that played it.
       if (forRun !== runId || state.kind === 'idle') return;
@@ -518,9 +526,23 @@ function createRunner(
   /** The last song's commit lands on the enhancer's next tick after the
    *  measuring id changes. Clearing the run's loudness, or switching Remember
    *  tracks back off, before then would commit it with the meter's figure or
-   *  not at all. */
+   *  not at all. That tick can land after `done`, so this also waits for
+   *  every mark still waiting on its record, for no longer than a mark
+   *  waits. Otherwise the cleanup either refuses the last song's commit, and
+   *  its mark fails it "nothing was measured", or lets it commit the meter's
+   *  loudness in place of the run's.
+   *
+   *  A Start during the wait cancels it with the rest of this step's timers.
+   *  The new run sets the measure gate with its first effect and clears the
+   *  run's loudness before any slice that can commit, and it takes over
+   *  `restore` (see start), so nothing of this cleanup is lost. */
   function finish(alive: Alive): void {
-    later(alive, COMMIT_SETTLE_MS, () => {
+    const giveUpAtMs = Date.now() + MARK_GIVE_UP_MS;
+    const cleanUp = (): void => {
+      if (pendingMarks > 0 && Date.now() < giveUpAtMs) {
+        later(alive, MARK_RECHECK_MS, cleanUp);
+        return;
+      }
       const d = depsRef.current;
       d.learnLufsRef.current = undefined;
       d.measureGateRef.current.mode = 'all';
@@ -529,7 +551,8 @@ function createRunner(
         d.setRememberTracks(restore.rememberTracks);
         restore = null;
       }
-    });
+    };
+    later(alive, COMMIT_SETTLE_MS, cleanUp);
   }
 
   return {
@@ -545,7 +568,10 @@ function createRunner(
       if (state.kind !== 'idle' && state.kind !== 'done') return;
       if (!preflightDevice) return;
       const d = depsRef.current;
-      restore = fixSettings ? { aiEnhance: d.aiEnhance, rememberTracks: d.rememberTracks } : null;
+      // A restore still set is the last run's, whose cleanup this Start
+      // cancels: the settings now on may be the ones that run forced on, so
+      // reading them would lose the user's own for good.
+      restore ??= fixSettings ? { aiEnhance: d.aiEnhance, rememberTracks: d.rememberTracks } : null;
       if (fixSettings) {
         d.setAiEnhance(true);
         d.setRememberTracks(true);
