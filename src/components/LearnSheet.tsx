@@ -16,6 +16,7 @@ const PREFLIGHT_COPY: Record<PreflightItem, string> = {
   'ai-enhance': 'AI Enhance is off. It does the measuring.',
   'remember-tracks': 'Remember tracks is off. Without it nothing is kept.',
   'spotify-device': 'Open Spotify on this Mac and start any song, so the run has a Computer device to play on.',
+  signal: 'Start any song in Spotify on this Mac, so the app can hear that the sound is coming through it.',
 };
 
 function readSelection(): string[] {

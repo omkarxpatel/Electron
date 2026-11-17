@@ -87,7 +87,7 @@ export interface LearnerDeps {
   aiEnhance: boolean; setAiEnhance(on: boolean): void;
   rememberTracks: boolean; setRememberTracks(on: boolean): void;
 }
-export type PreflightItem = 'live' | 'ai-enhance' | 'remember-tracks' | 'spotify-device';
+export type PreflightItem = 'live' | 'ai-enhance' | 'remember-tracks' | 'spotify-device' | 'signal';
 export interface OvernightLearner {
   state: LearnState;
   measuring: { trackId: string | null } | null;   // null unless running, paused or ending
@@ -124,6 +124,19 @@ async function rateLimited<T>(call: () => Promise<T>, alive: Alive): Promise<T> 
       await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_WAIT_MS));
     }
   }
+}
+
+/** Whether `deviceId` is playing and its sound is reaching the measure tap
+ *  right now. A failed read proves nothing, so it is not heard. */
+async function hearsDevice(deviceId: string, tapRef: { current: LoudnessTap | null }): Promise<boolean> {
+  let p: SpotifyPlaybackState | null;
+  try {
+    p = await rateLimited(getPlaybackState, () => true);
+  } catch {
+    return false;
+  }
+  const lufs = tapRef.current?.meter.shortTermLufs();
+  return p?.device?.id === deviceId && p.is_playing === true && lufs !== undefined && lufs > SILENCE_LUFS;
 }
 
 function toRead(p: SpotifyPlaybackState | null): PlayerRead | null {
@@ -539,8 +552,17 @@ export function useOvernightLearner(deps: LearnerDeps): OvernightLearner {
       // Only the desktop client plays into BlackHole. A phone or speaker as
       // the active device would play the whole run out loud.
       const found = devices.find((x) => x.is_active && !!x.id && !x.is_restricted && x.type === 'Computer');
-      runner.offerDevice(found?.id ?? null);
+      // An active Computer can be another computer, and the run would pin
+      // every play to it. Intros are never silence-checked, so each song's
+      // first 15 s, and 8 s of its middle, would play out loud in another
+      // room. Only sound from that device reaching this Mac's capture proves
+      // it is this Mac's Spotify. Offered to start() only then, so a run
+      // cannot start on a device nobody has heard.
+      const id = found?.id ?? null;
+      const heard = id !== null && (await hearsDevice(id, d.loudnessTapRef));
+      runner.offerDevice(heard ? id : null);
       if (!found) failing.push('spotify-device');
+      else if (!heard) failing.push('signal');
     } catch {
       runner.offerDevice(null);
       failing.push('spotify-device');
