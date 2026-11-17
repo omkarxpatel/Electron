@@ -1436,6 +1436,10 @@ console.log('\nOvernight learner: run');
   check('the learnable minimum is the commit minimum plus a 2 s margin', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000 + 2000);
   const happy = run([{ kind: 'start', plan: one }, ...[0, 1, 2].flatMap(() => [{ kind: 'confirmed' }, { kind: 'section-elapsed' }]), { kind: 'committed' }, { kind: 'spotify-paused' }]);
   check('a full song ends learned and unmuted', happy.state.kind === 'done' && happy.state.reason === 'finished' && happy.state.tally.learned === 1 && happy.state.muted === false);
+  // The coverage bar's total. Without it in the tally, a finished or ending
+  // run has no queue left to divide by and the bar vanished at the end.
+  check('the tally keeps the number of songs queued through to done', happy.state.tally.queued === 1 &&
+    run([{ kind: 'start', plan: plan.planRun([c('a'), c('b')], () => null) }, { kind: 'stop' }, { kind: 'pause-failed' }]).state.tally.queued === 2);
   check('muting starts the run and keeps the Mac awake', JSON.stringify(happy.effects.slice(0, 2)) === JSON.stringify([{ kind: 'keep-awake', on: true }, { kind: 'mute', on: true }]));
   check('measure modes follow the slices', happy.effects.filter((e) => e.kind === 'measure').map((e) => e.mode + ':' + e.trackId).join() ===
     'none:a,key-tempo:a,none:a,none:a,all:a,none:a,none:a,key-tempo:a,none:a,none:null');
@@ -1465,6 +1469,11 @@ console.log('\nOvernight learner: run');
     const r = run([{ kind: 'start', plan: one }, { kind: 'confirmed' }, { kind: 'device-lost' }, { kind: 'stop' }, { kind: 'pause-failed' }]);
     return r.state.kind === 'done' && r.state.muted === true && !r.effects.some((e) => e.kind === 'mute' && !e.on);
   })());
+  // The strip shows Resume only where it does something.
+  check('Resume is offered exactly where the machine acts on it', ['input-lost', 'silence', 'takeover', 'device-lost'].every((reason) => {
+    const s = { kind: 'paused', reason, queue: one.queue, index: 0, since: 0, tally: { learned: 0, skipped: 0, failed: [], queued: 1 } };
+    return (machine.learnStep(s, { kind: 'resume' }).state !== s) === machine.canResume(reason);
+  }));
   check('an empty plan never mutes', (() => { const r = run([{ kind: 'start', plan: { queue: [], skipped: [] } }]); return r.state.kind === 'done' && r.effects.length === 0; })());
   check('a relinked track still confirms', machine.playerMatches({ itemId: 'm', linkedFromId: 'a', isPlaying: true, progressMs: 500 }, 'a', 0, 15_000));
   check('a paused player does not confirm', !machine.playerMatches({ itemId: 'a', linkedFromId: null, isPlaying: false, progressMs: 500 }, 'a', 0, 15_000));

@@ -36,6 +36,9 @@ export const NATURAL_END_GRACE_MS = 3_000;
 // ── Types ────────────────────────────────────────────────────────────────
 
 export interface LearnTally {
+  /** Songs the run set out to learn: the coverage bar's total, kept here so
+   *  an ending or finished run, which no longer holds its queue, can show it. */
+  queued: number;
   learned: number;
   skipped: number;
   failed: Array<{ id: string; name: string; reason: string }>;
@@ -133,6 +136,10 @@ function nextSong(queue: LearnQueueItem[], index: number, tally: LearnTally, lea
 
 const ignore = (state: LearnState): Step => ({ state, effects: [] });
 
+/** Whether Resume does anything. A lost input resumes by itself when it comes
+ *  back, so a Resume button there would do nothing. */
+export const canResume = (reason: PauseReason): boolean => reason !== 'input-lost';
+
 // ── Reducer ──────────────────────────────────────────────────────────────
 
 export function learnStep(state: LearnState, event: LearnEvent): Step {
@@ -148,7 +155,7 @@ export function learnStep(state: LearnState, event: LearnEvent): Step {
   switch (state.kind) {
     case 'idle': {
       if (event.kind !== 'start') return ignore(state);
-      const tally: LearnTally = { learned: 0, skipped: event.plan.skipped.length, failed: [] };
+      const tally: LearnTally = { queued: event.plan.queue.length, learned: 0, skipped: event.plan.skipped.length, failed: [] };
       if (event.plan.queue.length === 0) {
         return { state: { kind: 'done', reason: 'finished', tally, muted: false }, effects: [] };
       }
@@ -236,7 +243,7 @@ export function learnStep(state: LearnState, event: LearnEvent): Step {
         case 'input-back':
           return reason === 'input-lost' ? restart() : ignore(state);
         case 'resume':
-          return reason === 'input-lost' ? ignore(state) : restart();
+          return canResume(reason) ? restart() : ignore(state);
         case 'tick':
           if (reason === 'input-lost' && event.now - state.since >= INPUT_GIVE_UP_MS) {
             return { state: { kind: 'ending', reason: 'input-timeout', tally }, effects: [{ kind: 'pause-spotify' }] };

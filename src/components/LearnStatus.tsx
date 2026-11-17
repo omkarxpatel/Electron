@@ -1,13 +1,14 @@
 import type { OvernightLearner } from '../dj/useOvernightLearner';
-import type { PauseReason, EndReason } from '../dj/learnMachine';
+import { canResume, type PauseReason, type EndReason, type LearnTally } from '../dj/learnMachine';
 
 // ── Copy ─────────────────────────────────────────────────────────────────
 
 const PAUSE_COPY: Record<PauseReason, string> = {
-  'input-lost': 'Lost the audio input. Learning will resume by itself when it comes back.',
-  silence: 'Heard silence, so Spotify was paused in case the sound went to a speaker.',
-  takeover: 'Paused: playback was taken over.',
-  'device-lost': 'Paused: the Spotify app went away.',
+  'input-lost': 'The audio input was lost. Learning carries on by itself when it comes back.',
+  silence: 'The app heard silence, so it paused Spotify in case the sound was going to a speaker.',
+  takeover:
+    'Spotify was used for something else, so learning stepped aside. The app stays muted until you press Stop, or Resume to carry on learning.',
+  'device-lost': 'The Spotify app on this Mac went away.',
 };
 
 const END_COPY: Record<EndReason, string> = {
@@ -26,60 +27,85 @@ interface Props {
   learner: OvernightLearner;
 }
 
+/** Resume only where the machine acts on it: a lost input resumes by itself,
+ *  and a button that does nothing there would be a lie. */
+function Actions({ learner }: Props) {
+  const { state } = learner;
+  if (state.kind !== 'running' && state.kind !== 'paused') return null;
+  return (
+    <div className="learn-status-actions">
+      {state.kind === 'paused' && canResume(state.reason) && (
+        <button type="button" className="learn-btn" onClick={learner.resume}>
+          Resume
+        </button>
+      )}
+      <button type="button" className="learn-btn" onClick={learner.stop}>
+        Stop
+      </button>
+    </div>
+  );
+}
+
+function Counts({ tally }: { tally: LearnTally }) {
+  const { queued, learned, skipped, failed } = tally;
+  return (
+    <>
+      <span className="learn-status-sub">
+        {learned} learned · {skipped} skipped · {failed.length} failed
+      </span>
+      {queued > 0 && (
+        <div
+          className="dj-coverage-bar"
+          style={{ ['--heard' as string]: `${Math.round((learned / queued) * 100)}%` }}
+          aria-hidden
+        />
+      )}
+    </>
+  );
+}
+
 export function LearnStatus({ learner }: Props) {
   const { state, current } = learner;
   if (state.kind === 'idle') return null;
-
-  if (state.kind === 'done') {
-    const { learned, skipped, failed } = state.tally;
-    return (
-      <div className="learn-status" data-kind="done">
-        <span className="learn-status-line">{END_COPY[state.reason]}</span>
-        <span className="learn-status-sub">
-          {learned} learned · {skipped} skipped · {failed.length} failed
-        </span>
-        {failed.length > 0 && (
-          <ul className="learn-failures">
-            {failed.map((f) => (
-              <li key={f.id}>
-                {f.name}: {f.reason}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    );
-  }
-
-  const queueLength = state.kind === 'ending' ? 0 : state.queue.length;
-  const { learned } = state.tally;
-  const pct = queueLength > 0 ? Math.round((learned / queueLength) * 100) : 0;
 
   return (
     <div className="learn-status" data-kind={state.kind}>
       {state.kind === 'paused' && <span className="learn-status-line">{PAUSE_COPY[state.reason]}</span>}
       {state.kind === 'ending' && <span className="learn-status-line">Finishing up</span>}
+      {state.kind === 'done' && <span className="learn-status-line">{END_COPY[state.reason]}</span>}
       {state.kind === 'running' && current && (
         <span className="learn-status-line">
           Learning {current.index + 1} of {current.total} · {current.name} – {current.artists} ·{' '}
           {current.section} · done about {clock(Date.now() + current.etaMs)}
         </span>
       )}
-      {queueLength > 0 && (
-        <div className="dj-coverage-bar" style={{ ['--heard' as string]: `${pct}%` }} aria-hidden />
+      <Counts tally={state.tally} />
+      {state.kind === 'done' && state.tally.failed.length > 0 && (
+        <ul className="learn-failures">
+          {state.tally.failed.map((f) => (
+            <li key={f.id}>
+              {f.name}: {f.reason}
+            </li>
+          ))}
+        </ul>
       )}
-      {state.kind !== 'ending' && (
-        <div className="learn-status-actions">
-          {state.kind === 'paused' && (
-            <button type="button" className="learn-btn" onClick={learner.resume}>
-              Resume
-            </button>
-          )}
-          <button type="button" className="learn-btn" onClick={learner.stop}>
-            Stop
-          </button>
-        </div>
-      )}
+      <Actions learner={learner} />
+    </div>
+  );
+}
+
+/** App-wide, in the same place as LearnMutedBanner. The run's own status
+ *  lives in the DJ panel, so without this a run paused for a takeover in the
+ *  morning left the whole app silent with nothing on screen saying why. */
+export function LearnPausedBanner({ learner }: Props) {
+  const { state } = learner;
+  if (state.kind !== 'paused') return null;
+  return (
+    <div className="learn-muted-banner" role="status">
+      <span>
+        Learning is paused and the app is muted. {PAUSE_COPY[state.reason]}
+      </span>
+      <Actions learner={learner} />
     </div>
   );
 }

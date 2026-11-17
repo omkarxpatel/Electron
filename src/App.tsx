@@ -39,6 +39,7 @@ import { useEffectsRack } from './state/effects';
 import { PALETTES, buildCustomPalette } from './visualizers/palettes';
 import { readLearnMuteFlag, writeLearnMuteFlag } from './state/learnMute';
 import { LearnMutedBanner } from './components/LearnMutedBanner';
+import { LearnPausedBanner } from './components/LearnStatus';
 import { useAlbumPalette } from './visualizers/useAlbumPalette';
 import { pickMediumImage } from './shared/image';
 import { hexToRgba } from './shared/color';
@@ -468,6 +469,7 @@ function AppContent() {
       <AlbumBackdrop url={settings.albumArtBackdrop ? albumImageUrl : null} />
       <UpdateBanner />
       <LearnMutedBanner visible={learnMuteFlag && !learnerActive} onUnmute={unmuteAfterLearning} />
+      <LearnPausedBanner learner={learner} />
       <UpdatedNotice />
       <UpdateDialog />
       <ChromeBar
