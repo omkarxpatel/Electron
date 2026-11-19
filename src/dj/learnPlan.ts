@@ -25,11 +25,14 @@ export const MIDDLE_AT_FRACTION = 0.4;
 /** `MIN_COMMIT_SECONDS` in ms plus 7 s. Below the commit minimum a
  *  measurement is refused, so a song that short could be played and never
  *  learned. The 7 s covers the 2 s a slice that reaches the end of the track
- *  stops short of it, plus up to 5 s from sending the play to confirming it:
- *  a slice that reaches the end is timed from when the play went out, not
- *  from when listening starts, so the whole confirmation lag comes off it.
- *  With 2 s, a 22-23.5 s song listened for under 20 s and failed "nothing
- *  was measured" every night. Not imported: see the header. */
+ *  stops short of it, plus 5 s from sending the play to confirming it: a
+ *  slice that reaches the end is timed from when the play went out, not from
+ *  when listening starts, so the whole confirmation lag comes off it. The 5 s
+ *  is what the harness was run with (commands landing 1 s late, reads 2.5 s
+ *  stale), not a bound. A slower confirmation, or lead-in silence, costs a
+ *  27-32 s song its commit: refused rather than mis-learned, and queued again
+ *  the next night. With 2 s, a 22-23.5 s song listened for under 20 s and
+ *  failed "nothing was measured" every night. Not imported: see the header. */
 export const MIN_LEARNABLE_MS = 27_000;
 export const TRUSTED_TEMPO_CONFIDENCE = 0.6;
 /** Planning figure for a run's length: the slices plus seeking and settling. */

@@ -1643,7 +1643,7 @@ console.log('\nOvernight learner: reading the player');
   check('takeover: a read in between clears the 204 count', afterNulls(listening, [[0, null], [500, playing()], [1000, null]]) === null);
   check('takeover: two 204s are a lost device while paused or confirming too',
     afterNulls({ kind: 'paused-silence', track: A, playedId: 'a', pauseLanded: false }, [[0, null], [1000, null]]) === 'device-lost' &&
-    afterNulls({ kind: 'confirming', track: A, lastConfirmedId: null, before: null }, [[0, null], [1000, null]]) === 'device-lost');
+    afterNulls({ kind: 'confirming', track: A, lastConfirmedId: null, before: null, endsAtMs: null }, [[0, null], [1000, null]]) === 'device-lost');
 
   check('listening: our song playing on our device is ours', verdictOf(listening, playing()) === null);
   check('listening: a relinked copy of our song is ours', verdictOf(listening, playing({ itemId: 'm', linkedFromId: 'a' })) === null);
@@ -1659,18 +1659,23 @@ console.log('\nOvernight learner: reading the player');
   check('paused for silence: once it lands, another song or device is a takeover',
     verdictOf(silent(true), read({ itemId: 'z' })) === 'takeover' && verdictOf(silent(true), read({ deviceId: 'phone' })) === 'takeover');
 
-  // Confirmed 80 s into a 200 s song at t=0: it ends at 120 s, plus 3 s grace.
-  const inputLost = { kind: 'paused-input-lost', track: A, playedId: 'a', confirmedAt: { trackId: 'a', progressMs: 80_000, atMs: 0 } };
+  // Confirmed 80 s into a 200 s song at t=0: it can end at 120 s at the earliest.
+  const inputLost = { kind: 'paused-input-lost', track: A, playedId: 'a', endsAtMs: 120_000 };
   check('paused for input: before the song ends, our song playing on is ours', verdictOf(inputLost, playing(), 60_000) === null);
   check('paused for input: before the song ends, a pause, another song or device is a takeover',
     verdictOf(inputLost, read(), 60_000) === 'takeover' && verdictOf(inputLost, playing({ itemId: 'z' }), 60_000) === 'takeover' &&
-    verdictOf(inputLost, playing({ deviceId: 'phone' }), 60_000) === 'takeover' && verdictOf(inputLost, read(), 122_999) === 'takeover');
-  check('paused for input: after the song ends, stopping or autoplay is the song finishing',
-    verdictOf(inputLost, read(), 123_000) === null && verdictOf(inputLost, playing({ itemId: 'z' }), 123_000) === null);
-  check('paused for input: after the song ends, only another device is a takeover', verdictOf(inputLost, playing({ deviceId: 'phone' }), 123_000) === 'takeover');
+    verdictOf(inputLost, playing({ deviceId: 'phone' }), 60_000) === 'takeover' && verdictOf(inputLost, read({ itemId: 'z' }), 119_999) === 'takeover');
+  // Nothing pauses Spotify for a lost input, so the playlist plays on. Judged
+  // from the latest guess at the end plus 3 s, a poll in the gap read the
+  // playlist's next track as a takeover and killed the give-up.
+  check('paused for input: from the earliest end, stopping or the playlist moving on is the song finishing',
+    verdictOf(inputLost, read(), 120_000) === null && verdictOf(inputLost, playing({ itemId: 'z' }), 120_000) === null &&
+    verdictOf(inputLost, playing({ itemId: 'z2', progressMs: 200_000 }), 400_000) === null);
+  check('paused for input: after the song ends, another device or a song resumed part-way is a takeover',
+    verdictOf(inputLost, playing({ deviceId: 'phone' }), 123_000) === 'takeover' &&
+    verdictOf(inputLost, playing({ itemId: 'z', progressMs: 60_000 }), 123_000) === 'takeover');
   check('paused for input: with no confirmation of this song, its end is never assumed',
-    verdictOf({ ...inputLost, confirmedAt: { trackId: 'b', progressMs: 0, atMs: 0 } }, read(), 500_000) === 'takeover' &&
-    verdictOf({ ...inputLost, confirmedAt: null }, read(), 500_000) === 'takeover');
+    verdictOf({ ...inputLost, endsAtMs: null }, read(), 500_000) === 'takeover');
 
   // Requesting b; the run last confirmed a; the player showed y on the Mac
   // when the command went out.
@@ -1694,13 +1699,13 @@ console.log('\nOvernight learner: reading the player');
   check('listening: the id the player reported at confirmation is ours', verdictOf(heardAs, playing({ itemId: 'a2' })) === null);
   check('listening: any other item is still a takeover', verdictOf(heardAs, playing({ itemId: 'z' })) === 'takeover');
   check('confirming: a relinked copy of the requested song is the player lagging',
-    verdictOf({ kind: 'confirming', track: A, lastConfirmedId: 'p2', before: { itemId: 'p2', deviceId: 'mac' } },
+    verdictOf({ kind: 'confirming', track: A, lastConfirmedId: 'p2', before: { itemId: 'p2', deviceId: 'mac' }, endsAtMs: null },
       read({ itemId: 'a2', itemName: 'a ', itemDurationMs: 201_000 })) === null);
   check('paused for input: before its first confirmation, a relinked copy of the song is ours',
-    verdictOf({ kind: 'paused-input-lost', track: A, playedId: null, confirmedAt: { trackId: 'p2', progressMs: 0, atMs: 0 } },
+    verdictOf({ kind: 'paused-input-lost', track: A, playedId: null, endsAtMs: null },
       playing({ itemId: 'a2', itemName: 'A', itemDurationMs: 200_000 }), 1_000) === null);
   check('paused for input: the song\'s end is judged from the id the player reported',
-    verdictOf({ kind: 'paused-input-lost', track: A, playedId: 'a2', confirmedAt: { trackId: 'a2', progressMs: 80_000, atMs: 0 } },
+    verdictOf({ kind: 'paused-input-lost', track: A, playedId: 'a2', endsAtMs: 120_000 },
       playing({ itemId: 'z' }), 123_000) === null);
 
   // A run plays each song inside its playlist, so at the end of a song
@@ -1720,11 +1725,16 @@ console.log('\nOvernight learner: reading the player');
     verdictOf(ending, playing({ itemId: 'z' }), 14_999) === 'takeover' && verdictOf(ending, read(), 14_999) === 'takeover');
   check('listening: once it can have ended, the playlist moving on or stopping is the song finishing',
     verdictOf(ending, playing({ itemId: 'z' }), 15_000) === null && verdictOf(ending, read({ itemId: 'z' }), 15_000) === null);
-  check('listening: once it can have ended, another device is still a takeover', verdictOf(ending, playing({ itemId: 'z', deviceId: 'phone' }), 15_000) === 'takeover');
+  check('listening: once it can have ended, our song stopped at its end is the song finishing', verdictOf(ending, read(), 15_000) === null);
+  check('listening: once it can have ended, another device or a song resumed part-way is still a takeover',
+    verdictOf(ending, playing({ itemId: 'z', deviceId: 'phone' }), 15_000) === 'takeover' &&
+    verdictOf(ending, playing({ itemId: 'z', progressMs: 60_000 }), 20_000) === 'takeover');
   check('confirming: before the last song can have ended, an unknown song is still a takeover',
     verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z' }), 14_999) === 'takeover');
   check('confirming: once the last song can have ended, whatever the playlist moved on to is not judged',
     verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z' }), 15_000) === null);
+  check('confirming: once the last song can have ended, a song resumed part-way is still a takeover',
+    verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z', progressMs: 60_000 }), 20_000) === 'takeover');
   check('confirming: once the last song can have ended, a new device is still a takeover',
     verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z', deviceId: 'phone' }), 15_000) === 'takeover');
 }

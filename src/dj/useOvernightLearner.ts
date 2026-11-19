@@ -66,9 +66,10 @@ const PAUSE_BACKSTOP_MS = PAUSE_CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_L
 /** A slice that runs to the track's end stops this far short of the earliest
  *  moment the song can end. Past the end Spotify moves on to the playlist's
  *  next track, and measured, that is the next song folded into this one. The
- *  next song's command has to land before then too: the commit's settle plus
- *  a play's round trip. With 1 s, timed from `progress_ms`, a real run ran
- *  past the end. */
+ *  next song's play should land before then too (the commit's settle plus its
+ *  round trip), so the playlist's next track never starts; if it does, the
+ *  polls let it pass. With 1 s, timed from `progress_ms`, a real run ran past
+ *  the end. */
 const TRACK_END_MARGIN_MS = 2_000;
 /** A song's numbers reach track memory on the enhancer's tick after the
  *  measuring id changes, and a real run saw that land after
@@ -188,15 +189,17 @@ function createRunner(
    *  device, a run could start or carry on on a speaker, out loud. */
   let preflightDevice: string | null = null;
   let deviceId: string | null = null;
-  /** The run's last confirmation, under the id the player reported. */
-  let confirmedAt: { trackId: string; progressMs: number; atMs: number } | null = null;
   /** When the current section's play or seek last went out, null until it
    *  has. */
   let sentAtMs: number | null = null;
-  /** `earliestEndAtMs` of the song the run last confirmed; null before that
-   *  and whenever the run is not running, because a paused run restarts with
-   *  a play of its own rather than following the playlist on. */
+  /** `earliestEndAtMs` of the song the run last confirmed; null before that,
+   *  and once the run stops running for anything but a lost input. Those
+   *  pauses stop Spotify, or hand it to someone else, and restart with a play
+   *  of our own; a lost input leaves the song playing on into the playlist. */
   let endsAtMs: number | null = null;
+  /** The confirmed song's length, the shorter of the playlist's and the
+   *  player's. */
+  let lengthMs = 0;
   /** The id the player reported when this song was last confirmed, null
    *  until it is. A relinked song plays under an id the playlist never names,
    *  so every later check on this song compares against this; track memory
@@ -244,7 +247,7 @@ function createRunner(
     pauseLanded = false;
     nullSinceMs = null;
     notPlayingSinceMs = null;
-    if (next.kind !== 'running') endsAtMs = null;
+    if (next.kind !== 'running' && !(next.kind === 'paused' && next.reason === 'input-lost')) endsAtMs = null;
     // A commit's `mark-learned` belongs to the song before, and runs after the
     // next song's start is taken just below. Read against that, a record
     // written on time looked older than its song, so every song but a run's
@@ -320,6 +323,10 @@ function createRunner(
         sentAtMs = null;
         mutate(alive, () => {
           sentAtMs = Date.now();
+          // A seek only follows a confirmed slice of the same song, and moves
+          // its end closer. Paused for a lost input before this confirms, the
+          // older end read the playlist moving on as a takeover.
+          if (endsAtMs !== null) endsAtMs = Math.min(endsAtMs, sentAtMs + lengthMs - e.positionMs);
           return seek(e.positionMs, device());
         }).catch((err) => failed(err, alive));
         return;
@@ -426,7 +433,7 @@ function createRunner(
         const now = Date.now();
         playedId = read.itemId ?? e.track.id;
         lastConfirmedId = playedId;
-        confirmedAt = { trackId: playedId, progressMs: read.progressMs, atMs: now };
+        lengthMs = Math.min(e.track.durationMs, read.itemDurationMs ?? e.track.durationMs);
         endsAtMs = earliestEndAtMs({
           nowMs: now,
           sentAtMs,
@@ -504,7 +511,9 @@ function createRunner(
     const track = { id: item.id, name: item.name, durationMs: item.durationMs };
     if (s.kind === 'running') return s.step === 'listening' ? { kind: 'listening', track, playedId, endsAtMs } : null;
     if (s.reason === 'silence') return { kind: 'paused-silence', track, playedId, pauseLanded };
-    if (s.reason === 'input-lost') return { kind: 'paused-input-lost', track, playedId, confirmedAt };
+    if (s.reason === 'input-lost') {
+      return { kind: 'paused-input-lost', track, playedId, endsAtMs: playedId !== null && lastConfirmedId === playedId ? endsAtMs : null };
+    }
     return null;
   }
 
@@ -601,7 +610,6 @@ function createRunner(
       }
       deviceId = preflightDevice;
       runId++;
-      confirmedAt = null;
       lastConfirmedId = null;
       lastSeen = null;
       state = { kind: 'idle' }; // `done` ignores `start`

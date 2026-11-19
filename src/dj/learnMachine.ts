@@ -29,9 +29,6 @@ export const INPUT_GIVE_UP_MS = 600_000;
  *  `is_playing: false` right after a play let a run unmute into it, and a
  *  last song's pause racing its natural end read as paused. */
 export const SECOND_READ_MS = 1_000;
-/** Past this after a song's estimated end, Spotify stopping or autoplaying
- *  is the song finishing, not someone taking over. */
-export const NATURAL_END_GRACE_MS = 3_000;
 /** How far a relinked copy's length may stray from the playlist's and still
  *  be the song we asked for. Spotify plays a market's own copy under another
  *  id, and since the February 2026 platform changes a development-mode app no
@@ -333,11 +330,13 @@ const sameName = (a: string, b: string): boolean => a.trim().toLowerCase() === b
  *  out at `sentAtMs` (null if unknown), and the confirming read, at `nowMs`,
  *  reported `progressMs` and the player's own length.
  *
- *  Spotify cannot be further into the track than the start we asked for plus
- *  the time since we asked, so this holds whatever `progress_ms` says. Timed
- *  from `progress_ms` alone, a real run's outro still ran past the end of the
- *  song, and the playlist moving on read as someone taking over: the run
- *  stalled after its first song. The shorter length wins, because a relinked
+ *  Once this command is what is playing, Spotify cannot be further into the
+ *  track than the start we asked for plus the time since we asked, however
+ *  stale `progress_ms` is; for playback left over from before the command,
+ *  only a fresh `progress_ms` covers it. Timed from `progress_ms` alone, a
+ *  real run's outro still ran past the end of the song, and the playlist
+ *  moving on read as someone taking over: the run stalled after its first
+ *  song. The shorter length wins, because a relinked
  *  copy can be up to `RELINK_DURATION_TOLERANCE_MS` shorter than the
  *  playlist's. */
 export function earliestEndAtMs(c: {
@@ -417,9 +416,10 @@ export function pauseConfirmVerdict(
  *  against the playlist's id it read as someone else's music.
  *
  *  `endsAtMs` is `earliestEndAtMs` for the song the run last confirmed, null
- *  when there is none or the run has paused since. A run plays each song
- *  inside its playlist, so past that moment Spotify may have moved on to the
- *  playlist's next track by itself. */
+ *  when there is none, or when the run has paused since for anything but a
+ *  lost input (the others restart with a play of their own). A run plays each
+ *  song inside its playlist, so past that moment Spotify may have moved on to
+ *  the playlist's next track by itself. */
 export type TakeoverWatch =
   /** Running, listening to a confirmed slice of `track`. */
   | { kind: 'listening'; track: RequestedTrack; playedId: string | null; endsAtMs: number | null }
@@ -437,14 +437,9 @@ export type TakeoverWatch =
   /** Paused for silence. `pauseLanded`: `pauseConfirmVerdict` has said our
    *  pause took. */
   | { kind: 'paused-silence'; track: RequestedTrack; playedId: string | null; pauseLanded: boolean }
-  /** Paused for a lost input. `confirmedAt` is the run's last confirmation,
-   *  of whichever song, under the id the player reported. */
-  | {
-      kind: 'paused-input-lost';
-      track: RequestedTrack;
-      playedId: string | null;
-      confirmedAt: { trackId: string; progressMs: number; atMs: number } | null;
-    };
+  /** Paused for a lost input, with Spotify left playing. `endsAtMs` is null
+   *  unless the run's last confirmation was this song. */
+  | { kind: 'paused-input-lost'; track: RequestedTrack; playedId: string | null; endsAtMs: number | null };
 
 export type TakeoverVerdict = 'takeover' | 'device-lost' | null;
 
@@ -472,6 +467,14 @@ export function takeoverVerdict(
   // as a takeover, it parked the night on its first song. Only another device
   // is still someone else.
   const mayHaveEnded = (w: { endsAtMs: number | null }): boolean => w.endsAtMs !== null && nowMs >= w.endsAtMs;
+  // And whatever Spotify moved on to by itself started after that, so it
+  // cannot be further in than the time since: someone resuming a song part-way
+  // through is still someone else.
+  const movedOnBySelf = (w: { endsAtMs: number | null }): boolean =>
+    w.endsAtMs !== null && nowMs >= w.endsAtMs && read.progressMs <= nowMs - w.endsAtMs + SECOND_READ_MS;
+  // Our song stopped at its end, or the playlist moved on from it.
+  const finished = (w: { track: RequestedTrack; playedId: string | null; endsAtMs: number | null }): boolean =>
+    !otherDevice && (elsewhere(w) ? movedOnBySelf(w) : mayHaveEnded(w));
   switch (watch.kind) {
     case 'confirming': {
       // Left to time out, the retry `play` and every later song's would take
@@ -479,13 +482,15 @@ export function takeoverVerdict(
       // confirmation: until then nothing is known to be ours, and the player
       // may still show what was playing before Start. What the player showed
       // when the command went out, or the song just confirmed, is the player
-      // lagging our command.
+      // lagging our command. Past the last song's end, someone starting a song
+      // from its beginning on this Mac looks exactly like the playlist moving
+      // on, and is knowingly left to the confirm timeout.
       if (watch.lastConfirmedId === null) return is(null);
       if (otherDevice && read.deviceId !== watch.before?.deviceId) return is('takeover');
-      if (read.itemId === null || (!otherDevice && mayHaveEnded(watch))) return is(null);
+      if (read.itemId === null) return is(null);
       const ours =
         isRequested(read, watch.track) || isTrack(read, watch.lastConfirmedId) || read.itemId === watch.before?.itemId;
-      return is(ours ? null : 'takeover');
+      return is(ours || (!otherDevice && movedOnBySelf(watch)) ? null : 'takeover');
     }
     case 'paused-silence':
       // We paused it. Until Spotify has shown it stopped, playing is our own
@@ -493,20 +498,16 @@ export function takeoverVerdict(
       // takeover would let Stop unmute straight into it.
       if (!watch.pauseLanded) return is(null);
       return is(read.isPlaying || elsewhere(watch) ? 'takeover' : null);
-    case 'paused-input-lost': {
-      // Our song plays on to its end. After that, Spotify stopping or
-      // autoplaying is the song finishing; read as a takeover it would kill
-      // the auto-resume and the 10-minute give-up and hold the Mac awake all
-      // night. Only another device is someone else.
-      const c = watch.confirmedAt;
-      if (c && c.trackId === watch.playedId) {
-        const endsAtMs = c.atMs + (watch.track.durationMs - c.progressMs) + NATURAL_END_GRACE_MS;
-        if (nowMs >= endsAtMs) return is(otherDevice ? 'takeover' : null);
-      }
+    case 'paused-input-lost':
+      // Nothing pauses Spotify here, so our song plays on to its end and the
+      // playlist after it. Read as a takeover, that killed the auto-resume and
+      // the 10-minute give-up and held the Mac awake all night. It was judged
+      // from a progress-based end plus 3 s, the latest guess rather than the
+      // earliest, and a poll every 3 s almost always landed in the gap.
+      if (finished(watch)) return is(null);
       return is(elsewhere(watch) || !read.isPlaying ? 'takeover' : null);
-    }
     case 'listening':
-      if (!otherDevice && mayHaveEnded(watch)) return is(null);
+      if (finished(watch)) return is(null);
       return is(elsewhere(watch) || !read.isPlaying ? 'takeover' : null);
   }
 }
