@@ -1733,6 +1733,14 @@ console.log('\nOvernight learner: reading the player');
     verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z' }), 14_999) === 'takeover');
   check('confirming: once the last song can have ended, whatever the playlist moved on to is not judged',
     verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z' }), 15_000) === null);
+  // Any error in the end shifts every read of the next track by the same
+  // amount: with 1 s of slack, an end worked out 2 s late read the playlist's
+  // next track as a takeover for as long as it played.
+  check('moved on: an end worked out 3 s late still lets the playlist\'s next track pass, for as long as it plays',
+    verdictOf(ending, playing({ itemId: 'z', progressMs: 8_000 }), 20_000) === null &&
+    verdictOf({ kind: 'paused-input-lost', track: A, playedId: 'a', endsAtMs: 15_000 }, playing({ itemId: 'z', progressMs: 588_000 }), 600_000) === null);
+  check('moved on: further in than the slack allows is a takeover',
+    verdictOf(ending, playing({ itemId: 'z', progressMs: 10_001 }), 20_000) === 'takeover');
   check('confirming: once the last song can have ended, a song resumed part-way is still a takeover',
     verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z', progressMs: 60_000 }), 20_000) === 'takeover');
   check('confirming: once the last song can have ended, a new device is still a takeover',

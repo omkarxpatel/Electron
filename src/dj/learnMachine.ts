@@ -29,6 +29,13 @@ export const INPUT_GIVE_UP_MS = 600_000;
  *  `is_playing: false` right after a play let a run unmute into it, and a
  *  last song's pause racing its natural end read as paused. */
 export const SECOND_READ_MS = 1_000;
+/** How much further into a track than the time since our song could have
+ *  ended the player may report and still have moved on to it by itself. Any
+ *  error in that end shifts every read of the track by the same amount, so
+ *  too tight a figure is a takeover that never clears, and with it the lost
+ *  input's 10-minute give-up. Someone resuming a song part-way is normally
+ *  tens of seconds in. */
+export const MOVED_ON_SLACK_MS = 5_000;
 /** How far a relinked copy's length may stray from the playlist's and still
  *  be the song we asked for. Spotify plays a market's own copy under another
  *  id, and since the February 2026 platform changes a development-mode app no
@@ -417,7 +424,8 @@ export function pauseConfirmVerdict(
  *
  *  `endsAtMs` is `earliestEndAtMs` for the song the run last confirmed, null
  *  when there is none, or when the run has paused since for anything but a
- *  lost input (the others restart with a play of their own). A run plays each
+ *  lost input: the other pauses stop Spotify or hand it to someone else,
+ *  while a lost input leaves the song playing on into its playlist. A run plays each
  *  song inside its playlist, so past that moment Spotify may have moved on to
  *  the playlist's next track by itself. */
 export type TakeoverWatch =
@@ -471,7 +479,7 @@ export function takeoverVerdict(
   // cannot be further in than the time since: someone resuming a song part-way
   // through is still someone else.
   const movedOnBySelf = (w: { endsAtMs: number | null }): boolean =>
-    w.endsAtMs !== null && nowMs >= w.endsAtMs && read.progressMs <= nowMs - w.endsAtMs + SECOND_READ_MS;
+    w.endsAtMs !== null && nowMs >= w.endsAtMs && read.progressMs <= nowMs - w.endsAtMs + MOVED_ON_SLACK_MS;
   // Our song stopped at its end, or the playlist moved on from it.
   const finished = (w: { track: RequestedTrack; playedId: string | null; endsAtMs: number | null }): boolean =>
     !otherDevice && (elsewhere(w) ? movedOnBySelf(w) : mayHaveEnded(w));
