@@ -1437,7 +1437,7 @@ console.log('\nOvernight learner: run');
     }
     return { state, effects };
   };
-  check('the learnable minimum is the commit minimum plus a 7 s margin', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000 + 7000);
+  check('the learnable minimum is the commit minimum plus a 10 s margin', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000 + 10_000);
   const happy = run([{ kind: 'start', plan: one }, ...[0, 1, 2].flatMap(() => [{ kind: 'confirmed' }, { kind: 'section-elapsed' }]), { kind: 'committed' }, { kind: 'spotify-paused' }]);
   check('a full song ends learned and unmuted', happy.state.kind === 'done' && happy.state.reason === 'finished' && happy.state.tally.learned === 1 && happy.state.muted === false);
   // The coverage bar's total. Without it in the tally, a finished or ending
@@ -1714,11 +1714,14 @@ console.log('\nOvernight learner: reading the player');
   // parked the night on its first song.
   // An outro of a 200 s song: seek to 185 s sent at t=0, confirmed at 2 s.
   const end = (o = {}) => machine.earliestEndAtMs({ nowMs: 2_000, sentAtMs: 0, startMs: 185_000, progressMs: 185_000, durationMs: 200_000, playerDurationMs: 200_000, ...o });
-  check('end: a progress reading behind the playhead cannot push the end later than the send allows', end() === 15_000);
-  check('end: a progress reading ahead of the send is believed', end({ progressMs: 190_000 }) === 12_000);
-  check('end: a relinked copy shorter than the playlist\'s ends with its own length', end({ playerDurationMs: 198_500 }) === 13_500);
-  check('end: the playlist\'s length when the player does not say', end({ playerDurationMs: null }) === 15_000);
-  check('end: from progress alone when the send time is unknown', end({ sentAtMs: null, progressMs: 186_000 }) === 16_000);
+  // Spotify moves on to the next track about 2 s before duration_ms runs out
+  // (measured 2.0-2.2 s), so every end comes ADVANCES_EARLY_MS (3 s) early.
+  check('end: Spotify moving on early is allowed for', machine.ADVANCES_EARLY_MS === 3_000);
+  check('end: a progress reading behind the playhead cannot push the end later than the send allows', end() === 12_000);
+  check('end: a progress reading ahead of the send is believed', end({ progressMs: 190_000 }) === 9_000);
+  check('end: a relinked copy shorter than the playlist\'s ends with its own length', end({ playerDurationMs: 198_500 }) === 10_500);
+  check('end: the playlist\'s length when the player does not say', end({ playerDurationMs: null }) === 12_000);
+  check('end: from progress alone when the send time is unknown', end({ sentAtMs: null, progressMs: 186_000 }) === 13_000);
 
   const ending = { kind: 'listening', track: A, playedId: 'a', endsAtMs: 15_000 };
   check('listening: before the song can have ended, another song or a stop on our device is a takeover',

@@ -36,6 +36,13 @@ export const SECOND_READ_MS = 1_000;
  *  input's 10-minute give-up. Someone resuming a song part-way is normally
  *  tens of seconds in. */
 export const MOVED_ON_SLACK_MS = 5_000;
+/** How long before `progress_ms` reaches `duration_ms` Spotify moves on to
+ *  the playlist's next track. Measured on the desktop client, crossfade off,
+ *  from the next track's own progress when it first showed: 2.0, 2.0 and
+ *  2.2 s on three songs of 2, 3 and 7 minutes. Timed from the length alone, a
+ *  real run's slice ran into the next track and the run paused as a takeover
+ *  at the start of its last song. */
+export const ADVANCES_EARLY_MS = 3_000;
 /** How far a relinked copy's length may stray from the playlist's and still
  *  be the song we asked for. Spotify plays a market's own copy under another
  *  id, and since the February 2026 platform changes a development-mode app no
@@ -345,7 +352,8 @@ const sameName = (a: string, b: string): boolean => a.trim().toLowerCase() === b
  *  moving on read as someone taking over: the run stalled after its first
  *  song. The shorter length wins, because a relinked
  *  copy can be up to `RELINK_DURATION_TOLERANCE_MS` shorter than the
- *  playlist's. */
+ *  playlist's, and Spotify moves on `ADVANCES_EARLY_MS` before the length
+ *  runs out. */
 export function earliestEndAtMs(c: {
   nowMs: number;
   sentAtMs: number | null;
@@ -355,7 +363,7 @@ export function earliestEndAtMs(c: {
   playerDurationMs: number | null;
 }): number {
   const furthest = Math.max(c.progressMs, c.sentAtMs === null ? 0 : c.startMs + (c.nowMs - c.sentAtMs));
-  return c.nowMs + Math.min(c.durationMs, c.playerDurationMs ?? c.durationMs) - furthest;
+  return c.nowMs + Math.min(c.durationMs, c.playerDurationMs ?? c.durationMs) - furthest - ADVANCES_EARLY_MS;
 }
 
 /** Whether the player's item is the track we asked for. Spotify relinks a

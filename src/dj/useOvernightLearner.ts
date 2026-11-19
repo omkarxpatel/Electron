@@ -326,7 +326,11 @@ function createRunner(
           // A seek only follows a confirmed slice of the same song, and moves
           // its end closer. Paused for a lost input before this confirms, the
           // older end read the playlist moving on as a takeover.
-          if (endsAtMs !== null) endsAtMs = Math.min(endsAtMs, sentAtMs + lengthMs - e.positionMs);
+          if (endsAtMs !== null) {
+            endsAtMs = Math.min(endsAtMs, earliestEndAtMs({
+              nowMs: sentAtMs, sentAtMs, startMs: e.positionMs, progressMs: 0, durationMs: lengthMs, playerDurationMs: null,
+            }));
+          }
           return seek(e.positionMs, device());
         }).catch((err) => failed(err, alive));
         return;
