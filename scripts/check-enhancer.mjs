@@ -1437,7 +1437,7 @@ console.log('\nOvernight learner: run');
     }
     return { state, effects };
   };
-  check('the learnable minimum is the commit minimum plus a 5 s margin', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000 + 5000);
+  check('the learnable minimum is the commit minimum plus a 7 s margin', plan.MIN_LEARNABLE_MS === track.MIN_COMMIT_SECONDS * 1000 + 7000);
   const happy = run([{ kind: 'start', plan: one }, ...[0, 1, 2].flatMap(() => [{ kind: 'confirmed' }, { kind: 'section-elapsed' }]), { kind: 'committed' }, { kind: 'spotify-paused' }]);
   check('a full song ends learned and unmuted', happy.state.kind === 'done' && happy.state.reason === 'finished' && happy.state.tally.learned === 1 && happy.state.muted === false);
   // The coverage bar's total. Without it in the tally, a finished or ending
@@ -1636,7 +1636,7 @@ console.log('\nOvernight learner: reading the player');
     for (const [atMs, r] of reads) ({ verdict, nullSinceMs: since } = machine.takeoverVerdict(watch, r, 'mac', atMs, since));
     return verdict;
   };
-  const listening = { kind: 'listening', track: A, playedId: 'a' };
+  const listening = { kind: 'listening', track: A, playedId: 'a', endsAtMs: null };
   check('takeover: one 204 is a blip', afterNulls(listening, [[0, null]]) === null);
   check('takeover: two 204s under a second apart are still a blip', afterNulls(listening, [[0, null], [999, null]]) === null);
   check('takeover: two 204s a second apart are a lost device', afterNulls(listening, [[0, null], [1000, null]]) === 'device-lost');
@@ -1674,7 +1674,7 @@ console.log('\nOvernight learner: reading the player');
 
   // Requesting b; the run last confirmed a; the player showed y on the Mac
   // when the command went out.
-  const confirming = (o = {}) => ({ kind: 'confirming', track: { id: 'b', name: 'B', durationMs: 200_000 }, lastConfirmedId: 'a', before: { itemId: 'y', deviceId: 'mac' }, ...o });
+  const confirming = (o = {}) => ({ kind: 'confirming', track: { id: 'b', name: 'B', durationMs: 200_000 }, lastConfirmedId: 'a', before: { itemId: 'y', deviceId: 'mac' }, endsAtMs: null, ...o });
   check('confirming: nothing is judged before the run first confirms',
     verdictOf(confirming({ lastConfirmedId: null }), playing({ itemId: 'z', deviceId: 'phone' })) === null);
   check('confirming: another device is a takeover', verdictOf(confirming(), playing({ itemId: 'b', deviceId: 'phone' })) === 'takeover' &&
@@ -1690,7 +1690,7 @@ console.log('\nOvernight learner: reading the player');
   // A relinked song plays under an id the playlist never names. Once a
   // confirmation has seen it, that id is the song; before one, its name and
   // length are. Read as another item, it paused the run as a takeover.
-  const heardAs = { kind: 'listening', track: A, playedId: 'a2' };
+  const heardAs = { kind: 'listening', track: A, playedId: 'a2', endsAtMs: null };
   check('listening: the id the player reported at confirmation is ours', verdictOf(heardAs, playing({ itemId: 'a2' })) === null);
   check('listening: any other item is still a takeover', verdictOf(heardAs, playing({ itemId: 'z' })) === 'takeover');
   check('confirming: a relinked copy of the requested song is the player lagging',
@@ -1702,6 +1702,31 @@ console.log('\nOvernight learner: reading the player');
   check('paused for input: the song\'s end is judged from the id the player reported',
     verdictOf({ kind: 'paused-input-lost', track: A, playedId: 'a2', confirmedAt: { trackId: 'a2', progressMs: 80_000, atMs: 0 } },
       playing({ itemId: 'z' }), 123_000) === null);
+
+  // A run plays each song inside its playlist, so at the end of a song
+  // Spotify moves on to the playlist's next track by itself. A real run timed
+  // its outro from progress_ms, ran past the end, read that as a takeover and
+  // parked the night on its first song.
+  // An outro of a 200 s song: seek to 185 s sent at t=0, confirmed at 2 s.
+  const end = (o = {}) => machine.earliestEndAtMs({ nowMs: 2_000, sentAtMs: 0, startMs: 185_000, progressMs: 185_000, durationMs: 200_000, playerDurationMs: 200_000, ...o });
+  check('end: a progress reading behind the playhead cannot push the end later than the send allows', end() === 15_000);
+  check('end: a progress reading ahead of the send is believed', end({ progressMs: 190_000 }) === 12_000);
+  check('end: a relinked copy shorter than the playlist\'s ends with its own length', end({ playerDurationMs: 198_500 }) === 13_500);
+  check('end: the playlist\'s length when the player does not say', end({ playerDurationMs: null }) === 15_000);
+  check('end: from progress alone when the send time is unknown', end({ sentAtMs: null, progressMs: 186_000 }) === 16_000);
+
+  const ending = { kind: 'listening', track: A, playedId: 'a', endsAtMs: 15_000 };
+  check('listening: before the song can have ended, another song or a stop on our device is a takeover',
+    verdictOf(ending, playing({ itemId: 'z' }), 14_999) === 'takeover' && verdictOf(ending, read(), 14_999) === 'takeover');
+  check('listening: once it can have ended, the playlist moving on or stopping is the song finishing',
+    verdictOf(ending, playing({ itemId: 'z' }), 15_000) === null && verdictOf(ending, read({ itemId: 'z' }), 15_000) === null);
+  check('listening: once it can have ended, another device is still a takeover', verdictOf(ending, playing({ itemId: 'z', deviceId: 'phone' }), 15_000) === 'takeover');
+  check('confirming: before the last song can have ended, an unknown song is still a takeover',
+    verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z' }), 14_999) === 'takeover');
+  check('confirming: once the last song can have ended, whatever the playlist moved on to is not judged',
+    verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z' }), 15_000) === null);
+  check('confirming: once the last song can have ended, a new device is still a takeover',
+    verdictOf(confirming({ endsAtMs: 15_000 }), playing({ itemId: 'z', deviceId: 'phone' }), 15_000) === 'takeover');
 }
 
 cleanup();

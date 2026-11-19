@@ -30,6 +30,7 @@ import {
 import {
   COMMIT_SETTLE_MS,
   CONFIRM_TIMEOUT_MS,
+  earliestEndAtMs,
   learnStep,
   pauseConfirmVerdict,
   playerMatches,
@@ -62,10 +63,13 @@ const RATE_LIMIT_WAIT_MS = 5_000;
  *  rate-limit retry. */
 const CONFIRM_BACKSTOP_MS = CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_LIMIT_WAIT_MS;
 const PAUSE_BACKSTOP_MS = PAUSE_CONFIRM_TIMEOUT_MS + RATE_LIMIT_RETRIES * RATE_LIMIT_WAIT_MS;
-/** A slice that runs to the track's end stops this far short of it. Past the
- *  end Spotify stops or autoplays another song: measured, that is the next
- *  song folded into this one; polled, it reads as someone taking over. */
-const TRACK_END_MARGIN_MS = 1_000;
+/** A slice that runs to the track's end stops this far short of the earliest
+ *  moment the song can end. Past the end Spotify moves on to the playlist's
+ *  next track, and measured, that is the next song folded into this one. The
+ *  next song's command has to land before then too: the commit's settle plus
+ *  a play's round trip. With 1 s, timed from `progress_ms`, a real run ran
+ *  past the end. */
+const TRACK_END_MARGIN_MS = 2_000;
 /** A song's numbers reach track memory on the enhancer's tick after the
  *  measuring id changes, and a real run saw that land after
  *  `COMMIT_SETTLE_MS`: one look found no new record and failed "nothing was
@@ -186,6 +190,13 @@ function createRunner(
   let deviceId: string | null = null;
   /** The run's last confirmation, under the id the player reported. */
   let confirmedAt: { trackId: string; progressMs: number; atMs: number } | null = null;
+  /** When the current section's play or seek last went out, null until it
+   *  has. */
+  let sentAtMs: number | null = null;
+  /** `earliestEndAtMs` of the song the run last confirmed; null before that
+   *  and whenever the run is not running, because a paused run restarts with
+   *  a play of its own rather than following the playlist on. */
+  let endsAtMs: number | null = null;
   /** The id the player reported when this song was last confirmed, null
    *  until it is. A relinked song plays under an id the playlist never names,
    *  so every later check on this song compares against this; track memory
@@ -233,6 +244,7 @@ function createRunner(
     pauseLanded = false;
     nullSinceMs = null;
     notPlayingSinceMs = null;
+    if (next.kind !== 'running') endsAtMs = null;
     // A commit's `mark-learned` belongs to the song before, and runs after the
     // next song's start is taken just below. Read against that, a record
     // written on time looked older than its song, so every song but a run's
@@ -296,14 +308,20 @@ function createRunner(
         // which times out into the machine's retry. Inside the song's
         // playlist, with the song as the offset: a bare uri got a 204 while
         // the desktop client restarted the track it was already on.
-        mutate(alive, () =>
-          e.contextUri
+        sentAtMs = null;
+        mutate(alive, () => {
+          sentAtMs = Date.now();
+          return e.contextUri
             ? play(undefined, e.contextUri, e.uri, device(), e.positionMs)
-            : play([e.uri], undefined, undefined, device(), e.positionMs),
-        ).catch((err) => failed(err, alive));
+            : play([e.uri], undefined, undefined, device(), e.positionMs);
+        }).catch((err) => failed(err, alive));
         return;
       case 'seek':
-        mutate(alive, () => seek(e.positionMs, device())).catch((err) => failed(err, alive));
+        sentAtMs = null;
+        mutate(alive, () => {
+          sentAtMs = Date.now();
+          return seek(e.positionMs, device());
+        }).catch((err) => failed(err, alive));
         return;
       case 'pause-spotify': {
         const deadline = Date.now() + PAUSE_BACKSTOP_MS;
@@ -325,13 +343,9 @@ function createRunner(
         return;
       case 'wait': {
         let ms = e.ms;
-        if (e.then === 'section-elapsed' && state.kind === 'running' && confirmedAt) {
-          const item = state.queue[state.index];
-          const w = item.windows[state.section];
-          if (w.startMs + w.listenMs >= item.durationMs) {
-            const heardToMs = confirmedAt.progressMs + (Date.now() - confirmedAt.atMs);
-            ms = Math.max(0, Math.min(ms, item.durationMs - TRACK_END_MARGIN_MS - heardToMs));
-          }
+        // A no-op for any slice that ends well inside its song.
+        if (e.then === 'section-elapsed' && endsAtMs !== null) {
+          ms = Math.max(0, Math.min(ms, endsAtMs - TRACK_END_MARGIN_MS - Date.now()));
         }
         later(alive, ms, () => dispatch({ kind: e.then }));
         return;
@@ -409,16 +423,25 @@ function createRunner(
       saw(p);
       const read = toRead(p);
       if (read && playerMatches(read, e.track, e.fromMs, e.toMs)) {
+        const now = Date.now();
         playedId = read.itemId ?? e.track.id;
         lastConfirmedId = playedId;
-        confirmedAt = { trackId: playedId, progressMs: read.progressMs, atMs: Date.now() };
+        confirmedAt = { trackId: playedId, progressMs: read.progressMs, atMs: now };
+        endsAtMs = earliestEndAtMs({
+          nowMs: now,
+          sentAtMs,
+          startMs: e.fromMs,
+          progressMs: read.progressMs,
+          durationMs: e.track.durationMs,
+          playerDurationMs: read.itemDurationMs,
+        });
         dispatch({ kind: 'confirmed' });
         return;
       }
       // Someone else's playback, or a client that has gone away, pauses the
       // run, rather than fighting them for the device or failing every song
       // left as "did not start playback".
-      const v = takeoverFrom({ kind: 'confirming', track: e.track, lastConfirmedId, before }, read);
+      const v = takeoverFrom({ kind: 'confirming', track: e.track, lastConfirmedId, before, endsAtMs }, read);
       if (v) { dispatch({ kind: v }); return; }
     } catch (err) {
       if (!alive()) return;
@@ -479,7 +502,7 @@ function createRunner(
     if (s.kind !== 'running' && s.kind !== 'paused') return null;
     const item = s.queue[s.index];
     const track = { id: item.id, name: item.name, durationMs: item.durationMs };
-    if (s.kind === 'running') return s.step === 'listening' ? { kind: 'listening', track, playedId } : null;
+    if (s.kind === 'running') return s.step === 'listening' ? { kind: 'listening', track, playedId, endsAtMs } : null;
     if (s.reason === 'silence') return { kind: 'paused-silence', track, playedId, pauseLanded };
     if (s.reason === 'input-lost') return { kind: 'paused-input-lost', track, playedId, confirmedAt };
     return null;

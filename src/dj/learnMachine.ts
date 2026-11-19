@@ -329,6 +329,29 @@ export interface PlayerSnapshot {
 
 const sameName = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
 
+/** The earliest a confirmed song can end: its play or seek to `startMs` went
+ *  out at `sentAtMs` (null if unknown), and the confirming read, at `nowMs`,
+ *  reported `progressMs` and the player's own length.
+ *
+ *  Spotify cannot be further into the track than the start we asked for plus
+ *  the time since we asked, so this holds whatever `progress_ms` says. Timed
+ *  from `progress_ms` alone, a real run's outro still ran past the end of the
+ *  song, and the playlist moving on read as someone taking over: the run
+ *  stalled after its first song. The shorter length wins, because a relinked
+ *  copy can be up to `RELINK_DURATION_TOLERANCE_MS` shorter than the
+ *  playlist's. */
+export function earliestEndAtMs(c: {
+  nowMs: number;
+  sentAtMs: number | null;
+  startMs: number;
+  progressMs: number;
+  durationMs: number;
+  playerDurationMs: number | null;
+}): number {
+  const furthest = Math.max(c.progressMs, c.sentAtMs === null ? 0 : c.startMs + (c.nowMs - c.sentAtMs));
+  return c.nowMs + Math.min(c.durationMs, c.playerDurationMs ?? c.durationMs) - furthest;
+}
+
 /** Whether the player's item is the track we asked for. Spotify relinks a
  *  track to a regional copy, so the id it reports can be the replacement while
  *  the id we asked for sits in `linkedFromId`, or, for a development-mode app
@@ -391,10 +414,15 @@ export function pauseConfirmVerdict(
  *  `track` is the song as the playlist names it. `playedId` is the id the
  *  player reported when this song was last confirmed (null before that): a
  *  relinked song plays under an id the playlist never names, and judged
- *  against the playlist's id it read as someone else's music. */
+ *  against the playlist's id it read as someone else's music.
+ *
+ *  `endsAtMs` is `earliestEndAtMs` for the song the run last confirmed, null
+ *  when there is none or the run has paused since. A run plays each song
+ *  inside its playlist, so past that moment Spotify may have moved on to the
+ *  playlist's next track by itself. */
 export type TakeoverWatch =
   /** Running, listening to a confirmed slice of `track`. */
-  | { kind: 'listening'; track: RequestedTrack; playedId: string | null }
+  | { kind: 'listening'; track: RequestedTrack; playedId: string | null; endsAtMs: number | null }
   /** Waiting for a play or seek of `track` to show. `lastConfirmedId` is the
    *  id the player reported for the song the run last confirmed (null before
    *  its first) and `before` what the player showed when the command went
@@ -404,6 +432,7 @@ export type TakeoverWatch =
       track: RequestedTrack;
       lastConfirmedId: string | null;
       before: { itemId: string | null; deviceId: string | null } | null;
+      endsAtMs: number | null;
     }
   /** Paused for silence. `pauseLanded`: `pauseConfirmVerdict` has said our
    *  pause took. */
@@ -438,6 +467,11 @@ export function takeoverVerdict(
   // recording that shares its name; before that, the request is all we have.
   const elsewhere = (w: { track: RequestedTrack; playedId: string | null }): boolean =>
     otherDevice || !(w.playedId !== null ? isTrack(read, w.playedId) : isRequested(read, w.track));
+  // Once the last confirmed song can have ended, Spotify stopping, or moving
+  // on to whatever follows it in the playlist, is that song finishing. Judged
+  // as a takeover, it parked the night on its first song. Only another device
+  // is still someone else.
+  const mayHaveEnded = (w: { endsAtMs: number | null }): boolean => w.endsAtMs !== null && nowMs >= w.endsAtMs;
   switch (watch.kind) {
     case 'confirming': {
       // Left to time out, the retry `play` and every later song's would take
@@ -448,7 +482,7 @@ export function takeoverVerdict(
       // lagging our command.
       if (watch.lastConfirmedId === null) return is(null);
       if (otherDevice && read.deviceId !== watch.before?.deviceId) return is('takeover');
-      if (read.itemId === null) return is(null);
+      if (read.itemId === null || (!otherDevice && mayHaveEnded(watch))) return is(null);
       const ours =
         isRequested(read, watch.track) || isTrack(read, watch.lastConfirmedId) || read.itemId === watch.before?.itemId;
       return is(ours ? null : 'takeover');
@@ -472,6 +506,7 @@ export function takeoverVerdict(
       return is(elsewhere(watch) || !read.isPlaying ? 'takeover' : null);
     }
     case 'listening':
+      if (!otherDevice && mayHaveEnded(watch)) return is(null);
       return is(elsewhere(watch) || !read.isPlaying ? 'takeover' : null);
   }
 }
