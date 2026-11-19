@@ -16,7 +16,9 @@ const PREFLIGHT_COPY: Record<PreflightItem, string> = {
   'ai-enhance': 'AI Enhance is off. It does the measuring.',
   'remember-tracks': 'Remember tracks is off. Without it nothing is kept.',
   'spotify-device': 'Open Spotify on this Mac and start any song, so the run has a Computer device to play on.',
-  signal: 'Start any song in Spotify on this Mac, so the app can hear that the sound is coming through it.',
+  // A muted Mac fails this too: a real first attempt was refused with music
+  // playing, because the system output, BlackHole, was muted.
+  signal: 'Start any song in Spotify on this Mac and check the Mac is not muted, so the app can hear the sound coming through it.',
 };
 
 function readSelection(): string[] {
