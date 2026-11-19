@@ -39,9 +39,10 @@ export const MOVED_ON_SLACK_MS = 5_000;
 /** How long before `progress_ms` reaches `duration_ms` Spotify moves on to
  *  the playlist's next track. Measured on the desktop client, crossfade off,
  *  from the next track's own progress when it first showed: 2.0, 2.0 and
- *  2.2 s on three songs of 2, 3 and 7 minutes. Timed from the length alone, a
- *  real run's slice ran into the next track and the run paused as a takeover
- *  at the start of its last song. */
+ *  2.2 s on three songs of 2, 3 and 7 minutes; this allows 3 s. Timed from
+ *  the length alone, a real run's next confirm poll saw the playlist's next
+ *  track before the song was thought able to end, and the run paused as a
+ *  takeover at the start of its last song. */
 export const ADVANCES_EARLY_MS = 3_000;
 /** How far a relinked copy's length may stray from the playlist's and still
  *  be the song we asked for. Spotify plays a market's own copy under another
@@ -352,8 +353,8 @@ const sameName = (a: string, b: string): boolean => a.trim().toLowerCase() === b
  *  moving on read as someone taking over: the run stalled after its first
  *  song. The shorter length wins, because a relinked
  *  copy can be up to `RELINK_DURATION_TOLERANCE_MS` shorter than the
- *  playlist's, and Spotify moves on `ADVANCES_EARLY_MS` before the length
- *  runs out. */
+ *  playlist's, and Spotify moves on before the length runs out (about 2 s
+ *  measured, `ADVANCES_EARLY_MS` allowed). */
 export function earliestEndAtMs(c: {
   nowMs: number;
   sentAtMs: number | null;
