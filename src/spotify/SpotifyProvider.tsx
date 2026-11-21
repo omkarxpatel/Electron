@@ -104,6 +104,9 @@ export interface LibraryContextValue {
   /** Unfollow, which is how Spotify models deleting your own playlist. */
   deletePlaylist: (playlist: SpotifyPlaylist) => Promise<void>;
   moveTrackInPlaylist: (from: number, to: number) => Promise<void>;
+  /** Drop one copy of a duplicated track, keeping the others in place.
+   *  `copyIndex` counts the copies in playlist order, from 0. */
+  removeOneCopyFromPlaylist: (track: SpotifyTrack, copyIndex: number) => Promise<void>;
   /** Re-fetch the playlist list, the open playlist's tracks and playback,
    *  for changes made in another Spotify client that our conditional
    *  background refreshes wouldn't pick up. */
@@ -195,6 +198,7 @@ export function SpotifyProvider({ children }: ProviderProps) {
       renamePlaylist: spotify.renamePlaylist,
       deletePlaylist: spotify.deletePlaylist,
       moveTrackInPlaylist: spotify.moveTrackInPlaylist,
+      removeOneCopyFromPlaylist: spotify.removeOneCopyFromPlaylist,
       refreshAll: spotify.refreshAll,
     }),
     [
@@ -229,6 +233,7 @@ export function SpotifyProvider({ children }: ProviderProps) {
       spotify.renamePlaylist,
       spotify.deletePlaylist,
       spotify.moveTrackInPlaylist,
+      spotify.removeOneCopyFromPlaylist,
       spotify.refreshAll,
     ],
   );

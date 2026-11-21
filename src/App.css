@@ -1570,6 +1570,23 @@
   text-overflow: ellipsis;
 }
 
+/* The duplicate marker. Quiet by design: it is a fact about the playlist,
+   not a warning, and two identical rows with no explanation is the thing
+   being fixed. */
+.sp-track-copy {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  background: var(--accent-soft-bg);
+  color: var(--accent-bright);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
 .sp-track-explicit {
   display: inline-block;
   background: rgba(255, 255, 255, 0.18);

@@ -273,6 +273,7 @@ export function SpotifySection({ active, showLyrics, collapsed, onToggleCollapse
           userId={library.userId}
           onAddToPlaylist={library.addTrackToPlaylist}
           onRemoveFromSource={library.removeTrackFromSource}
+          onRemoveOneCopy={library.removeOneCopyFromPlaylist}
           onGoToAlbum={handleGoToAlbum}
           onGoToArtist={handleGoToArtist}
           onRenamePlaylist={library.renamePlaylist}

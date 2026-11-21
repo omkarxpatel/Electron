@@ -72,8 +72,15 @@ export interface TrackMenuConfig {
 }
 
 export interface TrackMenu {
-  /** Call from `onContextMenu`. Prevents the native menu itself. */
-  open: (track: SpotifyTrack, e: React.MouseEvent) => void;
+  /**
+   * Call from `onContextMenu`. Prevents the native menu itself.
+   *
+   * `copyIndex` is which copy of a duplicated track this row is, counted over
+   * the copies in playlist order from 0. Only the track list can know that —
+   * it is the surface with the rows — so everywhere else leaves it out and
+   * the per-copy remove item does not appear.
+   */
+  open: (track: SpotifyTrack, e: React.MouseEvent, copyIndex?: number) => void;
   /**
    * Render this once, anywhere in the component. Both halves are portalled to
    * document.body, so it is safe inside a `<tbody>` or a `<ul>` — a plain
@@ -121,11 +128,12 @@ export function useTrackMenu(config: TrackMenuConfig = {}): TrackMenu {
     x: number;
     y: number;
     track: SpotifyTrack;
+    copyIndex: number | undefined;
     anchor: HTMLElement | null;
   } | null>(null);
   const close = useCallback(() => setMenu(null), []);
 
-  const open = useCallback((track: SpotifyTrack, e: React.MouseEvent) => {
+  const open = useCallback((track: SpotifyTrack, e: React.MouseEvent, copyIndex?: number) => {
     e.preventDefault();
     // Stop the row's own handlers from also firing. Several of these rows are
     // buttons whose click plays the track, and a right-click that both opened
@@ -135,6 +143,7 @@ export function useTrackMenu(config: TrackMenuConfig = {}): TrackMenu {
       x: e.clientX,
       y: e.clientY,
       track,
+      copyIndex,
       anchor: e.currentTarget as HTMLElement,
     });
   }, []);
@@ -154,6 +163,8 @@ export function useTrackMenu(config: TrackMenuConfig = {}): TrackMenu {
       onToggleSaved,
       onAddToPlaylist: lib.addTrackToPlaylist,
       onRemoveFromSource: lib.removeTrackFromSource,
+      copyIndex: menu.copyIndex,
+      onRemoveOneCopy: lib.removeOneCopyFromPlaylist,
       onGoToAlbum: omitGoToAlbum
         ? undefined
         : (t) => {
@@ -173,6 +184,7 @@ export function useTrackMenu(config: TrackMenuConfig = {}): TrackMenu {
     lib.playlists,
     lib.userId,
     lib.addTrackToPlaylist,
+    lib.removeOneCopyFromPlaylist,
     lib.removeTrackFromSource,
     source,
     sourceTracks,

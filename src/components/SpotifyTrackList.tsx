@@ -41,6 +41,8 @@ interface Props {
   onAddToPlaylist: (playlistId: string, track: SpotifyTrack) => Promise<void>;
   /** Removes from whichever source is open (playlist row, or unlike). */
   onRemoveFromSource: (track: SpotifyTrack) => Promise<void>;
+  /** Drop one copy of a duplicated track, leaving the rest in place. */
+  onRemoveOneCopy: (track: SpotifyTrack, copyIndex: number) => Promise<void>;
   onGoToAlbum: (track: SpotifyTrack) => void;
   onGoToArtist: (track: SpotifyTrack) => void;
   onRenamePlaylist: (playlistId: string, name: string) => Promise<void>;
@@ -55,6 +57,9 @@ interface MenuState {
   x: number;
   y: number;
   track: SpotifyTrack;
+  /** Which copy of a duplicated track this row is, or undefined when the
+   *  track appears once. The menu offers a per-copy remove only with it. */
+  copyIndex: number | undefined;
   /** The row the menu belongs to — scrolling the list moves it, so that
    *  scroll should dismiss. See ContextMenu's `anchor`. */
   anchor: HTMLElement | null;
@@ -80,6 +85,7 @@ function SpotifyTrackListImpl({
   userId,
   onAddToPlaylist,
   onRemoveFromSource,
+  onRemoveOneCopy,
   onGoToAlbum,
   onGoToArtist,
   onRenamePlaylist,
@@ -275,10 +281,43 @@ function SpotifyTrackListImpl({
   // State lives here so closing the menu doesn't re-render every row.
   const [menu, setMenu] = useState<MenuState | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
-  const handleRowContextMenu = useCallback((track: SpotifyTrack, e: React.MouseEvent) => {
-    e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, track, anchor: e.currentTarget as HTMLElement });
-  }, []);
+  const handleRowContextMenu = useCallback(
+    (track: SpotifyTrack, e: React.MouseEvent, copyIndex?: number) => {
+      e.preventDefault();
+      setMenu({
+        x: e.clientX,
+        y: e.clientY,
+        track,
+        copyIndex,
+        anchor: e.currentTarget as HTMLElement,
+      });
+    },
+    [],
+  );
+
+  /**
+   * Which rows are copies of each other, and which copy each one is.
+   *
+   * Counted over `tracks` rather than the filtered rows on screen, because a
+   * copy hidden by the search box is still a copy — and the position this
+   * feeds is a position in the playlist, not on screen. Keyed by object
+   * identity: duplicate rows are separate objects from separate pages, so
+   * they do not collide, and a uri key could not tell them apart at all.
+   */
+  const copyInfo = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const t of tracks) totals.set(t.uri, (totals.get(t.uri) ?? 0) + 1);
+    const seen = new Map<string, number>();
+    const byTrack = new Map<SpotifyTrack, { index: number; total: number }>();
+    for (const t of tracks) {
+      const total = totals.get(t.uri) ?? 1;
+      if (total < 2) continue;
+      const index = seen.get(t.uri) ?? 0;
+      seen.set(t.uri, index + 1);
+      byTrack.set(t, { index, total });
+    }
+    return byTrack;
+  }, [tracks]);
 
   const runEdit = useMemo(() => createEditRunner(showNotice), [showNotice]);
 
@@ -296,6 +335,8 @@ function SpotifyTrackListImpl({
       sourceTracks: tracks,
       onAddToPlaylist,
       onRemoveFromSource,
+      copyIndex: menu.copyIndex,
+      onRemoveOneCopy,
       onGoToAlbum,
       onGoToArtist,
       runEdit,
@@ -310,6 +351,7 @@ function SpotifyTrackListImpl({
     runEdit,
     onAddToPlaylist,
     onRemoveFromSource,
+    onRemoveOneCopy,
     onGoToAlbum,
     onGoToArtist,
     showNotice,
@@ -427,6 +469,7 @@ function SpotifyTrackListImpl({
                   track={track}
                   index={index}
                   artistNames={artistStrings[index]}
+                  copy={copyInfo.get(track)}
                   isPlaying={track.id === currentlyPlayingId}
                   onPlay={handlePlayTrack}
                   onContextMenu={handleRowContextMenu}
@@ -767,9 +810,11 @@ interface TrackRowProps {
   track: SpotifyTrack;
   index: number;
   artistNames: string;
+  /** Set only when this track appears more than once in the playlist. */
+  copy?: { index: number; total: number };
   isPlaying: boolean;
   onPlay: (track: SpotifyTrack) => void;
-  onContextMenu: (track: SpotifyTrack, e: React.MouseEvent) => void;
+  onContextMenu: (track: SpotifyTrack, e: React.MouseEvent, copyIndex?: number) => void;
   draggable: boolean;
   dragging: boolean;
   dropTarget: boolean;
@@ -785,6 +830,7 @@ function TrackRowImpl({
   track,
   index,
   artistNames,
+  copy,
   isPlaying,
   onPlay,
   onContextMenu,
@@ -810,7 +856,7 @@ function TrackRowImpl({
       // the track, which meant every attempt to right-click, drag-reorder or
       // just read a row risked replacing what was playing.
       onDoubleClick={() => onPlay(track)}
-      onContextMenu={(e) => onContextMenu(track, e)}
+      onContextMenu={(e) => onContextMenu(track, e, copy?.index)}
       onDragStart={(e) => {
         // Firefox refuses to start a drag without payload; the index travels
         // in component state, so the contents don't matter.
@@ -863,7 +909,18 @@ function TrackRowImpl({
             <div className="sp-track-thumb sp-track-thumb-fallback" />
           )}
           <div className="sp-track-text">
-            <div className="sp-track-name">{track.name}</div>
+            <div className="sp-track-name">
+              {track.name}
+              {/* Spotify lets a playlist hold the same song twice and shows
+                  you nothing, so two identical rows read as a rendering
+                  fault. Saying which copy this is also makes the per-copy
+                  remove in the context menu mean something. */}
+              {copy && (
+                <span className="sp-track-copy" title={`This song is in this playlist ${copy.total} times`}>
+                  copy {copy.index + 1} of {copy.total}
+                </span>
+              )}
+            </div>
             <div className="sp-track-artists">
               {track.explicit ? <span className="sp-track-explicit">E</span> : null}
               {artistNames}

@@ -54,6 +54,15 @@ export interface TrackMenuOptions {
   onAddToPlaylist: (playlistId: string, track: SpotifyTrack) => Promise<void>;
   onRemoveFromSource: (track: SpotifyTrack) => Promise<void>;
   /**
+   * Which copy of this track the menu was opened on, counted over the copies
+   * in playlist order from 0. Undefined where the surface has no row to
+   * count — the player bar, a search result — and the per-copy item is then
+   * left out, because "this copy" has to mean a row you can see.
+   */
+  copyIndex?: number;
+  /** Drop just `copyIndex`. Omitted leaves the per-copy item out. */
+  onRemoveOneCopy?: (track: SpotifyTrack, copyIndex: number) => Promise<void>;
+  /**
    * Both omitted where the item would navigate to the view it was opened
    * from. The album page leaves out "Go to album" and the artist page leaves
    * out "Go to artist" — an entry that reloads the page you are looking at
@@ -105,6 +114,8 @@ export function buildTrackMenuItems(opts: TrackMenuOptions): ContextMenuItem[] {
     onToggleSaved,
     onAddToPlaylist,
     onRemoveFromSource,
+    copyIndex,
+    onRemoveOneCopy,
     onGoToAlbum,
     onGoToArtist,
     runEdit,
@@ -176,6 +187,24 @@ export function buildTrackMenuItems(opts: TrackMenuOptions): ContextMenuItem[] {
       : copies > 1
         ? `Remove all ${copies} copies from this playlist`
         : 'Remove from this playlist';
+
+    /* With duplicates on screen, "remove" is two different actions and the
+     * menu has to offer both. The per-copy one goes first: someone who opened
+     * this menu on the second of three rows means that row, and the all-copies
+     * item is the one that needs thinking about. */
+    if (!liked && copies > 1 && copyIndex !== undefined && onRemoveOneCopy) {
+      items.push({
+        label: `Remove this copy (${copyIndex + 1} of ${copies})`,
+        disabled: !editable,
+        title: editable
+          ? 'Deletes every copy and puts the others back where they were, because Spotify has no way to delete just one'
+          : 'You can only edit playlists you own or collaborate on',
+        onClick: () =>
+          runEdit('Removed one copy', async () => {
+            await onRemoveOneCopy(track, copyIndex);
+          }),
+      });
+    }
 
     items.push({
       label: removeLabel,

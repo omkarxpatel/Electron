@@ -158,17 +158,55 @@ const PLAYLIST_EDIT_BATCH = 100;
 export async function addPlaylistItems(
   playlistId: string,
   uris: string[],
+  /** Insert before this raw playlist position. Omitted appends. */
+  position?: number,
 ): Promise<string | null> {
   if (uris.length === 0) return null;
   if (uris.length > PLAYLIST_EDIT_BATCH) {
     throw new Error(`addPlaylistItems: ${uris.length} URIs exceeds the ${PLAYLIST_EDIT_BATCH} limit`);
   }
+  const body: Record<string, unknown> = { uris };
+  if (position !== undefined) body.position = position;
   const data = await request<SnapshotResponse>(`/playlists/${playlistId}/items`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uris }),
+    body: JSON.stringify(body),
   });
   return data?.snapshot_id ?? null;
+}
+
+/**
+ * Where every copy of `uri` sits in a playlist, as raw positions, ascending.
+ *
+ * Read from the server rather than from our own `tracks` array, for two
+ * reasons. The array holds only the span paged in so far, so a copy further
+ * down would be invisible — and deleting "every copy" having counted some of
+ * them is how you lose the ones you never saw. And the array drops null
+ * entries (a track removed from Spotify, a local file), so its indices stop
+ * matching the positions the API wants as soon as a playlist contains one.
+ *
+ * Same `fields` projection as getPlaylistTrackUris, for the same reason: 5.8
+ * KB a page instead of 679 KB. The null entries ARE counted here — they
+ * occupy a position even though they have no uri.
+ */
+export async function playlistItemPositions(
+  playlistId: string,
+  uri: string,
+): Promise<number[]> {
+  const positions: number[] = [];
+  for (let offset = 0; ; offset += 100) {
+    const page = await request<TrackUriPage>(
+      `/playlists/${playlistId}/items?limit=100&offset=${offset}` +
+        `&fields=next,items(track(uri))`,
+    );
+    if (!page) break;
+    const items = page.items ?? [];
+    items.forEach((row, i) => {
+      if (row?.track?.uri === uri) positions.push(offset + i);
+    });
+    if (!page.next || items.length === 0) break;
+  }
+  return positions;
 }
 
 /**

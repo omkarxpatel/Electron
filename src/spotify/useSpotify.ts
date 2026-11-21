@@ -1384,6 +1384,85 @@ export function useSpotify() {
   }, [state.authed, currentTrackId]);
 
   /**
+   * Remove ONE copy of a track from the open playlist, leaving the others
+   * where they are.
+   *
+   * Spotify has no call for this. `positions` was dropped from the remove
+   * endpoint — it is still accepted and silently ignored — so a delete by URI
+   * takes every copy. The only way to keep the rest is to delete them all and
+   * put the survivors back, which is what this does:
+   *
+   *   1. read every copy's raw position from the server,
+   *   2. delete all of them in one call, guarded by snapshot_id,
+   *   3. re-add the survivors one at a time, ascending, each at the position
+   *      it should end up in.
+   *
+   * Step 3 works out because the inserts go in ascending order: everything
+   * that belongs before the one being inserted is already in place, so its
+   * target index IS its final position.
+   *
+   * Two costs the caller has to own. A re-added item is a new item, so it
+   * carries today's "date added" and this account as the adder — invisible in
+   * your own playlist, a rewrite of someone's attribution in a collaborative
+   * one. And steps 2 and 3 are not atomic: nothing can make them so, and a
+   * failure between them leaves copies missing, which is why it reports how
+   * many came back and re-reads the list rather than guessing.
+   *
+   * `copyIndex` is which occurrence to drop, counted over the copies in
+   * playlist order. It is clamped rather than trusted: the row it came from
+   * was rendered against the span we had paged, and the playlist may have
+   * changed since.
+   */
+  const removeOneCopyFromPlaylist = useCallback(
+    async (track: SpotifyTrack, copyIndex: number): Promise<void> => {
+      const source = stateRef.current.source;
+      if (source?.kind !== 'playlist') return;
+      const playlistId = source.playlist.id;
+      const uri = track.uri;
+
+      const positions = await api.playlistItemPositions(playlistId, uri);
+      if (positions.length === 0) return;
+      // One copy left: this is an ordinary removal, and going the long way
+      // round would rewrite nothing but still cost the extra calls.
+      if (positions.length === 1) {
+        await removeTrackFromSource(track);
+        return;
+      }
+
+      const drop = Math.min(Math.max(copyIndex, 0), positions.length - 1);
+      const removedAt = positions[drop];
+      // Where each survivor lands once every copy is gone: one place earlier
+      // if it sat after the one being dropped, unchanged if it sat before.
+      const targets = positions
+        .filter((_, i) => i !== drop)
+        .map((p) => (p > removedAt ? p - 1 : p));
+
+      await api.removePlaylistItems(playlistId, [uri], writeSnapshot(playlistId));
+      let restored = 0;
+      try {
+        for (const at of targets) {
+          await api.addPlaylistItems(playlistId, [uri], at);
+          restored += 1;
+        }
+      } catch (err) {
+        // Say what the playlist now holds, not just that something failed.
+        // The difference decides whether the user has to go and fix it.
+        throw new Error(
+          `Removed the copy, but only ${restored} of ${targets.length} other ` +
+            `copies went back. Check the playlist. (${String(err)})`,
+        );
+      } finally {
+        // The snapshot we held names a version that no longer exists, and
+        // every position past the edit has moved. Re-read rather than patch:
+        // this is several writes deep and a local guess would drift.
+        loadedSnapshotRef.current = null;
+        await refreshSelectedTracks();
+      }
+    },
+    [removeTrackFromSource, refreshSelectedTracks],
+  );
+
+  /**
    * Everything the app holds from Spotify, re-fetched on demand.
    *
    * The background refreshes are all conditional — the playlist list is only
@@ -1431,6 +1510,7 @@ export function useSpotify() {
     renamePlaylist,
     deletePlaylist,
     moveTrackInPlaylist,
+    removeOneCopyFromPlaylist,
     refreshAll,
   };
 }
