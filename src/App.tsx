@@ -23,6 +23,7 @@ import { useOvernightLearner } from './dj/useOvernightLearner';
 import { useAudioEngine } from './audio/useAudioEngine';
 import { useAudioOutput } from './audio/useAudioOutput';
 import { useAudioSource } from './audio/useAudioSource';
+import { useCaptureStall } from './audio/useCaptureStall';
 import { useSinkVolumePin } from './audio/useSinkVolumePin';
 import { useCaptureCompensation } from './audio/useCaptureCompensation';
 import { useAutoSelectDevices } from './audio/useAutoSelectDevices';
@@ -212,6 +213,16 @@ function AppContent() {
     0,
     captureCompensationDb,
   );
+  // A device coming or going can leave the capture live, unmuted and silent —
+  // no event fires, so neither watchdog in useAudioSource sees it and the
+  // input has to be picked again by hand. Needs the analyser to tell silence
+  // from sound, so it is wired here rather than inside useAudioSource.
+  useCaptureStall({
+    probe: analyser,
+    stream: audioSource.stream,
+    deviceId: audioSource.mode === 'device' ? audioSource.deviceId : null,
+    reacquire: audioSource.useDevice,
+  });
   // Hold the output device at unity while we're actually playing through it.
   // The macOS slider only reaches the DEFAULT output device, so once system
   // output is BlackHole nothing can reach our sink and it stays frozen at

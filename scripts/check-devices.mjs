@@ -5,7 +5,9 @@
  * Covers `src/audio/useDeviceReturn.ts` and its two users: the input watchdog
  * in `useAudioSource`, and the output picker in `OutputDeviceSelector`. The
  * output-side re-apply in `useAudioEngine` is the same hook with a one-line
- * callback, so it is covered by the first section.
+ * callback, so it is covered by the first section. Also
+ * `src/audio/useCaptureStall.ts`, for the case neither of those can see: a
+ * capture that stays live and unmuted while delivering silence.
  *
  * Every failure here is silent by construction, which is why it is worth a
  * check of its own. Nothing errors when a device-return listener is never
@@ -54,6 +56,7 @@ writeFileSync(
     `export { createRoot } from ${JSON.stringify(join(repoRoot, 'node_modules/react-dom/client'))};\n` +
     `export { useDeviceReturn } from ${JSON.stringify(join(repoRoot, 'src/audio/useDeviceReturn'))};\n` +
     `export { useAudioSource } from ${JSON.stringify(join(repoRoot, 'src/audio/useAudioSource'))};\n` +
+    `export { useCaptureStall } from ${JSON.stringify(join(repoRoot, 'src/audio/useCaptureStall'))};\n` +
     `export { OutputDeviceSelector } from ${JSON.stringify(join(repoRoot, 'src/components/OutputDeviceSelector'))};\n`,
   'utf-8',
 );
@@ -76,7 +79,7 @@ writeFileSync(
   join(work, 'probe.html'),
   `<!doctype html><meta charset="utf-8"><body><div id="root"></div>
 <script type="module">
-import { React, createRoot, useDeviceReturn, useAudioSource, OutputDeviceSelector } from './devices.js';
+import { React, createRoot, useDeviceReturn, useAudioSource, useCaptureStall, OutputDeviceSelector } from './devices.js';
 
 const h = React.createElement;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -404,6 +407,104 @@ window.__run = async () => {
     check('returning to the app retries straight away',
       gumCalls.length > beforeFocus && liveTrack()?.readyState === 'live',
       (gumCalls.length - beforeFocus) + ' attempts on focus, track ' + liveTrack()?.readyState);
+    unmount();
+
+    /* ── useCaptureStall ──────────────────────────────────────────────────
+     *
+     * The gap the two watchdogs above cannot see: a track that stays 'live'
+     * and unmuted while delivering digital silence. Nothing fires, so the
+     * input had to be picked again by hand. Every case here is about the
+     * TWO conditions that keep the cure from being worse than the disease —
+     * it must not rebuild the graph because the music is paused, and it must
+     * not rebuild it because an unrelated device was plugged in.
+     */
+    section('Silent capture');
+    let probeLevel = 0;
+    // fftSize 4 so a sample is four values; the real one reads an analyser.
+    const PROBE = { fftSize: 4, getFloatTimeDomainData: (a) => a.fill(probeLevel) };
+    function StallProbe({ noProbe }) {
+      src = useAudioSource();
+      useCaptureStall({
+        probe: noProbe ? null : PROBE,
+        stream: src.stream,
+        deviceId: src.mode === 'device' ? src.deviceId : null,
+        reacquire: src.useDevice,
+      });
+      return null;
+    }
+    const freshStall = async (noProbe) => {
+      unmount();
+      reset();
+      listing = [MIC, SPEAKERS];
+      mount(h(StallProbe, { noProbe }));
+      await settle();
+      await src.useDevice(MIC.deviceId);
+      await settle();
+    };
+    /** SETTLE_MS + PROBE_INTERVAL_MS * PROBE_SAMPLES, plus slack. */
+    const stallWait = () => sleep(2600);
+    let n = 0;
+
+    await freshStall();
+    probeLevel = 0;
+    n = gumCalls.length;
+    fire(); await stallWait();
+    check('a capture left silent by a device change is re-acquired',
+      gumCalls.length === n + 1 && gumCalls.at(-1) === MIC.deviceId, JSON.stringify(gumCalls));
+
+    await freshStall();
+    probeLevel = 0.2;
+    n = gumCalls.length;
+    fire(); await stallWait();
+    check('a capture that is still passing audio is left alone', gumCalls.length === n,
+      (gumCalls.length - n) + ' rebuilds — each one is an audible glitch for nothing');
+
+    await freshStall();
+    probeLevel = 0;
+    n = gumCalls.length;
+    await stallWait();
+    check('silence with no device change does nothing — paused music is silent too',
+      gumCalls.length === n, (gumCalls.length - n) + ' rebuilds while merely quiet');
+
+    await freshStall();
+    probeLevel = 0;
+    n = gumCalls.length;
+    fire(); fire(); fire(); await stallWait();
+    check('a burst of device changes re-acquires once, not once each',
+      gumCalls.length === n + 1, (gumCalls.length - n) + ' re-acquires');
+
+    await freshStall();
+    probeLevel = 0;
+    listing = [SPEAKERS];
+    n = gumCalls.length;
+    fire(); await stallWait();
+    check('a device that has actually left is not re-opened here — that is useDeviceReturn',
+      gumCalls.length === n, (gumCalls.length - n) + ' attempts that could only reject');
+
+    await freshStall();
+    probeLevel = 0;
+    liveTrack().muted = true;
+    n = gumCalls.length;
+    fire(); await stallWait();
+    check('a track that admits it is muted is left to the other watchdog',
+      gumCalls.length === n, (gumCalls.length - n) + ' recoveries racing the backoff');
+
+    await freshStall(true);
+    probeLevel = 0;
+    n = gumCalls.length;
+    fire(); await stallWait();
+    check('with no analyser to read, silence cannot be proven and nothing fires',
+      gumCalls.length === n, (gumCalls.length - n) + ' re-acquires on no evidence');
+
+    await freshStall();
+    probeLevel = 0;
+    n = gumCalls.length;
+    fire();
+    await sleep(1400);   // past the settle, mid-probe
+    unmount();
+    await sleep(1400);
+    check('no re-acquire after unmount with a probe in flight', gumCalls.length === n,
+      (gumCalls.length - n) + ' calls after unmount');
     unmount();
 
     // ── OutputDeviceSelector ─────────────────────────────────────────────
