@@ -180,9 +180,15 @@ export async function addPlaylistItems(
  * Callers must label the action for what it does — see the duplicate-aware
  * label in SpotifyTrackList.
  *
- * `snapshotId` is optimistic concurrency: Spotify rejects the edit if the
- * playlist moved on since we read it, rather than deleting whatever now sits
- * where we think our track is.
+ * `snapshotId` must come from a previous WRITE to this playlist, or be
+ * omitted. The snapshot_id on a playlist object read back from
+ * `GET /playlists/{id}` is a different thing with the same name: a delete
+ * carrying it answers **200 and removes nothing**. Measured on a scratch
+ * playlist — three items, two of them the same track; with the read
+ * snapshot the playlist came back unchanged, with the write snapshot or
+ * none at all it came back with one item. Nothing in the response
+ * distinguishes them, so a caller that guesses wrong gets a silent no-op
+ * reported as success. useSpotify tracks which kind it holds.
  */
 export async function removePlaylistItems(
   playlistId: string,

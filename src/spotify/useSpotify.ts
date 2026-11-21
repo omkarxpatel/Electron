@@ -363,7 +363,33 @@ export function useSpotify() {
    *  background refresh can tell "changed on Spotify" from "unchanged".
    *  Keyed by playlist id so a stale value can't be applied to a new
    *  selection. */
-  const loadedSnapshotRef = useRef<{ playlistId: string; snapshotId: string | null } | null>(null);
+  const loadedSnapshotRef = useRef<{
+    playlistId: string;
+    snapshotId: string | null;
+    /**
+     * Whether this snapshot came back from a WRITE.
+     *
+     * It decides whether we may send it on the next one, and the distinction
+     * is load-bearing. Measured against the live API on a scratch playlist:
+     * a delete carrying the snapshot_id from `GET /playlists/{id}` answers
+     * **200 and removes nothing**. The same delete with the snapshot from a
+     * previous write, or with none at all, removes what it was asked to.
+     * Nothing in the response tells the two apart — and since the UI drops
+     * the row optimistically, a poisoned snapshot reads as a removal that
+     * worked until the next refresh brings the track back.
+     *
+     * Read snapshots are still worth keeping: comparing them is how the
+     * background poll notices the playlist changed. They just must never
+     * reach a write.
+     */
+    fromWrite: boolean;
+  } | null>(null);
+
+/** The snapshot to send with a write, or null when we only hold a read one. */
+  const writeSnapshot = (playlistId: string): string | null => {
+    const known = loadedSnapshotRef.current;
+    return known?.playlistId === playlistId && known.fromWrite ? known.snapshotId : null;
+  };
   /** Previous `isActive`, so the refresh effect can distinguish "window came
    *  back to the foreground" from "re-ran for some other reason". */
   const wasActiveRef = useRef(isActive);
@@ -417,6 +443,7 @@ export function useSpotify() {
     loadedSnapshotRef.current = {
       playlistId: playlist.id,
       snapshotId: playlist.snapshot_id ?? null,
+      fromWrite: false,
     };
     await openSource({ kind: 'playlist', playlist });
   }, [openSource]);
@@ -563,7 +590,7 @@ export function useSpotify() {
       if (stateRef.current.tracksLoading) return;
       await refreshSelectedTracks();
       if (sourceKey(stateRef.current.source) === playlistId) {
-        loadedSnapshotRef.current = { playlistId, snapshotId: snapshot };
+        loadedSnapshotRef.current = { playlistId, snapshotId: snapshot, fromWrite: true };
       }
     },
     [refreshSelectedTracks],
@@ -661,12 +688,10 @@ export function useSpotify() {
         sourceKey(cur.source) === playlistId ? { ...cur, tracks: next } : cur,
       );
 
-      const known = loadedSnapshotRef.current;
-      const snapshot = known?.playlistId === playlistId ? known.snapshotId : null;
       try {
-        const snap = await api.reorderPlaylistItems(playlistId, from, to, snapshot);
+        const snap = await api.reorderPlaylistItems(playlistId, from, to, writeSnapshot(playlistId));
         if (sourceKey(stateRef.current.source) === playlistId) {
-          loadedSnapshotRef.current = { playlistId, snapshotId: snap };
+          loadedSnapshotRef.current = { playlistId, snapshotId: snap, fromWrite: true };
         }
       } catch (err) {
         setState((cur) =>
@@ -712,11 +737,8 @@ export function useSpotify() {
       // header's track total with nothing to correct it.
       const countIsExact = stateRef.current.tracksNextOffset === null;
 
-      const known = loadedSnapshotRef.current;
       const snapshot =
-        source.kind === 'playlist' && known?.playlistId === source.playlist.id
-          ? known.snapshotId
-          : null;
+        source.kind === 'playlist' ? writeSnapshot(source.playlist.id) : null;
 
       setState((cur) => {
         if (sourceKey(cur.source) !== key || loadGenerationRef.current !== generation) return cur;
@@ -750,7 +772,7 @@ export function useSpotify() {
             sourceKey(stateRef.current.source) === key &&
             loadGenerationRef.current === generation
           ) {
-            loadedSnapshotRef.current = { playlistId: source.playlist.id, snapshotId: next };
+            loadedSnapshotRef.current = { playlistId: source.playlist.id, snapshotId: next, fromWrite: true };
           }
         }
       } catch (err) {
@@ -1292,7 +1314,7 @@ export function useSpotify() {
             : freshTotal !== undefined && freshTotal !== stateRef.current.tracksTotal;
         if (!changed) return;
 
-        loadedSnapshotRef.current = { playlistId, snapshotId: nextSnapshot };
+        loadedSnapshotRef.current = { playlistId, snapshotId: nextSnapshot, fromWrite: false };
         await refreshSelectedTracks();
       } catch (err) {
         console.error('playlist refresh check failed:', err);
